@@ -1,0 +1,7 @@
+ignore = [".devenv", ".testy", "dist", "node_modules", "target"]
+
+[modules.acp-inspector]
+source = "."
+entrypoint = true
+
+settings.rustVersion = "1.98-slim-trixie"

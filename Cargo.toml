@@ -1,0 +1,76 @@
+[workspace]
+resolver = "3"
+# Two crates, split by layer and not by renderer (docs/architecture.md §3,
+# docs/adr/0011-one-ui-crate-a-feature-per-renderer.md): `core` is everything
+# that is not a screen, `app` is the screens and the one binary, with the
+# renderer chosen by a Cargo feature.
+members = ["crates/core", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sagikazarmark/acp-inspector"
+# Nothing here is published yet; the names are already the ones that would be.
+publish = false
+
+[workspace.dependencies]
+acp-inspector-core = { path = "crates/core" }
+
+# The inspector's *only* protocol dependency (docs/architecture.md §3): pure
+# types with `v1::`/`v2::` modules, no client machinery. The full
+# `agent-client-protocol` SDK is deliberately not used — its client sits above
+# exactly the seam the trace decorator owns, and `crates/core/tests/headless.rs`
+# holds that line against the resolved dependency graph. Pinned here so "schema
+# crate only" is a workspace fact rather than a per-crate promise; the core
+# re-exports its `v1` module, so the app reads the same types core decodes.
+#
+# One feature, and it is not a change of stance: what this layer decodes is
+# gated on the canonical schema's stable method list, which is where §7.4 has
+# always measured coverage and where §7.5 read `session/fork`'s answer off.
+# `elicitation/create` and `elicitation/complete` are in `schema/v1/meta.json`
+# and `session/fork` is not, so the feature name is this crate's packaging
+# rather than the protocol's status
+# (docs/adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md).
+# Every *other* `unstable_*` feature stays off, and the traffic behind them
+# stays displayed rather than decoded (§8).
+agent-client-protocol-schema = { version = "1.6", features = ["unstable_elicitation"] }
+
+# No renderer here: which one is a decision the app crate makes with a feature
+# of its own (`desktop`, `web`), because the renderer is what a build of the
+# app is *for* and a workspace has no build. `crates/core/tests/headless.rs`
+# fails the build if this crate ever reaches the core at all (§5).
+dioxus = "0.7.9"
+dioxus-free-icons = { version = "0.10", features = ["hero-icons-outline"] }
+# The same renderer without a window, for the app crate's own tests only: a
+# component rendered to HTML is a screen a test can read.
+dioxus-ssr = "0.7.9"
+# The app crate's tests only, and one feature of it (`crates/app/Cargo.toml`).
+dioxus-html = { version = "0.7.9", default-features = false }
+# Writes the PNGs the bundle's icon is folded from — the app crate's
+# `bundle-icon` example, run by `just icon`, and nothing else
+# (docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). A dev-dependency,
+# so the program is built from nothing new; and already in the resolved graph
+# under the renderer, so this buys the encoder rather than a dependency.
+png = "0.18"
+# Local time for the two logs. Timestamps are stamped by core as `SystemTime`
+# and turned into something a human reads here, because that is presentation:
+# the reader's own clock is the one their terminal's logs are in.
+jiff = "0.2"
+
+# Where a platform keeps a program's own state — the one thing the spawn form's
+# recent-commands convenience needs and `std` has no answer for (§15 q6). A
+# handful of `getenv` calls per platform, and the alternative is three `cfg`
+# branches of the same in this repository.
+dirs = "6"
+
+futures-util ={ version = "0.3", default-features = false, features = ["std", "sink"] }
+# Tests only, and one test: the capability display names a fixed set of
+# capabilities by hand, and this is what asks the schema crate whether that set
+# is still the whole of the stable one (§9). It is already in the resolved graph
+# — the schema crate derives `JsonSchema` on every type it defines — so this
+# buys the question rather than a dependency.
+schemars = "1"
+serde = "1"
+serde_json = "1"
+tokio = "1"
+tokio-util = { version = "0.7", features = ["codec"] }

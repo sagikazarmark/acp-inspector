@@ -1,0 +1,62 @@
+type AcpInspector {
+  let rustVersion: String!
+
+  new(
+    """
+    Version (image tag) to use from the official Rust image repository as a base container.
+    """
+    rustVersion: String! = "latest",
+  ) {
+    self.rustVersion = rustVersion
+
+    self
+  }
+
+  """
+  Build Testy, the ACP rust-sdk's deterministic stdio test agent (docs/architecture.md §12).
+
+  `agent-client-protocol-test` is `publish = false`, so there is no crates.io release to
+  depend on: the binary is built from the SDK repository, fetched with git. The same build
+  `scripts/build-testy.sh` does in a checkout under `.testy/`, in a container instead.
+
+  Built natively when the platform is the engine's own, and cross-compiled with cargo-zigbuild
+  otherwise, Zig being the linker. Without the macOS SDK: Testy has no C dependencies on any
+  of these targets, and on darwin it links nothing but `libSystem`, which Zig carries a stub
+  for. The SDK is only needed once something links an Apple framework, and that shows up as a
+  link error — flip `noMacosSdk` then.
+  """
+  testy(
+    """
+    Git repository to build Testy from.
+    """
+    repo: String! = "https://github.com/agentclientprotocol/rust-sdk.git",
+    """
+    Git ref (branch, tag or commit) to build Testy from.
+    """
+    rev: String! = "main",
+    """
+    Platform to build the binary for: linux/amd64, linux/arm64, darwin/amd64 or darwin/arm64.
+    """
+    platform: Platform! = Dagger.defaultPlatform,
+  ): File! {
+    let source = Dagger.git(repo).ref(rev).tree
+
+    Dagger
+      .rustCross(ws: source.asWorkspace, version: self.rustVersion, noMacosSdk: true)
+      .build(package: ["agent-client-protocol-test"], bin: ["testy"], target: [rustTarget(platform)])
+      .file("testy")
+  }
+}
+
+"""
+The Rust target triple a Dagger platform stands for.
+"""
+let rustTarget(platform: Platform!): String! {
+  case (platform) {
+    "linux/amd64" => "x86_64-unknown-linux-gnu"
+    "linux/arm64" => "aarch64-unknown-linux-gnu"
+    "darwin/amd64" => "x86_64-apple-darwin"
+    "darwin/arm64" => "aarch64-apple-darwin"
+    else => raise "unsupported platform: " + toString(platform)
+  }
+}

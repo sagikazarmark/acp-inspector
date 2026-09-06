@@ -1,0 +1,49 @@
+[package]
+name = "acp-inspector-core"
+version = "0.0.1"
+description = "Headless core of the ACP Inspector: the connection contract, the stdio transport, the frame trace, and the typed ACP v1 client"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The typed layer's whole protocol dependency (docs/architecture.md §3): pure
+# types under a versioned namespace, so decoding is explicitly *as v1* and the
+# v2 seam is a second decoder rather than an excavation (§11 seam 1). The
+# features are the workspace's, and the rule behind them is stated there: the
+# stable method list decides what this layer decodes, so `unstable_elicitation`
+# is on (§7.8, ADR 0008) and every other `unstable_*` is off, its traffic
+# displayed rather than decoded (§8).
+agent-client-protocol-schema.workspace = true
+# The spawn form's recent commands have to live somewhere the next launch of the
+# app will look, and where that is is a platform's answer rather than this
+# crate's (docs/architecture.md §15 q6).
+dirs.workspace = true
+futures-util.workspace = true
+# The traits the two helpers above the envelope are written in terms of; the
+# schema crate's types bring their own implementations.
+serde.workspace = true
+# The JSON-RPC envelope itself, which the schema crate does not own: ids,
+# `params`, `result`, `error`. Frames are text on the wire and stay text in the
+# trace (§8) — this is what the typed layer reads them *as*.
+serde_json.workspace = true
+# `process` and `io-util` are the stdio transport; `sync` is the channels the
+# connection contract and the pending calls are made of; `rt` is the pumps
+# behind them, and `macros` is the `select!` each pump is written with — a
+# library feature, not a test one, however much it looks like the latter.
+tokio = { workspace = true, features = [
+    "process",
+    "io-util",
+    "macros",
+    "rt",
+    "sync",
+] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+# The one question no agent can be driven to answer: whether the set of
+# capabilities the display names by hand is still the whole stable set the
+# protocol defines (`tests/capability.rs`).
+schemars.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

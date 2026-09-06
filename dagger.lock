@@ -1,0 +1,6 @@
+[["version","2"]]
+["","git-latest",["https://github.com/sagikazarmark/daggerverse-beta"],"refs/heads/main",[["tagPrefix","rust-cross"]]]
+["","git-sha",["https://github.com/agentclientprotocol/rust-sdk.git","main"],"726c5030bfaa88cfdac2fb1f71a63abb331ce586"]
+["","git-sha",["https://github.com/sagikazarmark/daggerverse-beta","refs/heads/main"],"1000779123195300d1634e0b1908c7219cc52a1b"]
+["","oci-sha",["docker.io/library/rust:1.98-slim-trixie"],"sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27"]
+["","oci-sha",["docker.io/library/rust:latest"],"sha256:620dbcd124499c59e2406d3741574b5c5838cf9eb9656f0c3a03948f79b02959"]

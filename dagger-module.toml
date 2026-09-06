@@ -1,0 +1,8 @@
+name = "acp-inspector"
+engineVersion = "v1.0.0"
+runtime.source = "dang"
+include = ["!.devenv", "!.testy", "!dist", "!node_modules", "!target"]
+
+[[dependencies]]
+name = "rust-cross"
+source = "github.com/sagikazarmark/daggerverse-beta/rust-cross"

@@ -1,0 +1,1425 @@
+/* ===========================================================================
+   The window's stylesheet, as it is written.
+
+   `npm run css` turns this file into `sheet.css` beside it, which is committed
+   to the tree and compiled into the binary by `../src/style.rs`; `npm run
+   css:check` regenerates it and fails on any difference, which is what makes
+   the committed artifact a fact rather than a convention. Node changes the
+   styles and verifies them; building the tool is the one thing it never does
+   (`docs/adr/0003-the-stylesheet-is-generated-and-committed.md`).
+
+   **This sheet is the drawing** (`docs/adr/0009-the-window-is-the-drawing.md`).
+   Nothing is carried over from the arrangement before it: the palette, the type
+   sizes, the control heights, the corners, the gutters and the two animations
+   are the design's, and where a value differs the line says why. The token
+   names are the design's too and live in `theme.css`.
+
+   Tailwind provides preflight, the theme system and the utilities; daisyUI is
+   the component library, fed this palette under its own role names so a button,
+   a badge, a field and a dialog come out in it. The rules below are the
+   window's own layout, its evidence surfaces, and the handful of places a
+   component needs telling what this design makes it.
+
+   `source(none)` turns off automatic detection: what Tailwind would scan by
+   default is this directory, which holds the sheet it generates.
+   =========================================================================== */
+
+@import "tailwindcss" source(none);
+@plugin "daisyui" {
+  themes: false;
+  include: alert, badge, button, checkbox, fieldset, input, label, modal, select, textarea, toast, toggle;
+  logs: false;
+}
+
+/* The two themes, carrying the drawing's palette under daisyUI's role names.
+   `base-100` is the surface most controls sit on — the chrome, not the document
+   — because that is what daisyUI paints a field and a button against. */
+@plugin "daisyui/theme" {
+  name: "inspector-light";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+
+  --color-base-100: #ffffff;
+  --color-base-200: #f7f9fb;
+  --color-base-300: #cfd6df;
+  --color-base-content: #101419;
+  --color-primary: #3d6b0a;
+  --color-primary-content: #ffffff;
+  --color-secondary: #7c46c9;
+  --color-secondary-content: #ffffff;
+  --color-accent: #3d6b0a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #5c6673;
+  --color-neutral-content: #ffffff;
+  --color-info: #2f6bd8;
+  --color-info-content: #ffffff;
+  --color-success: #1f8a5b;
+  --color-success-content: #ffffff;
+  --color-warning: #a35c00;
+  --color-warning-content: #ffffff;
+  --color-error: #c62b3c;
+  --color-error-content: #ffffff;
+
+  /* The drawing's corners and its control unit: 3.25px, which is 19.5px at
+     `xs`, 26px at `sm` and 32.5px at `md` — the three heights it draws. */
+  --radius-selector: 0.3125rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.6875rem;
+  --size-selector: 0.203125rem;
+  --size-field: 0.203125rem;
+  --border: 1px;
+  /* Flat: the drawing's buttons are a boundary and a ground, and the one thing
+     that carries a shadow says so itself (`.seg-item[aria-pressed="true"]`). */
+  --depth: 0;
+  --noise: 0;
+}
+@plugin "daisyui/theme" {
+  name: "inspector-dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-100: #0f1216;
+  --color-base-200: #141920;
+  --color-base-300: #2b333e;
+  --color-base-content: #e8ecf3;
+  --color-primary: #b8f04a;
+  --color-primary-content: #0a0c0f;
+  --color-secondary: #c792ea;
+  --color-secondary-content: #0a0c0f;
+  --color-accent: #b8f04a;
+  --color-accent-content: #0a0c0f;
+  --color-neutral: #98a2b1;
+  --color-neutral-content: #0a0c0f;
+  --color-info: #7aa2ff;
+  --color-info-content: #0a0c0f;
+  --color-success: #5ecf9a;
+  --color-success-content: #0a0c0f;
+  --color-warning: #f0a860;
+  --color-warning-content: #0a0c0f;
+  --color-error: #ff6b7a;
+  --color-error-content: #0a0c0f;
+
+  --radius-selector: 0.3125rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.6875rem;
+  --size-selector: 0.203125rem;
+  --size-field: 0.203125rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+@import "./theme.css";
+@source "../src";
+/* Except the one Rust file that carries no markup and talks *about* class
+   names: `style.rs` is this stylesheet's module and its tests, and its prose
+   names utilities in order to state rules about them. */
+@source not "../src/style.rs";
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ---------------------------------------------------------------------------
+   Motion. Two animations, both the drawing's: a row fades up as it arrives and
+   the dot beside *streaming* blinks while the stream is open. Everything else
+   that moves is a control acknowledging the pointer or the keyboard.
+
+   And one rule that turns all of it off for a reader who asked their operating
+   system for less. Nothing here is *only* said by moving.
+   --------------------------------------------------------------------------- */
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes fadeup { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The scrollbars, as drawn: a thin thumb in the boundary colour and no trough.
+   Both spellings, because the two engines this shell runs on answer to
+   different ones. */
+* { scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line2); border-radius: var(--radius-control); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+::selection { background: var(--acc); color: var(--acc-ink); }
+
+html, body, #main { height: 100%; }
+/* The window is the viewport and the document never scrolls; macOS bounces it
+   anyway unless the root says not to (#74). */
+html { overscroll-behavior: none; }
+:is(.rail-body, .turn-stream, .wire-rows, .frame-json, .lines, .palette-list, .slash-list, .dialog-body, .quoted, .tool-output, .disclose-body) {
+  overscroll-behavior: contain;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--out); text-decoration: none; }
+a:hover { color: var(--acc); }
+::placeholder { color: var(--dim2); opacity: 1; }
+:is(.input, .textarea, textarea) { caret-color: var(--acc); }
+
+.mono { font-family: var(--font-mono); }
+.grow { flex: 1; min-width: 0; }
+
+/* The window's own words are not selectable; what the agent said is. */
+:is(.bar, .pane-head, .rail-tabs, .eyebrow, .wire-filters, .palette-foot, .prompt-foot) {
+  user-select: none;
+}
+
+/* The register the design sets a section's name in, and the only capitals in
+   the window. */
+.eyebrow {
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--dim2);
+  font-weight: var(--font-weight-answer);
+}
+
+/* One dot, in whatever it is about: a connection, a tool call's status, a plan
+   entry, a listed session. */
+.dot { width: 7px; height: 7px; border-radius: var(--radius-pill); flex: none; background: currentColor; }
+.dot-live { color: var(--ok); animation: blink 2.4s infinite; }
+.dot-wait { color: var(--in); animation: blink 0.7s infinite; }
+.dot-gone { color: var(--err); }
+.dot-idle { color: var(--dim2); }
+.dot-done { color: var(--ok); }
+
+.icon { width: 13px; height: 13px; flex: none; }
+.icon path { fill: none; stroke: currentColor; }
+
+/* One focus treatment across everything a keyboard can reach. */
+:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+}
+/* Two fields are drawn as the surface they are in rather than as a box in it —
+   the composer is one bounded field with its footer inside it, and the palette's
+   question is the head of the palette. A ring around the control inside would be
+   a second boundary inside the first, which is what it looked like. Neither goes
+   without an indicator: the box takes the accent while the keyboard is in it,
+   and the rule under the question does. */
+:is(.prompt-box textarea, .palette-query):focus-visible { outline: none; }
+.palette-query:focus-visible { border-bottom-color: var(--acc); }
+
+/* ---------------------------------------------------------------------------
+   The components, told what this design makes them.
+
+   daisyUI keeps the geometry, the states and the accessibility; these say what
+   the drawing paints them in.
+   --------------------------------------------------------------------------- */
+.btn {
+  font-family: inherit;
+  font-weight: var(--font-weight-answer);
+  --btn-shadow: none;
+  --btn-noise: none;
+}
+/* The ordinary control of this window: a hairline, no ground, and the label in
+   the metadata register. */
+.btn-quiet {
+  --btn-bg: transparent;
+  --btn-fg: var(--dim);
+  --btn-border: var(--line2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: var(--font-weight-normal);
+}
+.btn-quiet:hover:not([aria-disabled="true"]) { --btn-bg: var(--panel2); --btn-fg: var(--txt); }
+/* The same control, saying which way it goes. */
+.btn-go { --btn-fg: var(--acc); }
+.btn-bad { --btn-fg: var(--err); }
+/* And the one filled control on any surface. */
+.btn-filled {
+  --btn-bg: var(--acc);
+  --btn-fg: var(--acc-ink);
+  --btn-border: transparent;
+  font-family: inherit;
+  font-size: var(--text-row);
+  font-weight: var(--font-weight-answer);
+}
+.btn[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+/* A call the agent never advertised, drawn where the row would carry it so the
+   absence is on screen rather than merely missing: struck through, which is the
+   drawing's own way of saying *not on offer*. */
+.btn-unavailable { text-decoration: line-through; opacity: 0.4; cursor: not-allowed; }
+
+/* A field: sunk, hairlined, and monospace wherever it holds protocol text. */
+.input, .textarea, .select {
+  background: var(--sunk);
+  border-color: var(--line2);
+  color: var(--txt);
+  font-family: var(--font-mono);
+  border-radius: var(--radius-tile);
+}
+.toggle { --input-color: var(--line2); }
+.toggle:checked { --input-color: var(--acc); }
+.checkbox { --input-color: var(--acc); }
+
+/* A badge is a count or a state, never a control. */
+.badge {
+  border-radius: var(--radius-chip);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  border-color: var(--line2);
+  background: transparent;
+  color: var(--dim2);
+}
+.badge-ok { color: var(--ok); }
+.badge-bad { color: var(--err); }
+.badge-in { color: var(--in); }
+.badge-vio { color: var(--vio); }
+.badge-acc { color: var(--acc); }
+
+/* A notice: a hairline box in the tone of what it is about, never a fill. */
+.alert {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel2);
+  color: var(--dim);
+  font-size: var(--text-row);
+  line-height: var(--text-row--line-height);
+  box-shadow: none;
+}
+.alert-error { border-color: var(--err); color: var(--err); }
+.alert-warning { border-color: var(--in); color: var(--in); }
+
+/* The sentence registers the window writes in. */
+.hint { margin: 0; color: var(--dim2); font-size: var(--text-meta); line-height: 1.5; overflow-wrap: anywhere; }
+.detail { margin: 0; color: var(--dim); font-size: var(--text-meta); line-height: 1.5; overflow-wrap: anywhere; }
+.detail-bad { color: var(--err); }
+.detail-warn { color: var(--in); }
+.detail-live { color: var(--acc); }
+.unnamed { color: var(--vio); overflow-wrap: anywhere; }
+.cleared { color: var(--dim2); font-style: italic; }
+
+/* ---------------------------------------------------------------------------
+   The shell: a 52px bar, and everything else under it.
+   --------------------------------------------------------------------------- */
+#main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 52px;
+  flex: none;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+.bar-brand { display: flex; align-items: center; gap: 9px; flex: none; white-space: nowrap; }
+.mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-control);
+  background: var(--acc);
+  color: var(--acc-ink);
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-mark);
+  font-size: var(--text-row);
+}
+.bar h1 {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--font-weight-answer);
+  letter-spacing: var(--tracking-title);
+}
+.version {
+  padding: 1px 5px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-chip);
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+}
+/* What is connected, as the chip the drawing puts beside the name. */
+.bar-conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 10px 5px 8px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-tile);
+  background: var(--panel2);
+  white-space: nowrap;
+}
+.conn-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conn-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.conn-meta::before {
+  content: "";
+  width: 1px;
+  height: 14px;
+  background: var(--line2);
+}
+.bar-facts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  white-space: nowrap;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.bar-facts .bar-rule { color: var(--line2); }
+.bar-facts .bar-session { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
+
+/* A segmented group: a sunk track, and the segment that is on lifted out of
+   it. Two sit in the bar, one at the foot of a narrow window, one in the
+   connect dialog. */
+.seg {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-tile);
+  background: var(--sunk);
+}
+.seg-item {
+  height: 26px;
+  padding: 0 11px;
+  flex: none;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--dim2);
+  font-family: inherit;
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-answer);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-quick) var(--ease-standard);
+}
+.seg-item:hover { color: var(--txt); }
+.seg-item[aria-pressed="true"] {
+  background: var(--panel2);
+  color: var(--txt);
+  box-shadow: var(--shadow-segment);
+}
+.seg-glyph { min-width: 30px; padding: 0 7px; font-size: var(--text-row); }
+.seg-word { min-width: 40px; padding: 0 7px; font-family: var(--font-mono); font-size: var(--text-label); }
+
+.body { display: flex; flex: 1; min-height: 0; }
+
+/* ---------------------------------------------------------------------------
+   The rail: the connection, and the two things scoped to it.
+   --------------------------------------------------------------------------- */
+.rail {
+  display: flex;
+  flex-direction: column;
+  width: 244px;
+  flex: none;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.rail-conn { flex: none; padding: 12px; border-bottom: 1px solid var(--line); }
+.rail-conn > .eyebrow { display: block; margin-bottom: 8px; }
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel2);
+}
+.tile-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.tile-state { font-weight: var(--font-weight-answer); }
+.tile-state.live { color: var(--ok); }
+.tile-state.gone { color: var(--err); }
+.tile-state.idle { color: var(--dim); }
+.tile-transport { margin-left: auto; color: var(--dim2); }
+.tile-endpoint { min-width: 0; font-family: var(--font-mono); font-size: var(--text-meta); word-break: break-all; }
+.tile-cwd { min-width: 0; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); word-break: break-all; }
+.tile-actions { display: flex; gap: 5px; padding-top: 2px; }
+/* The drawing's small button is 24px in the rail and 26px on a region's header;
+   daisyUI's `xs` is neither, and it is the size these were coming out at.
+
+   `flex: none` in the stacked variant, because there the actions run *down* the
+   tile: a growing item's main size is the flex algorithm's, and the algorithm
+   was giving these the height of their own text. */
+.tile-actions .btn, .rail-head .btn { height: 24px; }
+.tile-actions.stacked > .btn { flex: none; }
+.tile-actions > .btn { flex: 1; min-width: 0; overflow: hidden; }
+.tile-actions.stacked { flex-direction: column; }
+
+.rail-tabs {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rail-tab {
+  flex: 1;
+  height: 30px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dim2);
+  font-family: inherit;
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-answer);
+  cursor: pointer;
+}
+.rail-tab[aria-selected="true"] { color: var(--txt); border-bottom-color: var(--acc); }
+.rail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+}
+.rail-group { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.rail-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rail-head > .eyebrow { flex: none; }
+.rail-count { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.rail-foot { flex: none; padding: 12px; border-top: 1px solid var(--line); }
+
+/* The live session, and the two ways to another. */
+.session-tile { border-radius: var(--radius-tile); border-color: var(--acc); gap: 3px; padding: 8px 9px; }
+.session-tile.none { border-color: var(--line); }
+.session-tile-name { font-size: var(--text-row); font-weight: var(--font-weight-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-tile-id { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); word-break: break-all; }
+
+/* A mode: the id the wire carries, and the name the agent gave it. */
+.mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--txt);
+  font-family: inherit;
+  cursor: pointer;
+}
+.mode-row[aria-pressed="true"] { border-color: var(--acc); background: var(--panel2); }
+.mode-row .mode-id { font-family: var(--font-mono); font-size: var(--text-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mode-row .mode-name { flex: none; color: var(--dim2); font-size: var(--text-meta); }
+.mode-row[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+
+/* A config option: its name, and the values it offers as chips. */
+.setting { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.setting-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.setting-name { flex: 1; min-width: 0; color: var(--dim); font-size: var(--text-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setting-values { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+/* The modes are the rail's full width, one per row, whatever the values beside
+   them do; a grouped select and its Set are one line. */
+.setting-values.modes { flex-direction: column; gap: 4px; }
+.setting-values.select-action { flex-wrap: nowrap; align-items: center; gap: 5px; }
+.setting-select { flex: 1; min-width: 0; }
+.chip {
+  height: 20px;
+  padding: 0 7px;
+  flex: none;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.chip:hover:not([aria-disabled="true"]) { color: var(--txt); border-color: var(--line2); }
+.chip[aria-pressed="true"] { border-color: var(--acc); color: var(--acc); }
+.chip[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+.setting-note { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-mark); }
+
+/* The way into the palette, at the foot of the rail. */
+.palette-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-tile);
+  background: var(--panel2);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: var(--text-row);
+  cursor: pointer;
+}
+.palette-open:hover { color: var(--txt); }
+.palette-open .palette-key { margin-left: auto; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+
+/* What the two parties claimed: a group, a rule to its right, and the rows. */
+.caps-group { display: flex; flex-direction: column; margin-bottom: 10px; min-width: 0; }
+.caps-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 4px; }
+.caps-group-name { flex: none; color: var(--dim); font-family: var(--font-mono); font-size: var(--text-label); font-weight: var(--font-weight-answer); }
+.caps-group-name.top { color: var(--dim2); font-size: var(--text-label); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+.caps-group-rule { flex: 1; height: 1px; background: var(--line); }
+.caps-group-count { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-mark); }
+.caps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.cap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 8px;
+  padding: 4px 0 4px 10px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.cap-name { color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
+.cap.yes .cap-name { color: var(--txt); font-weight: var(--font-weight-answer); }
+.cap-answer { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); font-weight: var(--font-weight-answer); }
+.cap.yes .cap-answer { color: var(--ok); }
+.cap-said { grid-column: 1 / -1; color: var(--dim2); font-size: var(--text-label); overflow-wrap: anywhere; }
+.cap-field { font-family: var(--font-mono); }
+
+/* Who an account belongs to, and the login that hangs off the agent's. */
+.who { display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; min-width: 0; }
+.who-name { margin: 0; font-size: var(--text-body); font-weight: var(--font-weight-answer); }
+.who-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); overflow-wrap: anywhere; }
+.standing { flex: none; font-family: var(--font-sans); font-weight: var(--font-weight-answer); }
+.standing-wanted { color: var(--in); }
+.standing-done { color: var(--ok); }
+.auth-method { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.auth-method > div:first-child { flex: 1; min-width: 0; }
+.auth-method strong { display: block; font-size: var(--text-row); overflow-wrap: anywhere; }
+.auth-method .btn { flex: none; }
+
+/* ---------------------------------------------------------------------------
+   The centre: the turn.
+   --------------------------------------------------------------------------- */
+.split { display: flex; flex: 1; min-width: 0; }
+.turns {
+  display: flex;
+  flex-direction: column;
+  flex: 1.45;
+  min-width: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+}
+.wire { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--panel); }
+.split.spine-wire .turns { display: none; }
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  flex: none;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.pane-title { margin: 0; flex: none; font-size: var(--text-row); font-weight: var(--font-weight-answer); }
+.pane-scope { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); white-space: nowrap; }
+.pane-head .btn { height: 26px; flex: none; border-radius: var(--radius-button); }
+.turn-badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-chip);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  font-weight: var(--font-weight-answer);
+  color: var(--acc);
+}
+.turn-badge.wait { color: var(--in); }
+.turn-badge.ask { color: var(--vio); }
+.turn-badge.done { color: var(--ok); }
+.turn-badge.bad { color: var(--err); }
+.turn-badge.off { color: var(--dim2); }
+
+.turn-stream {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 8px;
+}
+/* Newest at the bottom and the run of them held there: a stream that started at
+   the top of an empty screen would walk down it as the agent talked. */
+/* In `column-reverse` the end of the main axis is the top, so a conversation
+   with room to spare reads from the top of the screen and one that fills it
+   ends at the bottom — which is what the drawing shows and what a reader
+   scrolling back to the beginning expects to find there. */
+.stream {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  flex: 1;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.stream > li { min-width: 0; }
+
+/* One entry: a 20px gutter carrying its mark, and everything else beside it. */
+.row {
+  display: flex;
+  gap: 12px;
+  padding: 13px 12px;
+  margin: 2px -12px;
+  border-radius: var(--radius-evidence);
+  min-width: 0;
+  animation: fadeup var(--motion-arrive) var(--ease-standard) both;
+}
+.row:hover { background: var(--panel2); }
+/* A row leads to the frames it was made of, which is how the drawing links the
+   two screens: the row is the control, and the one it is pointing at is tinted
+   the way the wire log tints the frame a reader chose. */
+.row.linked { cursor: pointer; }
+.row.sought { background: var(--panel2); }
+.row-mark {
+  display: grid;
+  place-items: start center;
+  width: 20px;
+  flex: none;
+  padding-top: 2px;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+}
+.row.user .row-mark { color: var(--out); }
+.row.agent .row-mark { color: var(--acc); }
+.row.ask .row-mark { color: var(--in); }
+.row.elicit .row-mark { color: var(--vio); }
+.row.spec .row-mark, .row.unnamed .row-mark { color: var(--vio); }
+.row.done .row-mark { color: var(--ok); }
+.row-body { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
+.row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.row-head > .eyebrow { flex: none; }
+.row-at { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.said { font-size: var(--text-read); line-height: var(--text-read--line-height); overflow-wrap: anywhere; white-space: pre-wrap; }
+/* A thought is set off from the flow whole — the name of the update and the
+   words under it, inside one rule down the left. */
+.row.thought .row-body {
+  padding-left: 11px;
+  border-left: 2px solid var(--line2);
+}
+.row.thought .said {
+  color: var(--dim);
+  font-size: var(--text-body);
+  font-style: italic;
+}
+
+/* The boxes that hold evidence in the flow. */
+.evidence {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-evidence);
+  background: var(--panel2);
+  overflow: hidden;
+}
+.evidence-head { display: flex; align-items: center; gap: 9px; padding: 9px 12px; min-width: 0; }
+.evidence-title { flex: 1; min-width: 0; font-size: var(--text-body); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
+.evidence-kind {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-chip);
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+}
+.evidence-state { flex: none; font-family: var(--font-mono); font-size: var(--text-label); font-weight: var(--font-weight-answer); }
+.evidence-state.done { color: var(--ok); }
+.evidence-state.working { color: var(--in); }
+.evidence-state.bad { color: var(--err); }
+.evidence-state.waiting { color: var(--dim2); }
+.evidence-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  font-size: var(--text-body);
+}
+.evidence-row .grow { overflow-wrap: anywhere; }
+.evidence-row .priority { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.evidence-note { padding: 0 12px 9px; color: var(--dim2); font-size: var(--text-meta); }
+.evidence-head + .evidence-note { padding-top: 0; }
+
+/* A disclosure over evidence: the drawing's own row of a chevron and a count. */
+.disclose > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  cursor: pointer;
+  list-style: none;
+}
+.disclose > summary::-webkit-details-marker { display: none; }
+.disclose > summary:hover { color: var(--dim); }
+.disclose .disclosure-icon { display: inline-flex; transition: transform var(--motion-reveal) var(--ease-standard); }
+.disclose[open] > summary .disclosure-icon { transform: rotate(90deg); }
+.disclose-body {
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--sunk);
+  max-height: 280px;
+  overflow: auto;
+}
+/* A disclosure that is not inside an evidence box — a raw frame under an entry,
+   the roots on a listed session — has no band to sit in. */
+.disclose.bare > summary { border-top: none; padding: 0; width: fit-content; }
+.disclose.bare > .disclose-body { border-top: none; padding: 6px 0 0; background: transparent; }
+
+.raw {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The frames under a row that *is* its frames: traffic this window cannot name,
+   and a claim about the bytes. */
+.raws { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.raw-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 4px 0; }
+.raw-row .raw {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--sunk);
+}
+/* The way from a row to its frames for a reader who is not pointing at
+   anything. Off screen until it has focus — the skip link's pattern, and the
+   opposite of the hidden-until-hover one this window forbids. */
+.reach {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.reach:focus-visible {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 4px 0 0;
+  overflow: visible;
+  clip-path: none;
+}
+.quoted, .tool-output {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--sunk);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.diff { display: flex; flex-direction: column; min-width: 0; }
+.diff-version { display: block; text-decoration: none; }
+.diff-version.removed .quoted { color: var(--err); }
+.diff-version.added .quoted { color: var(--ok); }
+.media img { max-width: 100%; height: auto; border-radius: var(--radius-chip); }
+.media figcaption { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.resource { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-row); }
+.locations { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.locations > li { padding: 4px 12px; border-top: 1px solid var(--line); color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
+
+/* A request the turn stopped on: the drawing gives it a ring while it waits. */
+.blocking { border-radius: var(--radius-panel); border-color: var(--in); box-shadow: 0 0 0 3px color-mix(in oklab, var(--in) 10%, transparent); }
+.blocking.elicit { border-color: var(--vio); box-shadow: 0 0 0 3px color-mix(in oklab, var(--vio) 12%, transparent); }
+.blocking.answered { border-color: var(--line); box-shadow: none; }
+.blocking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.blocking-head > .eyebrow { color: var(--in); font-weight: var(--font-weight-mark); }
+.blocking.elicit .blocking-head > .eyebrow { color: var(--vio); }
+.blocking-wait { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.blocking-body { display: flex; flex-direction: column; gap: 12px; padding: 13px; min-width: 0; }
+.blocking-title { font-size: var(--text-read); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
+.blocking-meta { color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
+.answers { display: flex; flex-wrap: wrap; gap: 7px; }
+.answers .btn { height: 30px; padding: 0 13px; border-radius: var(--radius-tile); font-size: var(--text-row); }
+.answers .option-id { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); font-weight: var(--font-weight-normal); }
+/* On the one filled answer the id is drawn in the ink the fill was given: the
+   metadata grey is a colour for a ground, and this one is the accent. */
+.answers .btn-filled .option-id { color: var(--acc-ink); opacity: 0.75; }
+.outcome { display: flex; align-items: center; gap: 8px; color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); }
+
+/* The elicitation's form, as the drawing lays a field out: the name in the
+   gutter, the control in the middle, the type at the end. */
+.fields { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+/* A field: the name the schema gave it in the gutter, and everything the agent
+   said about it — the control, the description it asked for, the constraint it
+   states and does not enforce — in the column beside it. */
+.field {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 9px;
+  min-width: 0;
+}
+.field > * { grid-column: 2; min-width: 0; }
+.field > .field-label { grid-column: 1; grid-row: 1 / span 4; display: flex; flex-direction: column; gap: 2px; }
+.field-name { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
+.field :is(.input, .select) { height: 30px; font-size: var(--text-row); }
+.field .textarea { font-size: var(--text-row); }
+.field-note { color: var(--dim2); font-size: var(--text-label); }
+.multi { display: flex; flex-wrap: wrap; gap: 7px; }
+.multi label { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-row); }
+.form-tabs { display: flex; gap: 2px; }
+/* The form, the raw answer and the URL an elicitation can be: three surfaces of
+   one card, each a column of its own rows. */
+.elicitation-form, .elicitation-url, .raw-answer, .unrenderable {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.form-title { font-size: var(--text-body); font-weight: var(--font-weight-answer); }
+.choice { min-width: 0; }
+.scope { overflow-wrap: anywhere; }
+.host { font-family: var(--font-mono); }
+.url-target { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-meta); }
+
+/* What the turn came to, and what is still arriving. */
+.ended {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel2);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.stop-reason { color: var(--ok); font-weight: var(--font-weight-answer); }
+.stop-reason.warn { color: var(--in); }
+.stop-reason.bad { color: var(--err); }
+.ended-meta { margin-left: auto; color: var(--dim2); font-size: var(--text-label); }
+/* A conformance annotation: what the specification requires, and what was
+   observed instead — two sentences, and the second is the finding. */
+.requires { margin: 0; }
+.observed { margin: 4px 0 0; color: var(--dim); }
+
+.boundary {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 10px 12px 6px;
+  color: var(--dim2);
+  font-size: var(--text-label);
+}
+.boundary > .eyebrow { flex: none; }
+.boundary-detail { font-family: var(--font-mono); }
+.streaming {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 0 4px;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.streaming .dot { width: 6px; height: 6px; color: var(--acc); animation: blink 1s infinite; }
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 22px 8px;
+  color: var(--in);
+  font-size: var(--text-meta);
+}
+.waiting:empty { display: none; }
+
+/* An empty screen: centred in the room it has, with the one control that
+   resolves it. */
+.empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--dim);
+}
+.empty h3 { margin: 0; font-size: var(--text-body); font-weight: var(--font-weight-answer); color: var(--txt); }
+.empty p { margin: 0; max-width: 46ch; font-size: var(--text-row); }
+
+/* The composer. */
+.composer { flex: none; padding: 12px 22px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer-inner { position: relative; max-width: 760px; margin: 0 auto; }
+.turn-state { display: flex; align-items: baseline; gap: 8px; padding-bottom: 8px; min-width: 0; }
+.turn-state .detail { color: var(--dim2); font-size: var(--text-label); }
+.prompt-box {
+  padding: 12px 13px 10px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-prompt);
+  background: var(--panel2);
+}
+.prompt-box:focus-within { border-color: var(--acc); }
+.prompt-box textarea {
+  width: 100%;
+  min-height: 66px;
+  max-height: 220px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--txt);
+  font-family: inherit;
+  font-size: var(--text-read);
+  line-height: var(--text-read--line-height);
+  resize: none;
+  field-sizing: content;
+}
+.prompt-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.prompt-hint { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.prompt-foot .send { margin-left: auto; height: 32px; padding: 0 16px; border-radius: var(--radius-card); font-size: var(--text-body); }
+.mode-cycle {
+  height: 26px;
+  flex: none;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+.mode-cycle:hover { color: var(--txt); border-color: var(--line2); }
+.mode-cycle[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+
+/* The commands the agent published, over the box they are typed into. */
+.slash {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  overflow: hidden;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+}
+.slash-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+.slash-count { margin-left: auto; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.slash-list { max-height: 210px; overflow: auto; }
+.slash-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.slash-row:hover { background: var(--panel2); }
+.slash-row[aria-selected="true"] { background: var(--panel2); border-left-color: var(--acc); }
+.slash-name { width: 130px; flex: none; color: var(--txt); font-family: var(--font-mono); font-size: var(--text-row); }
+.slash-desc { flex: 1; min-width: 0; color: var(--dim); font-size: var(--text-row); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------------------
+   The wire.
+   --------------------------------------------------------------------------- */
+.trace { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.wire-tabs { display: flex; align-items: center; gap: 12px; flex: none; }
+.wire-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 3px;
+  border: none;
+  background: transparent;
+  color: var(--dim2);
+  font-family: inherit;
+  font-size: var(--text-row);
+  font-weight: var(--font-weight-answer);
+  cursor: pointer;
+}
+.wire-tab[aria-selected="true"] { color: var(--txt); box-shadow: inset 0 -2px 0 var(--acc); }
+.wire-tab .count { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); font-weight: var(--font-weight-normal); }
+.wire-tab .count.gone { color: var(--in); }
+.wire-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.wire-filters .input { flex: 1; min-width: 60px; height: 24px; padding: 0 8px; border-radius: var(--radius-control); font-size: var(--text-meta); }
+.wire-filters .chip { height: 24px; padding: 0 9px; border-radius: var(--radius-control); }
+.wire-filters .chip[aria-pressed="true"] { border-color: var(--line2); background: var(--panel2); color: var(--txt); }
+.wire-rows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
+.wire-rows > li { min-width: 0; }
+.wire-rows > li:last-child { margin-top: auto; }
+.frame-line { display: flex; align-items: center; min-width: 0; border-bottom: 1px solid var(--line); }
+.frame-line:hover { background: var(--panel2); }
+.frame-line.switched { border-top: 1px solid var(--line2); }
+.frame-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 12px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.frame-row[aria-current="true"] { background: var(--panel2); border-left-color: var(--acc); }
+.frame-row.revealed { border-left-color: var(--in); }
+.frame-at { width: 66px; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.frame-crossing { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.frame-arrow { width: 12px; flex: none; font-family: var(--font-mono); font-size: var(--text-row); }
+.frame-arrow.out { color: var(--out); }
+.frame-arrow.in { color: var(--in); }
+.frame-method { flex: none; color: var(--txt); font-family: var(--font-mono); font-size: var(--text-meta); }
+.frame-id { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.frame-peek { flex: 1; min-width: 0; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-kind {
+  flex: none;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-mark);
+  font-weight: var(--font-weight-answer);
+  letter-spacing: var(--tracking-mark);
+  text-transform: uppercase;
+}
+.frame-kind.result { color: var(--ok); }
+.frame-kind.error { color: var(--err); }
+.frame-kind.notification { color: var(--vio); }
+.frame-kind.unreadable { color: var(--in); }
+.frame-line .controls { display: flex; align-items: center; gap: 2px; flex: none; padding-right: 8px; }
+
+/* The frame a reader chose, read whole. */
+.frame-pane {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  height: 44%;
+  min-height: 180px;
+  border-top: 1px solid var(--line2);
+  background: var(--sunk);
+}
+.frame-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  flex: none;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.frame-pane-head .frame-method { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-pane-meta { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.frame-json {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 11px 13px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  line-height: 1.65;
+  white-space: pre;
+}
+.json-key { color: var(--key); }
+.json-string { color: var(--str); }
+.json-number { color: var(--num); }
+.json-literal { color: var(--lit); }
+.json-punctuation { color: var(--dim2); }
+
+/* The diagnostic channel. */
+.lines { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
+.lines > li:last-child { margin-top: auto; }
+.line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.line .line-text { flex: 1; min-width: 0; color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; white-space: pre-wrap; }
+.line.agent .line-text { color: var(--txt); }
+.line.bad .line-text { color: var(--err); }
+.narrowed { margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--dim2); font-size: var(--text-label); }
+.saved { margin: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--dim); font-family: var(--font-mono); font-size: var(--text-label); overflow-wrap: anywhere; }
+.saved.bad { color: var(--err); }
+
+/* The way back to the newest row, which appears once a list is not at its
+   tail. */
+.tailing { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.tail-anchor { position: absolute; inset-inline: 0; bottom: 10px; display: flex; justify-content: center; pointer-events: none; z-index: 2; }
+.to-latest {
+  pointer-events: auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-control);
+  background: var(--panel2);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+  cursor: pointer;
+  box-shadow: var(--shadow-pop);
+}
+[data-tailed="true"] + .tail-anchor .to-latest,
+.tailing:not(:has([data-tailed="false"])) .to-latest { opacity: 0; visibility: hidden; }
+
+/* ---------------------------------------------------------------------------
+   What overlaps the window: three dialogs and one sentence.
+   --------------------------------------------------------------------------- */
+.modal { padding-top: 10vh; align-items: flex-start; }
+.dialog-box {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  max-height: 76vh;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-dialog);
+  background: var(--panel);
+  box-shadow: var(--shadow-dialog);
+}
+.dialog-box:focus { outline: none; }
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog-head h2 { margin: 0; font-size: var(--text-read); font-weight: var(--font-weight-answer); }
+.dialog-head .btn { height: 26px; border-radius: var(--radius-button); }
+.dialog-count { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
+.dialog-body { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+.dialog-foot { display: flex; align-items: center; gap: 10px; flex: none; padding: 12px 16px; border-top: 1px solid var(--line); }
+.dialog-foot .hint { flex: 1; }
+.dialog-foot .btn { border-radius: var(--radius-card); }
+.connect-box { width: min(620px, 92vw); }
+.sessions-box { width: min(680px, 94vw); max-height: 74vh; }
+
+/* A field in a dialog: the key it goes out under, what it is for, and the box. */
+.form-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.form-label { display: flex; align-items: baseline; gap: 8px; }
+.form-key { color: var(--txt); font-family: var(--font-mono); font-size: var(--text-meta); }
+.form-note { color: var(--dim2); font-size: var(--text-meta); }
+.form-field .input { height: 32px; padding: 0 10px; font-size: var(--text-row); }
+.form-field .textarea { padding: 8px 10px; font-size: var(--text-row); field-sizing: fixed; }
+.recents { display: flex; flex-direction: column; gap: 6px; }
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-tile);
+  background: var(--panel2);
+  min-width: 0;
+}
+.recent-kind { width: 30px; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-mark); font-weight: var(--font-weight-answer); letter-spacing: var(--tracking-mark); text-transform: uppercase; }
+.recent-label {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--txt);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.recent-when { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+
+/* A listed session. */
+.session-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-tile);
+  min-width: 0;
+}
+.session-row.live { border-color: var(--acc); background: var(--panel2); }
+.session-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.session-title { font-size: var(--text-body); font-weight: var(--font-weight-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); }
+.session-line { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; padding-left: 16px; min-width: 0; }
+.session-id { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-label); overflow-wrap: anywhere; }
+.session-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-left: auto; }
+.session-actions .btn { height: 22px; padding: 0 9px; }
+
+/* The palette. */
+.palette-box { width: min(640px, 92vw); max-height: 60vh; }
+.palette-query {
+  height: 48px;
+  flex: none;
+  padding: 0 16px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--txt);
+  font-family: inherit;
+  font-size: var(--text-ask);
+  outline: none;
+}
+.palette-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
+.palette-group { padding: 8px 16px 4px; }
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 16px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.palette-row:hover { background: var(--panel2); }
+.palette-row[aria-selected="true"] { background: var(--panel2); border-left-color: var(--acc); }
+.palette-label { flex: none; color: var(--txt); font-family: var(--font-mono); font-size: var(--text-row); }
+.palette-desc { flex: 1; min-width: 0; color: var(--dim); font-size: var(--text-row); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-label);
+}
+.palette-count { margin-left: auto; }
+
+/* What the window says about itself, and then nothing. */
+.toast { z-index: 60; }
+.toast .alert { border-color: var(--line2); background: var(--panel); box-shadow: var(--shadow-pop); color: var(--txt); }
+
+/* ---------------------------------------------------------------------------
+   The narrow window. Below 1080 the drawing shows one region at a time and a
+   bar at the foot to choose between them; the shell's own minimum is 960 × 640.
+   --------------------------------------------------------------------------- */
+.mobile-bar { display: none; }
+
+@media (max-width: 1080px) {
+  .rail { width: 100%; flex: 1; border-right: none; }
+  .body.on-rail .split { display: none; }
+  .body:not(.on-rail) .rail { display: none; }
+  .body.on-turn .wire { display: none; }
+  .body.on-wire .turns { display: none; }
+  .turns { border-right: none; }
+  .mobile-bar {
+    display: flex;
+    gap: 2px;
+    flex: none;
+    padding: 6px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .mobile-bar .seg-item { flex: 1; }
+  .bar { gap: 8px; }
+  .bar-facts, .conn-meta { display: none; }
+  .turn-stream, .composer { padding-inline: 12px; }
+}

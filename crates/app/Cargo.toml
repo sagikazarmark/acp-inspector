@@ -1,0 +1,68 @@
+[package]
+name = "acp-inspector"
+version = "0.0.1"
+description = "The ACP Inspector: strictly presentational screens over acp-inspector-core, one binary with a feature per renderer"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# One crate for every renderer, and a feature to pick one — the layout Dioxus's
+# own default template uses and the one its tooling expects (`dx serve
+# --desktop` is `cargo build --no-default-features --features desktop`). The
+# screens are the same program whichever window they are drawn in; what differs
+# is the shell around them, and that is small enough to gate rather than to
+# split into a crate of its own
+# (docs/adr/0011-one-ui-crate-a-feature-per-renderer.md).
+#
+# `desktop` is the default because it is the one that ships today. `web` is
+# declared so the seam exists and is checked — `cargo check --no-default-features
+# --features web` must keep compiling on a native target — but until core builds
+# for `wasm32` it is a promise about the app crate and not yet a runnable
+# surface (docs/architecture.md §1).
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop"]
+web = ["dioxus/web"]
+
+# Five dependencies, and the shape of the crate is the list: the state it
+# renders, the renderer, a clock to print timestamps with, a clock to wait on,
+# and the one data format a reader of this window writes in. Nothing that speaks
+# a protocol, and no async runtime of its own — `dioxus-desktop` runs its event
+# loop inside a tokio runtime, and that is the one core's pumps spawn onto
+# (docs/architecture.md §5).
+[dependencies]
+acp-inspector-core.workspace = true
+
+dioxus.workspace = true
+dioxus-free-icons.workspace = true
+jiff.workspace = true
+# The elicitation panel, and only it (§7.8). An elicitation's answer *is* a JSON
+# object by the protocol's definition, core's answer path is written in these
+# types, and the raw tab is a text box a reader edits one in — so this window
+# names the shape it is already handling instead of asking core for a JSON
+# builder it would only be calling from here. Still nothing that speaks a
+# protocol: this is a format, and the frames stay strings all the way through
+# (`trace.rs`).
+serde_json.workspace = true
+# `time` and nothing else, on the runtime that is already under this window: the
+# one thing a message which takes itself away needs is a sleep, and the
+# alternative is asking the WebView to hold the clock for a piece of this
+# window's state (`toast.rs`).
+tokio = { workspace = true, features = ["time"] }
+
+# Renders a component to HTML with no window under it, so a test can assert on
+# what a screen shows rather than on the value a helper returned.
+[dev-dependencies]
+dioxus-ssr.workspace = true
+# Two tests click and submit into a rendered screen with hand-built events
+# (`spawn.rs`, `permission.rs`), which needs the serialized event shapes this
+# feature turns on. The desktop renderer turns it on itself, for its IPC, and
+# the web one does not — so the test build says what it needs rather than
+# borrow it from whichever renderer happens to be under it. Already in the
+# graph under either, so this buys a feature and not a dependency.
+dioxus-html = { workspace = true, features = ["serialize"] }
+# For `examples/bundle-icon.rs` alone: the mark, written out at the sizes the
+# macOS bundle's icon holds. Packaging, and no part of the program — a
+# dev-dependency so that it never is.
+png.workspace = true

@@ -1,0 +1,14 @@
+{
+  "name": "acp-inspector",
+  "private": true,
+  "description": "Tailwind and daisyUI development toolchain for generating and verifying the ACP Inspector's committed production stylesheet. Node is not required to build or run the tool from a valid checkout.",
+  "scripts": {
+    "css": "tailwindcss -i crates/app/style/input.css -o crates/app/style/sheet.css",
+    "css:check": "tailwindcss -i crates/app/style/input.css -o node_modules/.cache/sheet.css && diff -u crates/app/style/sheet.css node_modules/.cache/sheet.css"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "daisyui": "^5.7.14",
+    "tailwindcss": "^4.3.3"
+  }
+}

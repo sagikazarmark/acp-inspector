@@ -1,0 +1,27 @@
+# The Tailwind CLI and what it caches. Its own file rather than a line in the
+# repository root's, because the toolchain arrives with this project and leaves
+# with it (docs/architecture.md §3).
+#
+# The stylesheet it generates — `crates/app/style/sheet.css` — is deliberately not
+# here and must never be: it is committed to the tree and compiled into the
+# binary, which is what keeps `cargo run` free of Node
+# (docs/adr/0003-the-stylesheet-is-generated-and-committed.md).
+node_modules/
+
+# What `just bundle-macos` writes: the application bundle and its disk image
+# (docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). An artifact, never
+# a source.
+dist/
+
+# Cargo's output, and the rust-sdk checkout Testy is built from along with the
+# binary (`just testy`, scripts/build-testy.sh). The repository root ignores
+# both today; they are here as well so the ignore travels with the project when
+# it splits out, for the same reason `node_modules/` is.
+target/
+.testy/
+
+# devenv's own state: the evaluation cache and the profile links. Ignored at
+# the host repository's root before the split, and here now for the same
+# reason `target/` is — the ignore travels with the project.
+.devenv/
+.devenv.flake.nix

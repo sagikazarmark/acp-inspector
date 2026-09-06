@@ -1,0 +1,241 @@
+/* ===========================================================================
+   The palette and the scales, as the design draws them.
+
+   **This file is the design's own vocabulary and nothing is carried over.**
+   The names are the drawing's — `bg`, `panel`, `panel2`, `sunk`, `line`,
+   `line2`, `txt`, `dim`, `dim2`, `acc`, `out`, `in`, `ok`, `err`, `vio` — and
+   so are the values. Where a value here differs from the drawing it says so on
+   the line ([ADR 0009](../../../docs/adr/0009-the-window-is-the-drawing.md)).
+
+   Nothing here paints anything: every declaration is a name for a value, and
+   every rule that uses one is in `input.css` or in a component.
+
+   `input.css` imports this after the two daisyUI themes, which are fed the same
+   values under daisyUI's own role names so that its components come out in this
+   palette rather than in one of its own.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   The scales a utility or a rule can reach.
+
+   `static`, so every token is emitted whether or not a utility mentions it:
+   the rules in `input.css` name these in `var()`, which is not a class and is
+   not something Tailwind's scanner counts.
+   --------------------------------------------------------------------------- */
+
+@theme static {
+  /* -- Type ---------------------------------------------------------------
+     Seven sizes, and they are the drawing's: 9 and 10 for the smallest marks a
+     dense tool has (a kind, an ordinal, a count), 11 for metadata, 12 for a
+     row and a control, 13 for the window's body and a card's title, 14 for
+     what the agent and the reader said to each other, 15 for the one field
+     that is a question (the palette's). */
+  --text-mark: 0.5625rem;
+  --text-mark--line-height: 1.4;
+  --text-label: 0.625rem;
+  --text-label--line-height: 1.45;
+  --text-meta: 0.6875rem;
+  --text-meta--line-height: 1.45;
+  --text-row: 0.75rem;
+  --text-row--line-height: 1.45;
+  --text-body: 0.8125rem;
+  --text-body--line-height: 1.5;
+  --text-read: 0.875rem;
+  --text-read--line-height: 1.55;
+  --text-ask: 0.9375rem;
+  --text-ask--line-height: 1.4;
+
+  --font-weight-normal: 400;
+  --font-weight-label: 500;
+  --font-weight-answer: 600;
+  --font-weight-mark: 700;
+
+  /* The one tracked step, for the one register set in capitals: a section's
+     name, an entry's kind, a frame's shape. */
+  --tracking-normal: 0;
+  --tracking-label: 0.09em;
+  --tracking-mark: 0.04em;
+  --tracking-title: -0.01em;
+
+  /* -- Radius --------------------------------------------------------------
+     **The drawing's own ladder, and it is a ladder rather than a scale**: the
+     corner grows with the thing it is on, a pixel at a time, from the 20px chip
+     to the dialog. An earlier pass rounded it to five steps and every control
+     between 24 and 32 pixels came out a pixel or two too round or too square,
+     which is the sort of difference nobody can name and everybody can see.
+     Each step says what it is on rather than how big it is, because that is
+     what a rule has to decide.
+
+     None of these is called `--radius-field`, `--radius-selector` or
+     `--radius-box`: those three are daisyUI's own names for the corners it
+     gives its components, set per theme in `input.css`, and a token of the same
+     name here would be the same declaration meaning two things. */
+  --radius-chip: 0.3125rem;
+  --radius-control: 0.375rem;
+  --radius-button: 0.4375rem;
+  --radius-tile: 0.5rem;
+  --radius-card: 0.5625rem;
+  --radius-evidence: 0.625rem;
+  --radius-panel: 0.6875rem;
+  --radius-prompt: 0.8125rem;
+  --radius-dialog: 0.875rem;
+  --radius-pill: 9999px;
+
+  /* -- Elevation -----------------------------------------------------------
+     Three, and all three are the drawing's own: the shade under a segment that
+     is on, the lift under something that overlaps content, and the box a
+     dialog is. */
+  --shadow-segment: 0 1px 2px color-mix(in oklab, var(--ink-shadow) 30%, transparent);
+  --shadow-pop: 0 12px 32px color-mix(in oklab, var(--ink-shadow) 35%, transparent);
+  --shadow-dialog: 0 24px 64px color-mix(in oklab, var(--ink-shadow) 50%, transparent);
+
+  /* -- Motion --------------------------------------------------------------
+     **The drawing animates two things and so does this window** (ADR 0009,
+     reversing ADR 0004's rule against keyframes): a row fades up as it arrives,
+     and the dot beside *streaming* blinks while the stream is open. Everything
+     else that moves is interactive state.
+
+     A reader who asked their operating system for less motion is given none of
+     it — `input.css` says so once, for every animation and transition here. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-quick: 90ms;
+  --motion-reveal: 140ms;
+  --motion-arrive: 220ms;
+
+  /* -- The type stack ------------------------------------------------------
+     IBM Plex is the family the design was drawn in, and it is *asked for* and
+     never fetched: a desktop tool that reached across the network to paint its
+     own chrome would look different on a machine with no route out. What
+     follows it is the platform's own. */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* -- Colour --------------------------------------------------------------
+     `--color-*: initial` first, and it is the load-bearing line: it clears
+     Tailwind's palette so `bg-red-500` does not exist, and what follows is the
+     only palette this window has. Every one of these is an indirection to a
+     value declared per scheme below. */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-sunk: var(--sunk);
+  --color-line: var(--line);
+  --color-line2: var(--line2);
+  --color-txt: var(--txt);
+  --color-dim: var(--dim);
+  --color-dim2: var(--dim2);
+  --color-acc: var(--acc);
+  --color-acc-ink: var(--acc-ink);
+  --color-out: var(--out);
+  --color-in: var(--in);
+  --color-ok: var(--ok);
+  --color-err: var(--err);
+  --color-vio: var(--vio);
+  --color-key: var(--key);
+  --color-str: var(--str);
+  --color-num: var(--num);
+  --color-lit: var(--lit);
+}
+
+/* ---------------------------------------------------------------------------
+   The palette, as drawn.
+
+   Light is `:root`, so an explicit Light choice needs no rule of its own: the
+   appearance seam sets `data-theme` to `inspector-light` or `inspector-dark`,
+   and System leaves it absent so the media query below answers.
+
+   **Dark is written twice**, because CSS has no way to say "these
+   declarations, under either of two conditions" — once for System on a dark
+   desktop, once for an explicit Dark. A change to one is a change owed to the
+   other, and `style.rs` compares the two blocks rather than leaving that to
+   review.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --panel2: #f7f9fb;
+  --sunk: #eef1f5;
+  --line: #e2e6ec;
+  --line2: #cfd6df;
+  --txt: #101419;
+  --dim: #5c6673;
+  /* The drawing's own, and **below the 4.5:1 text floor on every ground it is
+     drawn on** — 3.28:1 on `panel`. It was raised in an earlier pass and the
+     decision was reversed deliberately: this is the register the drawing puts
+     its smallest metadata in, and every place it is used says the same thing in
+     a second way (a word, a mark, a position). `style.rs` measures it, names it
+     as the one accepted exception in each scheme, and fails if any *other*
+     value drifts below the floor (ADR 0009). */
+  --dim2: #818b98;
+  --acc: #3d6b0a;
+  --acc-ink: #ffffff;
+  --out: #2f6bd8;
+  --in: #a35c00;
+  --ok: #1f8a5b;
+  --err: #c62b3c;
+  --vio: #7c46c9;
+  --key: #1f5fbf;
+  --str: #2f7a2a;
+  --num: #a35c00;
+  --lit: #7c46c9;
+  /* What a shadow is mixed from, so one declaration is right in both schemes.
+     The drawing's shadows are black at low alpha; on a light scheme they read
+     as almost nothing, which is what a light scheme wants of them. */
+  --ink-shadow: #0a0c0f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #0a0c0f;
+    --panel: #0f1216;
+    --panel2: #141920;
+    --sunk: #080a0d;
+    --line: #1e242c;
+    --line2: #2b333e;
+    --txt: #e8ecf3;
+    --dim: #98a2b1;
+    --dim2: #69737f;
+    --acc: #b8f04a;
+    --acc-ink: #0a0c0f;
+    --out: #7aa2ff;
+    --in: #f0a860;
+    --ok: #5ecf9a;
+    --err: #ff6b7a;
+    --vio: #c792ea;
+    --key: #8ab4ff;
+    --str: #b8e986;
+    --num: #f0a860;
+    --lit: #c792ea;
+    --ink-shadow: #000000;
+  }
+}
+
+[data-theme="inspector-dark"] {
+  --bg: #0a0c0f;
+  --panel: #0f1216;
+  --panel2: #141920;
+  --sunk: #080a0d;
+  --line: #1e242c;
+  --line2: #2b333e;
+  --txt: #e8ecf3;
+  --dim: #98a2b1;
+  /* The drawing's own, and below the floor for the reason light's is. */
+  --dim2: #69737f;
+  --acc: #b8f04a;
+  --acc-ink: #0a0c0f;
+  --out: #7aa2ff;
+  --in: #f0a860;
+  --ok: #5ecf9a;
+  --err: #ff6b7a;
+  --vio: #c792ea;
+  --key: #8ab4ff;
+  --str: #b8e986;
+  --num: #f0a860;
+  --lit: #c792ea;
+  --ink-shadow: #000000;
+}

@@ -1,0 +1,53 @@
+# What the application bundle says about itself, and nothing about the build.
+#
+# `dx bundle` is the one command that reads this file, and `just bundle-macos`
+# is the one recipe that runs it (../docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md).
+# `cargo build`, `cargo run` and `cargo test` never open it: nothing here is an
+# asset, nothing is resolved at run time, and a checkout with this file deleted
+# builds and runs exactly as before. The stylesheet is compiled in and the
+# window icon is drawn in code, so the binary is already the whole program;
+# this file is the plist and the Finder icon wrapped around it.
+
+[application]
+# The Finder name and `CFBundleName`. The crate names stay provisional
+# (../README.md says so in its opening); this is the name the *bundle* carries,
+# and it is the one the window already puts in its title bar.
+name = "ACP Inspector"
+
+[bundle]
+# `CFBundleIdentifier`. Permanent: macOS keys preferences, TCC grants,
+# Keychain items and notarization history to it, so a change is a migration
+# and not a rename. `acp-inspector` is already the slug of the state directory
+# (crates/core/src/kept.rs) and the `clientInfo` name sent on `initialize`
+# (crates/core/src/client.rs).
+identifier = "dev.sagikazarmark.acp-inspector"
+publisher = "Márk Sági-Kazár"
+copyright = "Copyright 2026 Márk Sági-Kazár"
+# `LSApplicationCategoryType` — public.app-category.developer-tools.
+category = "DeveloperTool"
+short_description = "Drive one ACP agent and see what crossed the wire"
+long_description = """
+A desktop tool that spawns one Agent Client Protocol agent, drives it through \
+sessions and turns, and shows every JSON-RPC frame as it crossed the pipe — \
+with the agent's stderr beside it and the specification's MUSTs annotated \
+where the captured traffic decides them."""
+# The bundle's icon is a packaging asset under `bundle/`, committed, and written
+# by `just icon` from the same drawing `src/mark.rs` puts in the window's own
+# icon at 64px — rendered at each of the ten sizes an `.icns` holds, on macOS's
+# icon grid, and folded by `iconutil`. It is deliberately not left out: without
+# an icon, `dx` stamps the bundle with the renderer's own logo, which is the
+# outcome `shell::icon()` exists to refuse. `just bundle-macos` checks for the
+# file before it runs.
+icon = ["bundle/icon.icns"]
+
+[bundle.macos]
+# WKWebView and Security come from the system SDK; 10.15 is the floor the
+# renderer's own dependencies (wry/tao) support.
+minimum_system_version = "10.15"
+# Required for notarization. Signing itself is not configured here — an
+# identity is a person's, not the project's — and is applied by `codesign` in
+# the `just bundle-macos` recipe when one is passed (ADR 0010).
+hardened_runtime = true
+# No entitlements, and never App Sandbox: this tool's whole job is spawning an
+# executable the reader named, in a directory the reader chose. The WebView
+# runs in its own process, so no JIT or memory entitlement is owed either.
