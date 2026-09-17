@@ -250,7 +250,7 @@ pub(crate) fn ours(id: &Value) -> Option<i64> {
 /// that — `method` and `id` — and nothing else is inspected. What the message
 /// *means* is the typed layer's question, one version at a time (§11 seam 1).
 pub(crate) fn classify(frame: &Frame) -> Incoming {
-    let message: Value = match serde_json::from_str(frame.as_str()) {
+    let message = match crate::decode::frame_value(frame.as_str()) {
         Ok(message) => message,
         Err(error) => return Incoming::Unreadable(error.to_string()),
     };
@@ -290,7 +290,7 @@ fn outcome(message: &Value) -> Result<Value, v1::Error> {
         return Ok(message.get("result").cloned().unwrap_or(Value::Null));
     };
     Err(
-        serde_json::from_value::<v1::Error>(error.clone()).unwrap_or_else(|problem| {
+        crate::decode::from_value::<v1::Error>(error.clone()).unwrap_or_else(|problem| {
             v1::Error::internal_error()
                 .data(json!({ "unreadableError": error, "problem": problem.to_string() }))
         }),

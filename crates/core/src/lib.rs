@@ -107,6 +107,7 @@ mod client;
 mod command;
 mod conformance;
 mod connection;
+mod decode;
 mod driven;
 mod elicitation;
 mod export;

@@ -1136,6 +1136,26 @@ stabilize; and v2 traffic arriving early degrades to visible-raw instead of brea
 This rule is what lets v2 arrive without redesign, and it is why the typed layer *decorates* the
 trace rather than replacing it.
 
+**Numbers enter protocol types through one canonicalizing seam**
+([#3](https://github.com/sagikazarmark/acp-inspector/issues/3), `crates/core/src/decode.rs`).
+After Frame text becomes a JSON value, every typed decode of params, results and error bodies
+passes through it: machine integers stay exact, and every other number is re-spelled as the `f64`
+it rounds to, recursively through objects and arrays. Under stock `serde_json` this is the identity
+— numbers already have that representation. It protects against a dependency silently enabling
+`serde_json/arbitrary_precision` for the build: the private maps that feature uses for spellings
+such as `0.10` and `1e2` cannot be read by the protocol crate's buffered types (`tag`, `untagged`,
+`flatten`). Some fields then refuse to decode; default-on-error fields can instead **silently drop**
+cost or annotation priority while the enclosing update still decodes. The canonical copy is for
+typed decoding only: the Trace, Console and re-serialized evidence views keep their existing Frame
+source. A renderer asking for a literal value must receive it from the Frame, never through this
+seam; no such accessor is needed today. The numeric tripwire starts with literal Frame text and
+asserts presence and value in the public stores; a source-level tripwire keeps protocol decoding
+inside this module.
+The seam also owns the envelope's text-to-value read: under arbitrary precision it preserves
+literal `-0` as floating-point `-0.0` in that copy before the parser can erase the sign. Float
+rounding uses serde_json's numeric reader, whose result can differ from Rust's string parser;
+already-decoded stock numbers are retained without reparsing. Both edge cases are in the corpus.
+
 **Where a frame is drawn raw is the wire log, amended 2026-08-17**
 ([ADR 0009](adr/0009-the-window-is-the-drawing.md)). The rule above is about the *record* and is
 unchanged: every frame is captured, counted, exportable and readable as it crossed. What changed is

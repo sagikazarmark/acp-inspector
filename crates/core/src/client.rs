@@ -1360,7 +1360,7 @@ impl Client {
                     // what crossed rather than about what this client could read
                     // (§8).
                     self.heard(&params, &frame);
-                    match serde_json::from_value::<v1::SessionNotification>(params) {
+                    match crate::decode::from_value::<v1::SessionNotification>(params) {
                         Ok(notification) => {
                             // The settings before the timeline, for the reason
                             // the pending list goes before it: a screen woken
@@ -1387,7 +1387,7 @@ impl Client {
                     // an id nobody is holding is *ignored*, which the
                     // specification asks for and this tool spells as unsolicited
                     // traffic — shown, and acted on by nothing.
-                    match serde_json::from_value::<v1::CompleteElicitationNotification>(params) {
+                    match crate::decode::from_value::<v1::CompleteElicitationNotification>(params) {
                         Ok(notification) => {
                             let completed = self
                                 .stores
@@ -1432,7 +1432,7 @@ impl Client {
             Incoming::Request { id, method, params }
                 if method == v1::CLIENT_METHOD_NAMES.session_request_permission =>
             {
-                match serde_json::from_value::<v1::RequestPermissionRequest>(params) {
+                match crate::decode::from_value::<v1::RequestPermissionRequest>(params) {
                     Ok(request) => {
                         let request = PermissionRequest::new(
                             RequestId::new(id),
@@ -1477,7 +1477,7 @@ impl Client {
             Incoming::Request { id, method, params }
                 if method == v1::CLIENT_METHOD_NAMES.elicitation_create =>
             {
-                match serde_json::from_value::<v1::CreateElicitationRequest>(params) {
+                match crate::decode::from_value::<v1::CreateElicitationRequest>(params) {
                     Ok(request) => {
                         if advertised(&request.mode) {
                             let request = ElicitationRequest::new(
@@ -2377,5 +2377,5 @@ pub(crate) fn encode(params: &impl Serialize) -> Value {
 /// this layer failing to recognize something — so it is named as such and the
 /// frame stays in the trace to be read by a human (§8).
 fn decode<T: serde::de::DeserializeOwned>(result: Value) -> Result<T, CallError> {
-    serde_json::from_value(result).map_err(|problem| CallError::Undecodable(problem.to_string()))
+    crate::decode::from_value(result).map_err(|problem| CallError::Undecodable(problem.to_string()))
 }
