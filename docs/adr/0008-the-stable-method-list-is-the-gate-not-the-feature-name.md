@@ -77,3 +77,22 @@ else's packaging for a decision the canonical schema has already made, with ever
 - **This ADR is the answer the next `unstable_*` request is measured against**, and the test it has
   to pass is narrow: is the method in `schema/v1/meta.json`? If it is not, §8 already decided the
   question and this document does not reopen it.
+
+## Postscript — 2026-09-17: schema 1.7 catches up
+
+[`agent-client-protocol-schema` 1.7.0, released 2026-08-20](https://github.com/agentclientprotocol/agent-client-protocol/blob/v1.7.0/CHANGELOG.md),
+stabilized elicitation: `elicitation/create` and `elicitation/complete` compile unconditionally,
+and `unstable_elicitation` no longer exists. The workspace now depends on `1.7` with default
+features only; both manifest comments state the stable-schema rule without the packaging exception.
+
+**The consequence has expired; the decision needs no revision.** Enabling the one feature was how
+the build followed the canonical stable method list while the crate lagged it. The default build
+and the list now coincide again, so that feature is gone and no unstable feature replaces it.
+The original decision and consequences above record the circumstances in which the exception was
+needed, rather than instructions to keep enabling a feature the crate removed.
+
+The [§7.4 coverage audit](../architecture.md#74-the-coverage-yardstick) records the rest of 1.7's
+surface: the eleven stable update variants are unchanged, compaction stays raw-first, and the newly
+stable terminal-authentication claim is displayed as declined under the existing own-terminal rule.
+That stabilization alone accounts for the capability tripwire and wire-expectation changes; the
+elicitation tests pass unchanged against Testy built from rust-sdk `v2.1.0`, using schema 1.7.0.

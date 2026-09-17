@@ -11,10 +11,9 @@ publish.workspace = true
 # The typed layer's whole protocol dependency (docs/architecture.md §3): pure
 # types under a versioned namespace, so decoding is explicitly *as v1* and the
 # v2 seam is a second decoder rather than an excavation (§11 seam 1). The
-# features are the workspace's, and the rule behind them is stated there: the
-# stable method list decides what this layer decodes, so `unstable_elicitation`
-# is on (§7.8, ADR 0008) and every other `unstable_*` is off, its traffic
-# displayed rather than decoded (§8).
+# default features are the workspace's, and the rule is stated there: the
+# canonical stable method list gates what this layer decodes (ADR 0008), and
+# traffic outside the stable schema is displayed rather than decoded (§8).
 agent-client-protocol-schema.workspace = true
 # The spawn form's recent commands have to live somewhere the next launch of the
 # app will look, and where that is is a platform's answer rather than this

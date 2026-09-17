@@ -1319,7 +1319,7 @@ fn advertised(
 /// object by the path to it, because `session.configOptions` is two levels a
 /// reader cannot guess from a row.
 ///
-/// The claims come first and the two declines follow them, because the declines
+/// The claims come first and the declines follow them, because the declines
 /// are the stance that survived the narrowing (§7.3) and a reader who stopped at
 /// the first row would have read this client as offering more than it does.
 /// Elicitation is among the claims rather than the declines from the fifth ring
@@ -1386,6 +1386,18 @@ fn claimed(capabilities: &v1::ClientCapabilities) -> Vec<(&'static str, Vec<Clai
                 shape: Shape::Flag,
                 at: "clientCapabilities",
                 claims: vec![Claim::new("terminal/*", "terminal", capabilities.terminal)],
+            }],
+        ),
+        (
+            "Auth",
+            vec![Claimed {
+                shape: Shape::Flag,
+                at: "auth",
+                claims: vec![Claim::new(
+                    "Terminal authentication",
+                    "terminal",
+                    capabilities.auth.terminal,
+                )],
             }],
         ),
     ]
@@ -2717,6 +2729,20 @@ mod tests {
                 "and says it was declined: {row}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_authentication_is_drawn_as_declined() {
+        // Schema 1.7 makes this a stable client claim. The inspector cannot
+        // reproduce the Agent invocation in an interactive terminal (§7.1),
+        // and the reader must see that refusal alongside the other claims.
+        let client = advertisement(&shown(everything(), true), "client");
+        let row = client
+            .split_once("Terminal authentication")
+            .expect("terminal authentication has its own row")
+            .1;
+        let said = row.split_once(STATE).expect("the row says its state").1;
+        assert!(said.starts_with("not advertised"), "{row}");
     }
 
     #[test]

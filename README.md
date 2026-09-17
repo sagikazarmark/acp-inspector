@@ -372,6 +372,8 @@ timeline rather than beside it.
 The checkout tracks rust-sdk `main`, which the spec accepts as a dev-time moving part
 ([§12](docs/architecture.md#12-dummy-agent-and-test-strategy)). `ACP_RUST_SDK_REV` pins a
 revision, `TESTY_BIN` points the tests at a binary built elsewhere.
+Use rust-sdk `v2.1.0` or later so Testy itself depends on schema 1.7. For a reproducible schema-1.7
+check, build with `ACP_RUST_SDK_REV=v2.1.0 just testy`, then run `just test`.
 
 ## License
 

@@ -125,7 +125,7 @@ fn claimed_by_this_client(inspector: &Inspector) -> Vec<serde_json::Value> {
 }
 
 /// The whole of what this client claims, on every connection: boolean config
-/// options, both elicitation modes, and the two services still declined.
+/// options, both elicitation modes, and the services still declined.
 ///
 /// Written out as the JSON an agent reads rather than assembled from the
 /// builders core assembles it with — an expectation restated in core's own
@@ -134,6 +134,9 @@ fn the_claim() -> serde_json::Value {
     serde_json::json!({
         "fs": {"readTextFile": false, "writeTextFile": false},
         "terminal": false,
+        // Schema 1.7 stabilized terminal authentication; its default is an
+        // explicit refusal, matching the inspector's own-terminal rule (§7.1).
+        "auth": {"terminal": false},
         "session": {"configOptions": {"boolean": {}}},
         "elicitation": {"form": {}, "url": {}},
     })
@@ -304,8 +307,15 @@ fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_define
     // the agent case: the claim is ours to make.
     assert_eq!(
         defined::<v1::ClientCapabilities>(),
-        ["_meta", "elicitation", "fs", "session", "terminal"],
+        ["_meta", "auth", "elicitation", "fs", "session", "terminal"],
         "a client capability v1 defines and the display does not name: add the row"
+    );
+    // Schema 1.7's terminal-auth stabilization adds this group; its declined
+    // row is rendered separately from the terminal/* service (§7.4).
+    assert_eq!(
+        defined::<v1::AuthCapabilities>(),
+        ["_meta", "terminal"],
+        "an authentication capability v1 defines and the display does not name: add the row"
     );
     // The two modes, which are the two rows the display draws for the claim
     // (§7.8) — and the tripwire that says so if the protocol grows a third.

@@ -389,9 +389,10 @@ natively disabled and dropping keyboard focus to the document.
 
 > **Eleven stable variants, corrected by the build.** The twelve this document first said came
 > from the surface research's reading of the schema metadata ([§7.4](#74-the-coverage-yardstick)).
-> `agent-client-protocol-schema` 1.6 exposes **eleven** `v1::SessionUpdate` variants outside its
-> `unstable_*` features; the two it hides (`plan_update`, `plan_removed`, behind
-> `unstable_plan_operations`) are traffic this client does not claim to understand, so they are
+> `agent-client-protocol-schema` 1.7 exposes **eleven** `v1::SessionUpdate` variants outside its
+> `unstable_*` features; the four it hides (`plan_update`, `plan_removed`, behind
+> `unstable_plan_operations`, and `compaction_update`, `compaction_summary_chunk`, behind
+> `unstable_session_compaction`) are traffic this client does not claim to understand, so they are
 > deliberately not decoded and land in the raw-first path like any other unknown variant
 > ([§8](#8-unknown-traffic-the-raw-first-rule)). The count is asserted in both places it is
 > claimed: `crates/app/src/update.rs` renders eleven and its test constructs each one, and
@@ -442,6 +443,31 @@ answered method-not-found**, never silently swallowed.
 `docs/research/acp-v1-surface-and-v2-delta.md` (branch `research/acp-v1-surface-and-v2-delta`),
 which reads it from the canonical `schema/v1/meta.json` — coverage is tracked against the
 schema's method list, not against this spec.
+
+**Schema 1.7 audit, 2026-09-17** ([#4](https://github.com/sagikazarmark/acp-inspector/issues/4)).
+The [1.7.0 changelog](https://github.com/agentclientprotocol/agent-client-protocol/blob/v1.7.0/CHANGELOG.md)
+stabilizes elicitation and terminal authentication; making `schemars` optional leaves it in the
+default features this workspace uses. Compared with
+[`v1.6.0/schema/v1/meta.json`](https://github.com/agentclientprotocol/agent-client-protocol/blob/v1.6.0/schema/v1/meta.json),
+[`v1.7.0/schema/v1/meta.json`](https://github.com/agentclientprotocol/agent-client-protocol/blob/v1.7.0/schema/v1/meta.json)
+adds only `elicitation/create` and `elicitation/complete` — already serviced under §7.8, which read
+the canonical stable list ahead of the crate's release. The released list now has the same 25
+methods: thirteen agent methods, eleven client methods and `$/cancel_request`.
+
+- **The eleven decoded `session/update` variants are unchanged.** The new `compaction_update` and
+  `compaction_summary_chunk` variants remain unstable and raw-first under §8, alongside
+  `plan_update` and `plan_removed`; no unstable feature is enabled.
+- **Terminal authentication adds a Client Capability, not a method.** Schema 1.7 serializes
+  `clientCapabilities.auth.terminal: false` by default. The inspector displays that declined claim
+  in its own `auth` group, separately from `terminal/*`, under §7.3's rule that it claims exactly
+  what it will honour. §7.1's own-terminal login rule still applies: the inspector cannot reproduce
+  the Agent invocation in an interactive terminal. The schema can now decode terminal auth entries
+  on `initialize`; the Trace retains their full data and the existing auth-method list displays
+  their names, without launching a terminal.
+- **The capability-coverage tripwire changes only for that new `auth.terminal` claim**, and the
+  wire expectations include its default `false`. The elicitation tests are unchanged. Testy built
+  from rust-sdk [`v2.1.0` (`726c503`)](https://github.com/agentclientprotocol/rust-sdk/tree/726c503),
+  itself using schema 1.7.0, runs both the `callbacks` and `full` scenarios to `end_turn`.
 
 ### 7.5 The second ring: the session lifecycle
 
@@ -961,9 +987,10 @@ this ring is held to: **the inspector claims exactly what it will honour.**
 the canonical `schema/v1/meta.json`, which lists eleven client methods with `elicitation/create` and
 `elicitation/complete` among them — while `session/fork`, which [§7.5](#75-the-second-ring-the-session-lifecycle)
 parks on the raw-first path, is absent from that file and present only in `meta.unstable.json`. The
-`unstable_elicitation` cargo feature is the schema crate's packaging, not the protocol's status, and
-enabling it for this one family is argued in
-[ADR 0008](adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md). [§8](#8-unknown-traffic-the-raw-first-rule)
+former `unstable_elicitation` cargo feature was the schema crate's packaging, not the protocol's
+status. [ADR 0008](adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md) records why
+it was enabled and why schema 1.7's stabilization removes it: the default build now includes both
+methods. [§8](#8-unknown-traffic-the-raw-first-rule)
 is unweakened: what lands in the raw bucket is what the stable schema does not define, which is the
 sentence that rule was always making.
 

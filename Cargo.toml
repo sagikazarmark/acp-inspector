@@ -24,16 +24,13 @@ acp-inspector-core = { path = "crates/core" }
 # crate only" is a workspace fact rather than a per-crate promise; the core
 # re-exports its `v1` module, so the app reads the same types core decodes.
 #
-# One feature, and it is not a change of stance: what this layer decodes is
-# gated on the canonical schema's stable method list, which is where §7.4 has
-# always measured coverage and where §7.5 read `session/fork`'s answer off.
-# `elicitation/create` and `elicitation/complete` are in `schema/v1/meta.json`
-# and `session/fork` is not, so the feature name is this crate's packaging
-# rather than the protocol's status
+# Default features only: what this layer decodes is gated on the canonical
+# schema's stable method list, which is where §7.4 measures coverage and where
+# §7.5 read `session/fork`'s answer off. The crate's defaults include elicitation
+# and coincide with that rule
 # (docs/adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md).
-# Every *other* `unstable_*` feature stays off, and the traffic behind them
-# stays displayed rather than decoded (§8).
-agent-client-protocol-schema = { version = "1.6", features = ["unstable_elicitation"] }
+# Traffic outside the stable schema stays displayed rather than decoded (§8).
+agent-client-protocol-schema = "1.7"
 
 # No renderer here: which one is a decision the app crate makes with a feature
 # of its own (`desktop`, `web`), because the renderer is what a build of the
