@@ -1165,11 +1165,11 @@ trace rather than replacing it.
 
 **Numbers enter protocol types through one canonicalizing seam**
 ([#3](https://github.com/sagikazarmark/acp-inspector/issues/3), `crates/core/src/decode.rs`).
-After Frame text becomes a JSON value, every typed decode of params, results and error bodies
-passes through it: machine integers stay exact, and every other number is re-spelled as the `f64`
-it rounds to, recursively through objects and arrays. Under stock `serde_json` this is the identity
-— numbers already have that representation. It protects against a dependency silently enabling
-`serde_json/arbitrary_precision` for the build: the private maps that feature uses for spellings
+As Frame text becomes a JSON value, the seam canonicalizes numbers for every subsequent typed
+decode of params, results and error bodies: machine integers stay exact, and every other number is re-spelled as the `f64`
+it rounds to under **stock serde_json 1.0.151's numeric policy**, recursively through objects and
+arrays. This preserves the representation the original stock build produced. It protects against
+a dependency enabling `serde_json/arbitrary_precision` for the build: the private maps that feature uses for spellings
 such as `0.10` and `1e2` cannot be read by the protocol crate's buffered types (`tag`, `untagged`,
 `flatten`). Some fields then refuse to decode; default-on-error fields can instead **silently drop**
 cost or annotation priority while the enclosing update still decodes. The canonical copy is for
@@ -1178,10 +1178,22 @@ source. A renderer asking for a literal value must receive it from the Frame, ne
 seam; no such accessor is needed today. The numeric tripwire starts with literal Frame text and
 asserts presence and value in the public stores; a source-level tripwire keeps protocol decoding
 inside this module.
-The seam also owns the envelope's text-to-value read: under arbitrary precision it preserves
-literal `-0` as floating-point `-0.0` in that copy before the parser can erase the sign. Float
-rounding uses serde_json's numeric reader, whose result can differ from Rust's string parser;
-already-decoded stock numbers are retained without reparsing. Both edge cases are in the corpus.
+The release-backed spike found a second leak ([#8](https://github.com/sagikazarmark/acp-inspector/issues/8)):
+`serde_json/float_roundtrip` changes `from_str::<f64>` itself. For example,
+`0.146675314082485333` becomes `0.14667531408248533` instead of stock's
+`0.14667531408248535`. The seam now reads `RawValue` fragments before either feature can discard
+the original number token. Objects and arrays are built explicitly; only strings, booleans and
+null use the ordinary Value reader. Core enables `raw_value`, not `arbitrary_precision`, so this
+fix does not change the number policy of unrelated renderer input readers.
+The private `decode/stock_number.rs` implements the stock u64-significand, truncation and decimal
+scaling policy independently of those Cargo features. This deliberately preserves stock rounding,
+not the nearest representable decimal value. Machine integers are still never rounded. No new
+crate is needed. Fixed expected values were captured from an isolated default-feature reader,
+not computed with the same feature-sensitive parser being tested. `bash scripts/check-number-features.sh`
+checks all four feature selections, including both features together.
+Literal `-0` becomes floating-point `-0.0` in the typed copy. Numbers are interpreted exactly
+once: typed decoding does not re-round their canonical spelling. Nesting remains bounded and
+out-of-range numbers fail before typed decoding, as they did under the stock reader.
 
 **Where a frame is drawn raw is the wire log, amended 2026-08-17**
 ([ADR 0009](adr/0009-the-window-is-the-drawing.md)). The rule above is about the *record* and is

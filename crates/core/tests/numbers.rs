@@ -16,6 +16,39 @@ const SPELLINGS: [(&str, f64); 7] = [
     ("0.10031360309748868086", 0.10031360309748867),
 ];
 
+#[tokio::test]
+async fn stock_rounding_reaches_results_and_error_data_without_touching_frames() {
+    let numbers = r#"[0.146675314082485333,0.10031360309748868086,123456789012345678901234567890.123456789,5e-324,-1e-9999999999999999999999,18446744073709551615]"#;
+    let result = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"_meta":{{"numbers":{numbers}}}}}}}"#
+    );
+    let error = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"error":{{"code":-32000,"message":"refused","data":{{"numbers":{numbers}}}}}}}"#
+    );
+    let inspector = Inspector::new();
+    inspector.connect(
+        &shell(&format!(
+            "read _; printf '%s\\n' '{result}'; read _; printf '%s\\n' '{error}'; cat > /dev/null"
+        ))
+        .factory(),
+    );
+    let initialized = inspector.initialize().await.unwrap();
+    let CallError::Rejected(refused) = inspector.new_session("/tmp", None).await.unwrap_err()
+    else {
+        panic!("a typed refusal");
+    };
+    for value in [
+        &initialized.meta.unwrap()["numbers"],
+        &refused.data.unwrap()["numbers"],
+    ] {
+        assert_eq!(
+            value.to_string(),
+            "[0.14667531408248535,0.10031360309748867,1.2345678901234568e+29,5e-324,-0.0,18446744073709551615]"
+        );
+    }
+    assert_eq!(received(&inspector), [result, error]);
+}
+
 async fn arriving(frame: &str) -> Inspector {
     let inspector = Inspector::new();
     let mut changes = inspector.timeline().changes();

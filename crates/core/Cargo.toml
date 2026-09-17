@@ -26,7 +26,9 @@ serde.workspace = true
 # The JSON-RPC envelope itself, which the schema crate does not own: ids,
 # `params`, `result`, `error`. Frames are text on the wire and stay text in the
 # trace (§8) — this is what the typed layer reads them *as*.
-serde_json.workspace = true
+# Raw fragments let decode.rs own numeric interpretation before either numeric
+# serde_json feature can change it, without changing unrelated Value readers.
+serde_json = { workspace = true, features = ["raw_value"] }
 # `process` and `io-util` are the stdio transport; `sync` is the channels the
 # connection contract and the pending calls are made of; `rt` is the pumps
 # behind them, and `macros` is the `select!` each pump is written with — a

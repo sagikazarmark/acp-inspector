@@ -89,6 +89,7 @@ icon:
 
 check:
     cargo fmt --check
+    bash scripts/check-number-features.sh
     cargo clippy --all-targets -- -D warnings
     # The other renderer, held to the same bar (`check-web`): a warning the
     # desktop build never sees is still a warning.
