@@ -326,6 +326,7 @@ fn BoundFields(
     };
     let bound = use_hook(|| {
         RenderConfiguration::builder()
+            .localizer(std::sync::Arc::new(crate::elicitation_words::FindingWords))
             .controls(daisy::controls_with(daisy::Appearance::None))
             .structure(
                 daisy::structure_with(daisy::Appearance::None).with_shell(InspectorFormShell),
@@ -723,6 +724,267 @@ mod tests {
             4,
             "summary and local findings: {html}"
         );
+        assert!(html.contains("Above the maximum of 120."), "{html}");
+        assert!(html.contains("Above the maximum of 1."), "{html}");
+        assert!(html.contains("Required, nothing filled in."), "{html}");
+        for (binding, rule) in [
+            ("/age", "maximum"),
+            ("/confidence", "maximum"),
+            ("/name", "required"),
+        ] {
+            assert_finding_description(&html, binding, rule);
+        }
+    }
+
+    fn assert_finding_description(html: &str, binding: &str, rule: &str) {
+        let tag = html
+            .split('<')
+            .find(|tag| {
+                tag.starts_with("input ")
+                    && tag
+                        .split('>')
+                        .next()
+                        .unwrap()
+                        .contains(&format!("name=\"{binding}\""))
+            })
+            .unwrap();
+        let tag = tag.split('>').next().unwrap();
+        let described = tag
+            .split("aria-describedby=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(
+            described
+                .split_whitespace()
+                .any(|id| html.split('<').any(|element| {
+                    let attributes = element.split('>').next().unwrap();
+                    attributes.contains(&format!("id=\"{id}\""))
+                        && attributes.contains(&format!("data-finding=\"{rule}\""))
+                })),
+            "{binding} must reference its {rule} finding"
+        );
+    }
+
+    #[test]
+    fn findings_follow_edits_and_advisory_submission_keeps_every_representable_value() {
+        use std::{cell::RefCell, rc::Rc};
+        #[derive(Clone, Props)]
+        struct HostProps {
+            engine: Rc<RefCell<Option<schemaform_dioxus::FormHandle>>>,
+        }
+        impl PartialEq for HostProps {
+            fn eq(&self, other: &Self) -> bool {
+                Rc::ptr_eq(&self.engine, &other.engine)
+            }
+        }
+        fn host(props: HostProps) -> Element {
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","required":["required"],"properties":{
+                    "age":{"type":"integer","minimum":0,"maximum":120},
+                    "confidence":{"type":"number","minimum":0,"maximum":1},
+                    "name":{"type":"string","minLength":3,"maxLength":5,"pattern":"^[a-z]+$"},
+                    "email":{"type":"string","format":"email"},
+                    "tags":{"type":"array","minItems":1,"maxItems":2,"items":{"type":"string","enum":["a","b","c"]}},
+                    "required":{"type":"string"}
+                }}).to_string(), waiting: true,
+                on_ready: move |form| *props.engine.borrow_mut() = Some(form), on_problem: |_| {}, on_accept: |_| {},
+            } }
+        }
+        let engine = Rc::new(RefCell::new(None));
+        let mut dom = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                engine: engine.clone(),
+            },
+        );
+        dom.rebuild_in_place();
+        let form = engine.borrow().as_ref().unwrap().clone();
+        let _runtime = dioxus::core::RuntimeGuard::new(dom.runtime());
+        let node_at = |binding: &str| {
+            let root = form.reader().read().unwrap().root;
+            form.node(root)
+                .unwrap()
+                .unwrap()
+                .read()
+                .unwrap()
+                .unwrap()
+                .children
+                .iter()
+                .find_map(|id| {
+                    let node = form.node(*id).ok()??;
+                    (node.read().ok()??.binding.as_ref()?.as_str() == binding).then_some(node)
+                })
+                .unwrap()
+        };
+        let cases = [
+            (json!({"age":-1}), "Below the minimum of 0."),
+            (json!({"age":121}), "Above the maximum of 120."),
+            (json!({"confidence":-0.1}), "Below the minimum of 0."),
+            (json!({"confidence":1.1}), "Above the maximum of 1."),
+            (
+                json!({"name":"é🙂"}),
+                "Too few characters; at least 3 stated.",
+            ),
+            (
+                json!({"name":"ab"}),
+                "Too few characters; at least 3 stated.",
+            ),
+            (
+                json!({"name":"abcdef"}),
+                "Too many characters; at most 5 stated.",
+            ),
+            (json!({"tags":[]}), "Too few choices; at least 1 stated."),
+            (
+                json!({"tags":["a","b","c"]}),
+                "Too many choices; at most 2 stated.",
+            ),
+            (json!({}), "Required, nothing filled in."),
+            (json!({"name":"ABC"}), "Does not match the stated pattern"),
+        ];
+        for (data, wording) in cases {
+            form.reinitialize(data.clone()).unwrap();
+            let submitted = form.prepare_advisory_submission().unwrap();
+            assert_eq!(submitted.submission().form_data(), &data);
+            dom.render_immediate(&mut dioxus::core::NoOpMutations);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains(wording), "{wording}: {html}");
+            assert!(html.contains("novalidate"));
+            assert!(html.contains("Format email: not checked here."));
+            // A second invalid edit must not hide findings by resetting
+            // touched/submitted state. Correct through public field actions.
+            let binding = data
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .map(|key| format!("/{key}"))
+                .unwrap_or("/required".into());
+            let node = node_at(&binding);
+            if binding != "/tags" && binding != "/required" {
+                let still_bad = match binding.as_str() {
+                    "/age" => {
+                        if data["age"].as_i64().unwrap() < 0 {
+                            "-2"
+                        } else {
+                            "999"
+                        }
+                    }
+                    "/confidence" => {
+                        if data["confidence"].as_f64().unwrap() < 0.0 {
+                            "-2"
+                        } else {
+                            "3"
+                        }
+                    }
+                    _ => {
+                        if wording.starts_with("Too many") {
+                            "abcdefg"
+                        } else if wording.starts_with("Does not") {
+                            "DEF"
+                        } else {
+                            "a"
+                        }
+                    }
+                };
+                node.actions().input_text(still_bad).unwrap();
+                dom.render_immediate(&mut dioxus::core::NoOpMutations);
+                assert!(dioxus_ssr::render(&dom).contains(wording));
+            }
+            if binding == "/tags" {
+                if data["tags"].as_array().unwrap().is_empty() {
+                    node.actions().toggle_choice(json!("a")).unwrap();
+                } else {
+                    node.actions().toggle_choice(json!("c")).unwrap();
+                }
+            } else {
+                node.actions()
+                    .input_text(match binding.as_str() {
+                        "/age" => "20",
+                        "/confidence" => "0.5",
+                        _ => "abc",
+                    })
+                    .unwrap();
+            }
+            node_at("/required").actions().input_text("yes").unwrap();
+            dom.render_immediate(&mut dioxus::core::NoOpMutations);
+            assert!(
+                !dioxus_ssr::render(&dom).contains("data-finding=\""),
+                "corrected values remove the notes"
+            );
+        }
+        // Exercise edit buffers at the public adapter boundary, rather than
+        // pretending an unparseable string is committed numeric data.
+        let root = form.reader().read().unwrap().root;
+        let children = form
+            .node(root)
+            .unwrap()
+            .unwrap()
+            .read()
+            .unwrap()
+            .unwrap()
+            .children;
+        for (binding, text, wording) in [
+            ("/age", "1.5", "Not a whole number."),
+            ("/confidence", "old", "Not a number."),
+        ] {
+            let node = children
+                .iter()
+                .find_map(|id| {
+                    let node = form.node(*id).ok()??;
+                    let projection = node.read().ok()??;
+                    (projection.binding.as_ref()?.as_str() == binding).then_some(node)
+                })
+                .unwrap();
+            node.actions().input_text(text).unwrap();
+            form.prepare_advisory_submission().unwrap();
+            dom.render_immediate(&mut dioxus::core::NoOpMutations);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains(wording), "{html}");
+            node.actions().input_text("1").unwrap();
+            dom.render_immediate(&mut dioxus::core::NoOpMutations);
+            assert!(!dioxus_ssr::render(&dom).contains(wording));
+        }
+    }
+
+    #[test]
+    fn oversized_pattern_findings_do_not_claim_the_pattern_was_null() {
+        let prepared = crate::elicitation_schema::prepare(
+            &json!({"type":"object","properties":{
+                "name":{"type":"string","pattern":format!("^{}$", "a".repeat(4200))}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        let mut form = prepared
+            .definition
+            .unwrap()
+            .create_form(json!({"name":"b"}))
+            .unwrap();
+        let submission = form.prepare_advisory_submission();
+        let finding = submission
+            .submission()
+            .findings()
+            .find_map(|finding| match finding {
+                schemaform::form::SubmissionBlocker::Validation(finding) => Some(finding),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(finding.parameters()["omitted"], true);
+        fn host() -> Element {
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","properties":{"name":{"type":"string","default":"b","pattern":format!("^{}$", "a".repeat(4200))}}}).to_string(),
+                waiting:true, on_ready: |form: schemaform_dioxus::FormHandle| { form.prepare_advisory_submission().unwrap(); },
+                on_problem: |_| {}, on_accept: |_| {},
+            } }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains("exceeds the finding display limit"), "{html}");
+        assert!(!html.contains("pattern null"));
     }
 
     #[test]

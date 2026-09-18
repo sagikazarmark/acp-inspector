@@ -1030,6 +1030,19 @@ anyway. This is [§7.5](#75-the-second-ring-the-session-lifecycle)'s gating rule
 reader's own input: a tool that cannot send `age: 999` to an agent that asked for `0..120` cannot
 find out what that agent does with it, and finding that out is what somebody came here for.
 
+The host's finding vocabulary states the rule and limit beside the current value:
+“Above the maximum of 120”, “Too few characters; at least 3 stated”, “Required,
+nothing filled in”. Numeric minimum/maximum, string minLength/maxLength,
+multi-select minItems/maxItems, required presence and `pattern` are checked by
+schemaform; corrections remove the associated notes. `format` selects an input
+widget but is not checked, and its description says so. Numeric parse findings
+say “Not a number” or “Not a whole number”: that text remains an edit buffer,
+outside committed form data, while the advisory answer carries the committed
+values and Raw can send a string instead. Native required metadata is descriptive;
+the form's `novalidate` and advisory submission prevent it gating Accept. Findings
+are referenced by the field's accessible descriptions, and summary links include
+the field label and path. They are not Conformance Annotations.
+
 **And a raw tab, because the typed answer cannot say everything.** `content` is typed as a map of a
 closed untagged value set, which has no spelling for a nested object, a null, or a value of the
 wrong type — so typed controls alone would quietly restore the gate the paragraph above removes,
