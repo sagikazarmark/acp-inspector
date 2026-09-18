@@ -1018,8 +1018,14 @@ speak for the reader, so the answer is `-32602` — the error the specification 
 — and the frame is a first-class entry like every refusal §7.3 already makes. Nothing about it is an
 annotation ([§15](#15-open-questions--validation-gaps) q7).
 
+The form is drawn by schemaform 0.5.0 and the registry's daisyUI renderer, with
+advisory submission and literal requestedSchema input
+([ADR 0013](adr/0013-schemaform-draws-the-elicitation-form.md)). The unmerged
+[spike](schemaform-spike.md) records the measured costs and the blockers fixed before adoption.
+
 **Constraints are reported and never enforced.** `required`, ranges, lengths, patterns and item
-counts are drawn beside the field they came from and a violation is stated inline; the answer sends
+counts are evaluated by the form engine and findings are stated beside their fields and in a named
+summary; the answer sends
 anyway. This is [§7.5](#75-the-second-ring-the-session-lifecycle)'s gating rule turned on the
 reader's own input: a tool that cannot send `age: 999` to an agent that asked for `0..120` cannot
 find out what that agent does with it, and finding that out is what somebody came here for.
@@ -1175,7 +1181,8 @@ such as `0.10` and `1e2` cannot be read by the protocol crate's buffered types (
 cost or annotation priority while the enclosing update still decodes. The canonical copy is for
 typed decoding only: the Trace, Console and re-serialized evidence views keep their existing Frame
 source. A renderer asking for a literal value must receive it from the Frame, never through this
-seam; no such accessor is needed today. The numeric tripwire starts with literal Frame text and
+seam. `ElicitationRequest::raw_form()` supplies requestedSchema tokens to the renderer.
+The numeric tripwire starts with literal Frame text and
 asserts presence and value in the public stores; a source-level tripwire keeps protocol decoding
 inside this module.
 The release-backed spike found a second leak ([#8](https://github.com/sagikazarmark/acp-inspector/issues/8)):

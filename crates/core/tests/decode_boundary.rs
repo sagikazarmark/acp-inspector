@@ -14,17 +14,30 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
     }
     readers.sort();
     // Production readers read JSON values, stored preferences or syntax. The
-    // component's test-only schema fixture is the sole protocol exception.
     // Exact lines rather than whole-file exemptions: a new reader in rpc.rs
     // is just as capable of bypassing the seam as one in a new module.
     let mut allowed: Vec<_> = [
+        // Literal renderer input: RawValue extraction and generic JSON
+        // Schema compilation, never decoding a protocol type.
         (
-            "crates/app/src/elicitation.rs",
-            "Surface::Raw => match serde_json::from_str::<Value>(&self.written) {",
+            "crates/core/src/elicitation.rs",
+            "let envelope: Object<'_> = serde_json::from_str(frame.as_str()).ok()?;",
         ),
         (
-            "crates/app/src/elicitation.rs",
-            "serde_json::from_str::<Value>(written)",
+            "crates/core/src/elicitation.rs",
+            "let params: Object<'_> = serde_json::from_str(envelope.get(\"params\")?.get()).ok()?;",
+        ),
+        (
+            "crates/app/src/elicitation_schema.rs",
+            "let raw = serde_json::from_str::<&serde_json::value::RawValue>(text)",
+        ),
+        (
+            "crates/app/src/elicitation_schema.rs",
+            "serde_json::from_str(text).map_err(|error| error.to_string())?;",
+        ),
+        (
+            "crates/app/src/elicitation_schema.rs",
+            "serde_json::from_str(text).map_err(|error| error.to_string())?;",
         ),
         (
             "crates/core/src/frame.rs",
@@ -43,8 +56,8 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
             "let file: Stored = serde_json::from_str(&document).ok()?;",
         ),
         (
-            "crates/app/src/elicitation.rs",
-            "serde_json::from_value(json).expect(\"a schema the crate can read\")",
+            "crates/app/src/elicitation_schema.rs",
+            "_ => serde_json::from_str(text).map_err(|error| error.to_string()),",
         ),
         (
             "crates/app/src/style.rs",

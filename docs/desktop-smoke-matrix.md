@@ -90,6 +90,37 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Schemaform 0.5.0 adoption, 2026-09-18
+
+Focused Elicitation walkthrough on Linux, WebKitGTK 2.52.4, Xvfb at 96 DPI,
+Openbox and Mesa software rendering. Actual WebView sizes were **1440 x 880** and
+**960 x 640** (native window height includes an additional 25px menu strip).
+Explicit Light and Dark were inspected at both sizes; document/body scroll widths
+equaled viewport widths. The tall form remains in the Timeline's local scroller.
+
+Keyboard-only Testy `callbacks` reached `end_turn`: all ten fields were visited,
+age `999`, confidence `2`, confirmed checked, name absent, a priority and a tag
+selected. Raw showed exactly that object; switching back retained it. Accept sent
+five fields despite three broken rules. All three findings appeared locally and
+in summary entries naming age, confidence and name. Accept retained its DOM focus
+while becoming ARIA-disabled/chosen; the panel changed to resolved. The remaining
+requests were answered Decline, Cancel, Accept and Decline, and the URL completion
+updated independently. Checkbox and tab activation no longer navigates to Trace.
+After resolution, summary links still focus their fields: an Age link focused the
+read-only `999` input, and attempted keyboard replacement left it `999`. Resolved
+forms are readable and navigable rather than inert.
+
+System removed `data-theme` and selected light on this host. Changing GNOME's
+`color-scheme` preference to prefer-dark did not change WebKit's media query under
+this Xvfb session; the preference was restored. **System's OS-dark transition is
+not verified**. Screen readers, macOS and Windows remain unrun. This focused run
+does not claim to repeat unrelated desktop walkthrough rows.
+
+The rendered release test exercises all three local findings and named summary
+entries; the core numeric feature matrix verifies both numeric Cargo features
+together. The raw literal fixture remains available as
+`python3 scripts/spike-testy-literals.py` when launching an Agent from this root.
+
 > **This records the fifth ring's walkthrough and predates the drawing**
 > ([ADR 0009](adr/0009-the-window-is-the-drawing.md)). Every behaviour it exercised is
 > still on screen and still covered by the automated matrix above, and the *places* it names are

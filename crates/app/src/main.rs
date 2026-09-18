@@ -25,12 +25,15 @@ compile_error!(
 
 mod agent;
 mod appearance;
+#[allow(dead_code, unused_imports)] // Unmodified registry install includes its complete public API.
+mod components;
 mod composer;
 mod connect;
 mod console;
 mod copy;
 mod disclosure;
 mod elicitation;
+mod elicitation_schema;
 mod indent;
 mod json;
 // The window's own mark, drawn into its icon: reached only through the shell,

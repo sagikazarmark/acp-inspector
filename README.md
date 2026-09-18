@@ -1,5 +1,9 @@
 # ACP Inspector
 
+Elicitation forms use schemaform 0.5.0 with the registry's daisyUI renderer:
+field-local findings and named summary links remain advisory, and Raw can send
+values the schema forbids. [Adoption decision](docs/adr/0013-schemaform-draws-the-elicitation-form.md).
+
 A desktop tool for driving and observing one ACP agent over stdio: point it at an agent command
 and it spawns the agent, speaks ACP to it as a well-formed client, and shows you both
 conversations at once — the turn and the wire.
