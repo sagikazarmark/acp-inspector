@@ -110,7 +110,9 @@ pub fn Timeline(
     /// The mode the next prompt goes out under, for the composer's own control
     /// (`composer::Cycle`).
     mode: Option<composer::Cycle>,
-    on_prompt: EventHandler<String>,
+    #[props(default)] image_advertised: bool,
+    #[props(default)] prompt_epoch: u64,
+    on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
     on_set_mode: EventHandler<v1::SessionModeId>,
     /// A permission option the user picked, on its way back to core.
@@ -322,6 +324,8 @@ pub fn Timeline(
             // that never reached a Session must not fail silently.
             if session.is_some() || problem.is_some() {
                 Composer {
+                    key: "{prompt_epoch}-{session:?}",
+                    image_advertised,
                     turn,
                     ready: connected && session.is_some(),
                     connected,
@@ -1220,7 +1224,7 @@ mod tests {
                     blocked: false,
                     problem: None,
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_: Answer| {},
@@ -1518,7 +1522,7 @@ mod tests {
                     blocked: false,
                     problem: None,
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_: Answer| {},
@@ -1613,7 +1617,7 @@ mod tests {
                     blocked: false,
                     problem: None,
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_: Answer| {},
@@ -1803,7 +1807,7 @@ mod tests {
                     blocked,
                     problem: None,
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_: Answer| {},
@@ -1866,7 +1870,7 @@ mod tests {
                     blocked: false,
                     problem: None,
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_: Answer| {},

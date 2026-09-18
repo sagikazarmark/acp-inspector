@@ -300,7 +300,7 @@ fn Window(view: rail::Tab, live: bool) -> Element {
                     // The same call the window makes, so the fixture draws the
                     // composer's mode control where the window has one.
                     mode: crate::cycle(&configured(), live),
-                    on_prompt: move |_| {},
+                    on_prompt: move |_| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                     on_answer: move |_| {},

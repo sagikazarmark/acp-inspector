@@ -18,6 +18,14 @@ pub enum CallError {
     /// The call needs a session and there is none: nothing has answered
     /// `session/new` yet on this connection.
     NoSession,
+    /// Image content was supplied without an Agent image advertisement.
+    ImageNotAdvertised,
+    /// The complete outgoing prompt Frame exceeds the host's 10 MiB budget.
+    PromptTooLarge,
+    /// This prompt entry point handles text and images only.
+    UnsupportedPromptContent,
+    /// The bounded outgoing queue cannot accept a prompt immediately.
+    OutgoingBusy,
     /// The session's working directory could not be named. ACP wants an
     /// absolute path (§7.1) and the form is a place where people type `.` or
     /// nothing at all, so the answer has to be made out of where the inspector
@@ -47,6 +55,14 @@ impl std::fmt::Display for CallError {
         match self {
             Self::Disconnected => f.write_str("the connection to the agent is gone"),
             Self::NoSession => f.write_str("there is no session yet"),
+            Self::OutgoingBusy => {
+                f.write_str("the outgoing queue is full; the draft can be retried")
+            }
+            Self::ImageNotAdvertised => f.write_str("the agent did not advertise image prompts"),
+            Self::PromptTooLarge => f.write_str("the complete prompt Frame exceeds 10 MiB"),
+            Self::UnsupportedPromptContent => {
+                f.write_str("this composer sends only text and image content")
+            }
             Self::NoWorkingDirectory => {
                 f.write_str("the session's working directory could not be named")
             }

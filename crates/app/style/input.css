@@ -117,6 +117,13 @@
    names utilities in order to state rules about them. */
 @source not "../src/style.rs";
 
+.prompt-image-picker { padding: 8px 12px; }
+.prompt-image-picker label { display: grid; gap: 4px; }
+.prompt-image { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
+.prompt-image img { max-width: 96px; max-height: 72px; object-fit: contain; }
+.prompt-image span { overflow-wrap: anywhere; min-width: 0; }
+.prompt-image button { flex: none; }
+
 /* The registry at Appearance::None keeps component
    classes and its Field parts' utilities; the host owns flat form layout. */
 .elicitation-fields .schemaform { display: grid; gap: 12px; }

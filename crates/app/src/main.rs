@@ -46,6 +46,7 @@ mod mark;
 mod mock;
 mod palette;
 mod permission;
+mod prompt_image;
 mod rail;
 mod session;
 mod session_settings;
@@ -353,6 +354,7 @@ fn App() -> Element {
     // window recomputing it would drift the moment it got one case wrong.
     let mut blocked = use_signal(|| false);
     let mut session = use_signal(|| None::<v1::SessionId>);
+    let mut prompt_epoch = use_signal(|| 0_u64);
     // What that session is configured as (§7.6). Its own store rather than
     // something read off the session: the settings are filled from the setup
     // response and kept current by what the agent announces afterwards, and both
@@ -584,6 +586,7 @@ fn App() -> Element {
             let mut changes = inspector.session_changes();
             while let Some(next) = changes.next().await {
                 settings_work.with_mut(SessionSettingsWork::reset);
+                prompt_epoch += 1;
                 session.set(next);
             }
         }
@@ -1095,6 +1098,8 @@ fn App() -> Element {
             div { class: spine().class(),
             if spine() == Spine::Split {
             Timeline {
+                prompt_epoch: prompt_epoch(),
+                image_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image),
                 entries,
                 turn: turn(),
                 session: session(),
@@ -1137,11 +1142,8 @@ fn App() -> Element {
                         settings_work.with_mut(|work| work.finish_mode(generation));
                     });
                 },
-                on_prompt: move |text: String| {
-                    let inspector = prompting.clone();
-                    spawn(async move {
-                        let _ = inspector.prompt(&text).await;
-                    });
+                on_prompt: move |content: Vec<v1::ContentBlock>| {
+                    prompting.submit_prompt(content).map(|_| ())
                 },
                 on_stop: move |()| {
                     let inspector = cancelling.clone();

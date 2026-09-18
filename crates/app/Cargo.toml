@@ -31,6 +31,7 @@ web = ["dioxus/web"]
 # (docs/architecture.md §5).
 [dependencies]
 acp-inspector-core.workspace = true
+base64 = "0.22"
 
 dioxus.workspace = true
 dioxus-field = { version = "0.7.0", default-features = false }
@@ -49,11 +50,9 @@ schemaform-dioxus = "=0.5.0"
 # protocol: this is a format, and the frames stay strings all the way through
 # (`trace.rs`).
 serde_json.workspace = true
-# `time` and nothing else, on the runtime that is already under this window: the
-# one thing a message which takes itself away needs is a sleep, and the
-# alternative is asking the WebView to hold the clock for a piece of this
-# window's state (`toast.rs`).
-tokio = { workspace = true, features = ["time"] }
+# The existing runtime supplies toast timers and off-thread, bounded reads of
+# user-selected image files. No filesystem work runs on the UI executor.
+tokio = { workspace = true, features = ["time", "rt"] }
 
 # Renders a component to HTML with no window under it, so a test can assert on
 # what a screen shows rather than on the value a helper returned.

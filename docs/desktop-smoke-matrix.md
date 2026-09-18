@@ -90,6 +90,26 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Image prompt file-picker check, 2026-09-18
+
+Linux WebKitGTK, Xvfb/Openbox: a scripted Agent advertised image prompts. Native
+file selection opened through Dioxus/rfd's Zenity fallback, a PNG preview loaded,
+and Send with no text produced one image content block and reached `end_turn`.
+The Agent echoed the received block into the Timeline and the outgoing Frame was
+captured in Trace. No portal or Zenity initially meant selection returned empty;
+Zenity is now included in the Linux development shell. Extension filters are used
+because Dioxus's desktop picker does not translate individual image MIME filters.
+The payload MIME is independently determined from the file signature.
+
+Rendered composer tests cover advertisement gating, image-only sending, removal,
+and preview. Core tests assert ordered text/image payloads, original base64 and
+MIME, non-advertised refusal, complete serialized Frame size limits and continued
+operation after an oversized prompt. Local refusal retains the image draft;
+synchronous admission queues the prompt before later cancellation and captures
+its Session. Native file metadata and reads run off-thread, with at most 5 MiB + 1
+read before rejecting an oversized file. Native macOS/Windows pickers remain platform
+acceptance work (#9); this run does not claim those environments.
+
 ### Compact form density, 2026-09-18
 
 The upstream opt-in Compact renderer (`606352f`, registry issue 30) places presence

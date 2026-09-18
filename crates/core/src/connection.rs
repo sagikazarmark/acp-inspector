@@ -243,6 +243,19 @@ impl Connection {
 }
 
 impl FrameSink {
+    pub(crate) fn try_send(
+        &self,
+        frame: Frame,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<()>> {
+        let permit = self.frames.try_reserve()?;
+        match &self.tap {
+            Some(tap) => {
+                tap.record_then(Direction::ToAgent, frame, |frame| permit.send(frame));
+            }
+            None => permit.send(frame),
+        }
+        Ok(())
+    }
     /// Sends one frame, recording it as it goes.
     ///
     /// The wait for room happens first, then the record and the handoff happen

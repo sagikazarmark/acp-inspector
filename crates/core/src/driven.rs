@@ -53,9 +53,8 @@ use crate::call::CallError;
 /// a capability upstream adds as *unknown* instead of breaking a build, which is
 /// the exact failure that tripwire exists to prevent.
 ///
-/// The six the session lifecycle is made of (§7.5) and the one the agent's auth
-/// block claims, and only those: the three prompt content kinds and the two MCP
-/// transports are advertisements this tool cannot drive at all (§1.1), and
+/// The six the session lifecycle is made of (§7.5), logout, and image prompts.
+/// Audio, embedded context and the two MCP transports remain deferred (§1.1), and
 /// `authenticate` is recorded in [`AuthState`](crate::AuthState), which has held
 /// exactly these three outcomes per connection since the MVP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,6 +80,8 @@ pub enum AgentCapability {
     /// the connection's own — which is what makes it the auth block's claim and
     /// not `sessionCapabilities`' (§7.7).
     Logout,
+    /// Image content in `session/prompt`, claimed by promptCapabilities.image.
+    Image,
 }
 
 /// What became of driving an Agent Capability on this connection (§7.7).
@@ -134,7 +135,7 @@ pub struct DrivenRecord {
 impl AgentCapability {
     /// Every capability this record can be keyed on, in the order the display
     /// draws them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Load,
         Self::List,
         Self::Resume,
@@ -142,6 +143,7 @@ impl AgentCapability {
         Self::Delete,
         Self::AdditionalDirectories,
         Self::Logout,
+        Self::Image,
     ];
 
     /// What the protocol calls it — the method it gates where it gates one, the
@@ -159,6 +161,7 @@ impl AgentCapability {
             Self::Delete => v1::AGENT_METHOD_NAMES.session_delete,
             Self::AdditionalDirectories => "additionalDirectories",
             Self::Logout => v1::AGENT_METHOD_NAMES.logout,
+            Self::Image => "image",
         }
     }
 
@@ -179,6 +182,7 @@ impl AgentCapability {
             Self::Delete => sessions.delete.is_some(),
             Self::AdditionalDirectories => sessions.additional_directories.is_some(),
             Self::Logout => capabilities.auth.logout.is_some(),
+            Self::Image => capabilities.prompt_capabilities.image,
         }
     }
 }

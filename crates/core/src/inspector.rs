@@ -651,8 +651,30 @@ impl Inspector {
     /// a client, and a composer whose button left no trace anywhere would be
     /// the screen keeping a secret the store is there to tell.
     pub async fn prompt(&self, text: &str) -> Result<v1::StopReason, CallError> {
+        self.prompt_content(vec![v1::ContentBlock::from(text)])
+            .await
+    }
+
+    /// Starts a Turn with ordered ACP content blocks. Image blocks require the
+    /// Agent's image advertisement; the complete outgoing Frame is bounded.
+    pub async fn prompt_content(
+        &self,
+        content: Vec<v1::ContentBlock>,
+    ) -> Result<v1::StopReason, CallError> {
+        self.submit_prompt(content)?
+            .await
+            .map_err(|_| CallError::Disconnected)?
+    }
+
+    /// Admit a prompt synchronously: the current Connection and Session are
+    /// captured and the actual Frame validated before the draft may be cleared.
+    /// Waiting for the Agent's outcome is separate from local admission.
+    pub fn submit_prompt(
+        &self,
+        content: Vec<v1::ContentBlock>,
+    ) -> Result<tokio::task::JoinHandle<Result<v1::StopReason, CallError>>, CallError> {
         match self.client() {
-            Ok(client) => client.prompt(text).await,
+            Ok(client) => client.submit_prompt(content),
             Err(error) => {
                 self.0.stores.turn.set(TurnState::Failed(error.clone()));
                 Err(error)

@@ -7,6 +7,7 @@ name = "acp-inspector"
 version = "0.0.1"
 dependencies = [
  "acp-inspector-core",
+ "base64",
  "dioxus",
  "dioxus-field",
  "dioxus-free-icons",

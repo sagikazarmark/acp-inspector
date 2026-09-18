@@ -855,8 +855,7 @@ enum Unreached {
     /// affordances hang off a listing row, so there is no row to press them on
     /// — the consequence §7.5 records, made visible where it bites.
     NoListingRow,
-    /// The three prompt content shapes. The composer sends one text block, and
-    /// the rest is deferred with a ring owed (§1.1).
+    /// Audio and embedded context remain deferred (§1.1).
     OneTextBlock,
     /// The two MCP transports. Every session is opened with an empty
     /// `mcpServers`, and that too is deferred with a ring owed (§1.1).
@@ -877,7 +876,9 @@ impl Unreached {
             Self::NoListingRow => {
                 "it is pressed on a listing row, and this agent advertised no session/list"
             }
-            Self::OneTextBlock => "the composer sends one text block",
+            Self::OneTextBlock => {
+                "the composer sends text and images, not audio or embedded context"
+            }
             Self::NoMcpServers => "a session is opened with an empty mcpServers",
         }
     }
@@ -1250,7 +1251,7 @@ fn advertised(
                 shape: Shape::Flag,
                 at: "promptCapabilities",
                 claims: vec![
-                    Claim::self_named("image", prompt.image).undrivable(Unreached::OneTextBlock),
+                    Claim::self_named("image", prompt.image).driven(record, AgentCapability::Image),
                     Claim::self_named("audio", prompt.audio).undrivable(Unreached::OneTextBlock),
                     Claim::self_named("embeddedContext", prompt.embedded_context)
                         .undrivable(Unreached::OneTextBlock),
@@ -3877,6 +3878,7 @@ mod tests {
         // record (§7.7), and the row is reached all the same.
         let mut expected: Vec<_> = REACHED.iter().map(|(capability, _)| *capability).collect();
         expected.push("authenticate");
+        expected.push("image");
         let panel = rendered_driven(record(Driven::Answered));
 
         let carrying = reporting(&panel);
@@ -3913,20 +3915,13 @@ mod tests {
             0,
             "none of them reports an outcome as well: {unreached:?}"
         );
-        for named in [
-            "session/resume",
-            "image",
-            "audio",
-            "embeddedContext",
-            "http",
-            "sse",
-        ] {
+        for named in ["session/resume", "audio", "embeddedContext", "http", "sse"] {
             assert!(
                 unreached.iter().any(|row| row.contains(named)),
                 "{named} says this tool cannot drive it: {unreached:?}"
             );
         }
-        assert_eq!(unreached.len(), 6, "and only those: {unreached:?}");
+        assert_eq!(unreached.len(), 5, "and only those: {unreached:?}");
     }
 
     #[test]
@@ -4070,15 +4065,14 @@ mod tests {
             let panel = shown(agent, true);
 
             for (capability, because) in [
-                ("image", "one text block"),
-                ("audio", "one text block"),
-                ("embeddedContext", "one text block"),
+                ("audio", "not audio or embedded context"),
+                ("embeddedContext", "not audio or embedded context"),
                 ("http", "empty mcpServers"),
                 ("sse", "empty mcpServers"),
             ] {
                 let run = run_for(&panel, capability);
                 assert!(
-                    run.contains(CANNOT_ANY) && run.contains(because),
+                    (run.contains(CANNOT_ANY) || run.contains(CANNOT)) && run.contains(because),
                     "the run {capability} is in says this tool cannot drive it, and why: {run}"
                 );
                 let row = row_for(&panel, capability);
@@ -4146,6 +4140,9 @@ mod tests {
         let panel = shown(nothing(), true);
 
         for row in capability_rows(&advertisement(&panel, "agent")) {
+            if row.contains("cap-name\">audio") || row.contains("cap-name\">embeddedContext") {
+                continue;
+            }
             assert!(
                 !row.contains(DRIVEN),
                 "a claim this agent never made has nothing to report: {row}"
