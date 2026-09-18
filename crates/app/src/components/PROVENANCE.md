@@ -1,21 +1,26 @@
 # Elicitation renderer registry install
 
-Installed with Dioxus CLI 0.7.9:
+Installed with Dioxus CLI 0.7.9 from registry commit
+`606352fba2d98cfe08bee7f76c473af13bee4750` (`feat/compact-form-density`):
 
 ```sh
 dx components add schemaform_daisyui \
-  --git https://github.com/sagikazarmark/dioxus-daisyui-components \
-  --rev 025d2228e9253032ac6b8deee4890c46e35379b5
+  --path /path/to/dioxus-daisyui-components --force
 ```
 
 Run from `crates/app`. The installer fetched the renderer package and its seven
 component dependencies (pinned by the install manifest to `3dfbfd2521e06e539767d10fbf0dfa2171d290ed`).
+The local registry checkout was at the exact commit above. Once published, the
+equivalent remote install uses `--git https://github.com/sagikazarmark/dioxus-daisyui-components
+--rev 606352fba2d98cfe08bee7f76c473af13bee4750 --force`.
 The installed Rust source is unchanged except for workspace `cargo fmt` formatting.
 The upstream repository is MIT OR Apache-2.0, as are this repository and schemaform.
 
 The renderer uses released `schemaform` and `schemaform-dioxus` 0.5.0.
 The host's shell, protocol preprocessing and answer handling live outside these
 installed modules. Reinstall deliberately with `--force` when updating the registry.
+The host selects `Density::Compact` alongside `Appearance::None`; its explicit
+CSS lays out the registry's compact markers without modifying the installed source.
 
 ## Host dependency feature selection
 

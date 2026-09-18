@@ -23,6 +23,7 @@ use super::findings::DaisyuiFindings;
 use super::multiple_choice::MultipleChoiceControl;
 use super::shell::DaisyuiShell;
 use super::text::TextControl;
+use super::{Density, density::DensityScope};
 
 /// A form rendered through every seam this package fills: the daisyUI control registry, the
 /// structure bundle, and the finding presenter in both presenter slots.
@@ -53,8 +54,15 @@ pub fn SchemaformDaisyui(
     /// Whether the renderers emit their layout utilities. Fixed at mount, like the renderers.
     #[props(default)]
     appearance: Appearance,
+    /// Field layout, fixed at mount like the renderer configuration.
+    #[props(default)]
+    density: Density,
 ) -> Element {
-    let bound = use_hook(|| configuration_with(appearance).bind(&form).map_err(Rc::new));
+    let bound = use_hook(|| {
+        configuration_with_density(appearance, density)
+            .bind(&form)
+            .map_err(Rc::new)
+    });
     let bound = match bound {
         Ok(bound) => bound,
         Err(error) => return Err(dioxus::core::CapturedError::from_display(error).into()),
@@ -72,8 +80,13 @@ pub fn configuration() -> RenderConfiguration {
 
 /// [`configuration`] with every renderer at `appearance`.
 pub fn configuration_with(appearance: Appearance) -> RenderConfiguration {
+    configuration_with_density(appearance, Density::Default)
+}
+
+/// Configure field density without changing collection or shell presentation.
+pub fn configuration_with_density(appearance: Appearance, density: Density) -> RenderConfiguration {
     RenderConfiguration::builder()
-        .controls(controls_with(appearance))
+        .controls(controls_with_density(appearance, density))
         .structure(structure_with(appearance))
         .summary_presenter(findings_with(appearance))
         .local_presenter(findings_with(appearance))
@@ -104,8 +117,16 @@ pub fn controls() -> ControlRegistry {
 
 /// [`controls`] with every renderer at `appearance`.
 pub fn controls_with(appearance: Appearance) -> ControlRegistry {
-    let renderer =
-        |choice| DaisyuiControlRenderer::with_choice_widget(choice).appearance(appearance);
+    controls_with_density(appearance, Density::Default)
+}
+
+/// Controls with an explicit, bind-fixed field density.
+pub fn controls_with_density(appearance: Appearance, density: Density) -> ControlRegistry {
+    let renderer = |choice| {
+        DaisyuiControlRenderer::with_choice_widget(choice)
+            .appearance(appearance)
+            .density(density)
+    };
     ControlRegistry::with_builtins()
         .matcher(
             DAISYUI_CONTROL_PRIORITY,
@@ -202,6 +223,7 @@ pub enum ChoiceWidget {
 pub struct DaisyuiControlRenderer {
     choice: ChoiceWidget,
     appearance: Appearance,
+    density: Density,
 }
 
 impl DaisyuiControlRenderer {
@@ -210,12 +232,17 @@ impl DaisyuiControlRenderer {
         Self {
             choice,
             appearance: Appearance::default(),
+            density: Density::default(),
         }
     }
 
     /// The same renderer at `appearance`.
     pub fn appearance(self, appearance: Appearance) -> Self {
         Self { appearance, ..self }
+    }
+
+    pub fn density(self, density: Density) -> Self {
+        Self { density, ..self }
     }
 }
 
@@ -224,7 +251,7 @@ impl ControlRenderer for DaisyuiControlRenderer {
         let appearance = self.appearance;
         // The kind is definition-stable, so a node always renders the same child component and
         // the hooks inside it are called unconditionally.
-        match context.control().kind {
+        let body = match context.control().kind {
             ControlKind::String | ControlKind::Number | ControlKind::Integer => {
                 rsx! { TextControl { context, appearance } }
             }
@@ -238,6 +265,7 @@ impl ControlRenderer for DaisyuiControlRenderer {
             ControlKind::MultipleChoice => rsx! { MultipleChoiceControl { context, appearance } },
             // The upstream enum is non-exhaustive, so stable Rust requires this guard.
             kind => panic!("schemaform_daisyui does not yet present control kind {kind:?}"),
-        }
+        };
+        rsx! { DensityScope { density: self.density, {body} } }
     }
 }
