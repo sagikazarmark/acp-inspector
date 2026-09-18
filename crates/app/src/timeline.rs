@@ -780,7 +780,10 @@ fn happened(
             "elicitation",
             "ask",
             rsx! {
-                elicitation::Panel { request: request.clone(), on_answer: on_elicit }
+                elicitation::Panel {
+                    state: request.state(), completed: request.completed(),
+                    request: request.clone(), on_answer: on_elicit,
+                }
             },
         )),
         // A conformance annotation, in the flow where the traffic it is about

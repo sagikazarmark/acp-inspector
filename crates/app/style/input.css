@@ -27,7 +27,7 @@
 @import "tailwindcss" source(none);
 @plugin "daisyui" {
   themes: false;
-  include: alert, badge, button, checkbox, fieldset, input, label, modal, select, textarea, toast, toggle;
+  include: alert, badge, button, checkbox, fieldset, input, label, link, modal, select, textarea, toast, toggle;
   logs: false;
 }
 
@@ -116,6 +116,18 @@
    names: `style.rs` is this stylesheet's module and its tests, and its prose
    names utilities in order to state rules about them. */
 @source not "../src/style.rs";
+
+/* The registry at Appearance::None keeps component
+   classes and its Field parts' utilities; the host owns flat form layout. */
+.elicitation-fields .schemaform { display: grid; gap: 12px; }
+.elicitation-fields :is(input:not([type="checkbox"]), select) { width: 100%; }
+.elicitation-fields [data-schemaform-control="multiple-choice"] > div:has(> input) {
+  display: flex; align-items: center; gap: 8px;
+}
+.elicitation-fields .alert { align-items: start; }
+.elicitation-fields .alert > svg { width: 20px; height: 20px; }
+.elicitation-fields .link { text-align: start; }
+.elicitation-fields [data-finding] { color: var(--color-warning); }
 
 *, *::before, *::after { box-sizing: border-box; }
 

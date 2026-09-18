@@ -46,6 +46,7 @@ pub struct ElicitationRequest(Arc<Asked>);
 struct Asked {
     id: RequestId,
     request: v1::CreateElicitationRequest,
+    raw_form: Option<Box<serde_json::value::RawValue>>,
     standing: Mutex<Standing>,
     resolver: Resolver,
 }
@@ -102,11 +103,21 @@ impl ElicitationRequest {
     pub(crate) fn new(
         id: RequestId,
         request: v1::CreateElicitationRequest,
+        frame: &Frame,
         resolver: Resolver,
     ) -> Self {
+        // Read the schema from the Frame, independently of the canonical typed
+        // copy. RawValue retains every token, including numeric spellings.
+        let raw_form = (|| {
+            type Object<'a> = std::collections::HashMap<String, &'a serde_json::value::RawValue>;
+            let envelope: Object<'_> = serde_json::from_str(frame.as_str()).ok()?;
+            let params: Object<'_> = serde_json::from_str(envelope.get("params")?.get()).ok()?;
+            Some((*params.get("requestedSchema")?).to_owned())
+        })();
         Self(Arc::new(Asked {
             id,
             request,
+            raw_form,
             standing: Mutex::new(Standing {
                 state: ElicitationState::Waiting,
                 completed: false,
@@ -143,6 +154,13 @@ impl ElicitationRequest {
             v1::ElicitationMode::Form(form) => Some(&form.requested_schema),
             _ => None,
         }
+    }
+
+    /// The form's requestedSchema tokens exactly as they crossed the wire.
+    /// This renderer input never passes through the typed numeric seam.
+    pub fn raw_form(&self) -> Option<&str> {
+        self.form()?;
+        self.0.raw_form.as_ref().map(|schema| schema.get())
     }
 
     /// The URL to hand to the reader's own browser, where this is a URL

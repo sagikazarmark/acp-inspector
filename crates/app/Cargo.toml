@@ -25,18 +25,20 @@ default = ["desktop"]
 desktop = ["dioxus/desktop"]
 web = ["dioxus/web"]
 
-# Five dependencies, and the shape of the crate is the list: the state it
-# renders, the renderer, a clock to print timestamps with, a clock to wait on,
-# and the one data format a reader of this window writes in. Nothing that speaks
-# a protocol, and no async runtime of its own — `dioxus-desktop` runs its event
+# State, rendering, form presentation, clocks and the answer's data format.
+# No protocol client, and no async runtime of its own — `dioxus-desktop` runs its event
 # loop inside a tokio runtime, and that is the one core's pumps spawn onto
 # (docs/architecture.md §5).
 [dependencies]
 acp-inspector-core.workspace = true
 
 dioxus.workspace = true
+dioxus-field = { version = "0.7.0", default-features = false }
 dioxus-free-icons.workspace = true
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components", rev = "bf007c15d0cf4d04d3181cc46cf12325aa773955", version = "0.0.1", default-features = false, features = ["router"] }
 jiff.workspace = true
+schemaform = "=0.5.0"
+schemaform-dioxus = "=0.5.0"
 # The elicitation panel, and only it (§7.8). An elicitation's answer *is* a JSON
 # object by the protocol's definition, core's answer path is written in these
 # types, and the raw tab is a text box a reader edits one in — so this window

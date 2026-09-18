@@ -132,6 +132,37 @@ fn content(field: &str, value: Value) -> Map<String, Value> {
 }
 
 #[tokio::test]
+async fn the_form_renderer_can_read_literal_schema_numbers_without_changing_the_trace() {
+    let schema = r#"{"type":"object","properties":{"amount":{"type":"number","default":1.50,"maximum":1e2}}}"#;
+    let params = format!(
+        r#"{{"sessionId":"s1","mode":"form","message":"Literal","requestedSchema":{schema}}}"#
+    );
+    let inspector = Inspector::new();
+    inspector
+        .start(&asking(&format!("{}{}", ask("literal", &params), ends())))
+        .await
+        .unwrap();
+    let turn = prompting(&inspector, "literal");
+    let request = elicited(&inspector).await;
+    assert_eq!(request.raw_form().unwrap(), schema);
+    let v1::ElicitationPropertySchema::Number(number) =
+        &request.form().unwrap().properties["amount"]
+    else {
+        panic!("typed number stays decodable");
+    };
+    assert_eq!(number.default, Some(1.5));
+    assert_eq!(number.maximum, Some(100.0));
+    assert!(
+        received(&inspector)
+            .iter()
+            .any(|frame| frame.contains(schema))
+    );
+    request.cancel().await.unwrap();
+    turn.await.unwrap();
+    inspector.disconnect();
+}
+
+#[tokio::test]
 async fn an_elicitation_blocks_where_the_agent_asked_and_carries_the_agents_own_schema() {
     // First contact with a real agent's elicitation traffic: Testy asks a form,
     // ties it to a tool call, and waits — which is exactly the state the panel

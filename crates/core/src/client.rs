@@ -1483,6 +1483,7 @@ impl Client {
                             let request = ElicitationRequest::new(
                                 RequestId::new(id),
                                 request,
+                                &frame,
                                 Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
                             );
                             // A URL elicitation's id is registered before the
