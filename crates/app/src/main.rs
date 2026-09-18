@@ -34,6 +34,7 @@ mod copy;
 mod disclosure;
 mod elicitation;
 mod elicitation_schema;
+mod elicitation_words;
 mod indent;
 mod json;
 // The window's own mark, drawn into its icon: reached only through the shell,

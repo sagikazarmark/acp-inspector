@@ -32,6 +32,18 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
             known
         });
         for property in properties.values_mut() {
+            if let Some(format) = property.get("format").and_then(Value::as_str) {
+                let note = format!("Format {format}: not checked here.");
+                let description = property
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                property["description"] = Value::String(if description.is_empty() {
+                    note
+                } else {
+                    format!("{description}\n{note}")
+                });
+            }
             if property["type"] == "array" {
                 property["uniqueItems"] = Value::Bool(true);
             }

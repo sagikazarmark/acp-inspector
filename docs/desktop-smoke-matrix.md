@@ -90,6 +90,29 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Finding language and Linux accessibility follow-up, 2026-09-18
+
+The host localization presents limits and parse-buffer consequences explicitly.
+The rendered edit matrix covers numeric bounds, Unicode-aware string length
+bounds (engine semantics), choice counts, required presence, pattern, and integer/
+number parse findings; advisory data is retained and corrected notes disappear.
+
+Live WebKitGTK/AT-SPI inspection through pyatspi found the Age entry named `age`
+with description **“Above the maximum of 120.”** and a described-by relation to its
+local finding. The summary button was named **“age (/age): Above the maximum of
+120.”** Email's accessible description was **“Format email: not checked here.”**
+Keyboard replacement of Age `999` with `20` removed both the finding and the
+accessible description. Accept remained exposed as an available toggle button.
+
+System startup was verified under `GTK_THEME=Adwaita:dark` (dark media query true)
+and `GTK_THEME=Adwaita` (false); `data-theme` was absent in both. This adds GTK
+startup evidence, not a successful live desktop preference transition. Spoken
+Orca behavior and a real Linux desktop's live System transition are tracked in
+[#10](https://github.com/sagikazarmark/acp-inspector/issues/10). Native macOS/
+Windows and VoiceOver/NVDA/Narrator acceptance are tracked in
+[#9](https://github.com/sagikazarmark/acp-inspector/issues/9); no such desktop was
+available in this Linux session. AT-SPI inspection is not a screen-reader pass.
+
 ### Schemaform 0.5.0 adoption, 2026-09-18
 
 Focused Elicitation walkthrough on Linux, WebKitGTK 2.52.4, Xvfb at 96 DPI,
