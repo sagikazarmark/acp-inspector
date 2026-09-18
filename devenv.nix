@@ -55,6 +55,8 @@
       # by way of its menu/hotkey stack.
       openssl
       xdotool
+      # Native file selection falls back here when no desktop portal is running.
+      zenity
     ];
 
   languages = {

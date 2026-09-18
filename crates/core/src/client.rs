@@ -1194,8 +1194,7 @@ impl Client {
         Ok(())
     }
 
-    /// `session/prompt`: one text content block, which is the composer's whole
-    /// vocabulary in the MVP (§7.1).
+    /// `session/prompt`: ordered content blocks; image content is advertised.
     ///
     /// The turn is registered before the frame goes out, so the answer cannot
     /// arrive before the reader knows what it is an answer to.
@@ -1220,18 +1219,50 @@ impl Client {
     /// nothing was registered, so nothing can have replaced it, and a composer
     /// whose button left no trace anywhere would be the screen keeping a secret
     /// the store is there to tell.
-    pub(crate) async fn prompt(&self, text: &str) -> Result<v1::StopReason, CallError> {
+    pub(crate) fn submit_prompt(
+        &self,
+        content: Vec<v1::ContentBlock>,
+    ) -> Result<tokio::task::JoinHandle<Result<v1::StopReason, CallError>>, CallError> {
         let session = self
             .session()
             .inspect_err(|error| self.turn_failed(None, error))?;
-        let request = v1::PromptRequest::new(session, vec![v1::ContentBlock::from(text)]);
+        let has_image = content
+            .iter()
+            .any(|block| matches!(block, v1::ContentBlock::Image(_)));
+        if content.iter().any(|block| {
+            !matches!(
+                block,
+                v1::ContentBlock::Text(_) | v1::ContentBlock::Image(_)
+            )
+        }) {
+            return Err(CallError::UnsupportedPromptContent);
+        }
+        if has_image
+            && !self
+                .stores
+                .agent
+                .get()
+                .is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image)
+        {
+            let error = CallError::ImageNotAdvertised;
+            self.turn_failed(None, &error);
+            return Err(error);
+        }
+        let request = v1::PromptRequest::new(session, content);
 
         let call = self
             .rpc
-            .prepare(v1::AGENT_METHOD_NAMES.session_prompt, encode(&request))
+            .prepare_bounded(
+                v1::AGENT_METHOD_NAMES.session_prompt,
+                encode(&request),
+                10 * 1024 * 1024,
+            )
             .inspect_err(|error| self.turn_failed(None, error))?;
         let id = call.id();
         *locked(&self.awaiting) = Some(id);
+        if has_image {
+            self.registers(id, &[AgentCapability::Image]);
+        }
         // Nothing has been asked to stop *this* turn, so nothing is watching
         // it. A cancel still armed here belongs to a turn the user prompted
         // over — and that turn draws no annotation, because the connection is
@@ -1246,9 +1277,32 @@ impl Client {
         // arrives before this call returns.
         self.stores.timeline.open_turn();
 
-        let outcome = match self.rpc.send(call).await {
+        self.rpc.enqueue(&call).inspect_err(|error| {
+            self.turn_failed(Some(id), error);
+            if has_image {
+                self.drive_failed(Some(id), &[AgentCapability::Image], error);
+            }
+        })?;
+        let client = self.clone();
+        Ok(tokio::spawn(async move {
+            client.finish_prompt(call, has_image).await
+        }))
+    }
+
+    async fn finish_prompt(
+        &self,
+        call: crate::rpc::Call,
+        has_image: bool,
+    ) -> Result<v1::StopReason, CallError> {
+        let id = call.id();
+        let outcome = match self.rpc.wait(call).await {
             Ok(result) => decode::<v1::PromptResponse>(result).map(|response| response.stop_reason),
-            Err(error) => Err(error),
+            Err(error) => {
+                if has_image {
+                    self.drive_failed(Some(id), &[AgentCapability::Image], &error);
+                }
+                Err(error)
+            }
         };
         if let Err(error) = &outcome {
             self.turn_failed(Some(id), error);

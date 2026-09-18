@@ -9,6 +9,7 @@
 //! a request, and the turn is over when the agent says it is, with
 //! `stopReason: "cancelled"` if it behaves (§7.1).
 
+use crate::prompt_image::PromptImage;
 use acp_inspector_core::{CallError, TurnState, v1};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
@@ -101,13 +102,25 @@ pub fn Composer(
     /// ([`Cycle`]). `None` is an agent that published none, which is most of
     /// them, and the control is not drawn at all.
     mode: Option<Cycle>,
-    on_prompt: EventHandler<String>,
+    #[props(default)] image_advertised: bool,
+    on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
     /// A mode the reader cycled to, on its way to `session/set_mode` — the same
     /// handler the rail's own rows call.
     on_set_mode: EventHandler<v1::SessionModeId>,
 ) -> Element {
     let mut text = use_signal(String::new);
+    let mut image = use_signal(|| None::<PromptImage>);
+    let mut selecting = use_signal(|| false);
+    let mut image_problem = use_signal(|| None::<String>);
+    let mut selection = use_signal(|| 0_u64);
+    let picker_id = use_hook(|| {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "prompt-image-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
     // Which of the matching commands the keyboard is on, and whether the reader
     // has waved the list away. Both are window-session state of one control and
     // neither outlives the draft they are about.
@@ -116,7 +129,10 @@ pub fn Composer(
     let running = turn.is_running();
     // Nothing to send while a turn is running: ACP has one turn per session at
     // a time, and a second prompt is the stop button's job first.
-    let sendable = ready && !running && !text().trim().is_empty();
+    let sendable = ready
+        && !running
+        && !selecting()
+        && (!text().trim().is_empty() || image_advertised && image.read().is_some());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -126,9 +142,22 @@ pub fn Composer(
 
     let mut send = move || {
         let prompt = text();
-        if !running && !prompt.trim().is_empty() {
-            on_prompt.call(prompt);
+        if sendable {
+            let mut content = Vec::new();
+            if !prompt.trim().is_empty() {
+                content.push(v1::ContentBlock::from(prompt));
+            }
+            if image_advertised && let Some(image) = image.read().as_ref() {
+                content.push(image.content());
+            }
+            if let Err(error) = on_prompt.call(content) {
+                image_problem.set(Some(error.to_string()));
+                return;
+            }
             text.set(String::new());
+            image_problem.set(None);
+            image.set(None);
+            selection += 1;
         }
     };
     // Putting one in the box is a *refill*, not a send: what a command takes
@@ -189,6 +218,43 @@ pub fn Composer(
             }
 
             div { class: "prompt-box",
+                if image_advertised {
+                    div { class: "prompt-image-picker",
+                        label { class: "hint",
+                            "Attach image · PNG, JPEG, GIF or WebP · 5 MiB maximum"
+                            input { id: picker_id.clone(), name: "prompt-image", r#type: "file", accept: ".png,.jpg,.jpeg,.gif,.webp", multiple: false,
+                                aria_label: "Attach image", disabled: !ready || running,
+                                onchange: move |event| {
+                                    let Some(file) = event.files().into_iter().next() else { return; };
+                                    let reset = document::eval("const id = await dioxus.recv(); const input = document.getElementById(id); if (input) input.value = ''; ");
+                                    let _ = reset.send(picker_id.clone());
+                                    if !ready || running { return; }
+                                    selection += 1;
+                                    let current = selection();
+                                    selecting.set(true);
+                                    image_problem.set(None);
+                                    spawn(async move {
+                                        let result = PromptImage::from_file(file).await;
+                                        if selection.try_read().ok().is_none_or(|generation| *generation != current) { return; }
+                                        selecting.set(false);
+                                        match result { Ok(next) => image.set(Some(next)), Err(error) => image_problem.set(Some(error)) }
+                                    });
+                                },
+                            }
+                        }
+                        if selecting() { span { role: "status", "Reading image…" } }
+                    }
+                }
+                if let Some(problem) = image_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
+                if let Some(held) = image() {
+                    div { class: "prompt-image", "data-slot": "image-attachment",
+                        img { src: held.preview(), alt: "Selected image: {held.name}" }
+                        span { "{held.name} · {held.mime} · {held.bytes} bytes" }
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove image",
+                            onclick: move |_| { selection += 1; image.set(None); selecting.set(false); image_problem.set(None); }, "Remove"
+                        }
+                    }
+                }
                 textarea {
                     rows: 3,
                     value: "{text}",
@@ -565,6 +631,152 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn advertised_image_picker_previews_removes_and_sends_an_image_only_prompt() {
+        use dioxus::core::{Mutation, NoOpMutations};
+        use dioxus::html::{
+            PlatformEventData, SerializedFileData, SerializedFormData, SerializedFormObject,
+            SerializedMouseData,
+        };
+        use std::{any::Any, rc::Rc};
+        #[derive(Clone, Props)]
+        struct HostProps {
+            advertised: bool,
+            sent: Rc<RefCell<Vec<Vec<v1::ContentBlock>>>>,
+            reject: Rc<std::cell::Cell<bool>>,
+        }
+        impl PartialEq for HostProps {
+            fn eq(&self, other: &Self) -> bool {
+                self.advertised == other.advertised
+                    && Rc::ptr_eq(&self.sent, &other.sent)
+                    && Rc::ptr_eq(&self.reject, &other.reject)
+            }
+        }
+        fn host(props: HostProps) -> Element {
+            rsx! { Composer {turn:TurnState::Idle,ready:true,connected:true,blocked:false,problem:None,commands:vec![],mode:None,
+                image_advertised:props.advertised,on_prompt:move |content| {
+                    if props.reject.get() { Err(CallError::PromptTooLarge) }
+                    else { props.sent.borrow_mut().push(content); Ok(()) }
+                },on_stop: |_| {},on_set_mode: |_| {}}
+            }
+        }
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let reject = Rc::new(std::cell::Cell::new(false));
+        let mut absent = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                advertised: false,
+                sent: sent.clone(),
+                reject: reject.clone(),
+            },
+        );
+        absent.rebuild_in_place();
+        assert!(!dioxus_ssr::render(&absent).contains("Attach image"));
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                advertised: true,
+                sent: sent.clone(),
+                reject: reject.clone(),
+            },
+        );
+        let edits = dom.rebuild_to_vec().edits;
+        let picker = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "change" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let select = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+                    "".into(),
+                    vec![SerializedFormObject {
+                        key: "image".into(),
+                        text: None,
+                        file: Some(SerializedFileData {
+                            path: "wrong.jpg".into(),
+                            size: 8,
+                            last_modified: 0,
+                            content_type: None,
+                            contents: Some(b"\x89PNG\r\n\x1a\n".to_vec().into()),
+                        }),
+                    }],
+                )))) as Rc<dyn Any>,
+                true,
+            )
+        };
+        dom.runtime().handle_event("change", select(), picker);
+        let mut mutations = Vec::new();
+        for _ in 0..5 {
+            dom.wait_for_work().await;
+            mutations.extend(dom.render_immediate_to_vec().edits);
+            if dioxus_ssr::render(&dom).contains("image-attachment") {
+                break;
+            }
+        }
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("data:image/png;base64,iVBORw0KGgo="),
+            "{html}"
+        );
+        let remove = mutations
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+                _ => None,
+            })
+            .expect("remove attachment click target");
+        let click = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            )
+        };
+        dom.runtime().handle_event("click", click(), remove);
+        dom.render_immediate(&mut NoOpMutations);
+        assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
+        dom.runtime().handle_event("change", select(), picker);
+        for _ in 0..5 {
+            dom.wait_for_work().await;
+            dom.render_immediate(&mut NoOpMutations);
+            if dioxus_ssr::render(&dom).contains("image-attachment") {
+                break;
+            }
+        }
+        let send = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: dioxus::core::AttributeValue::Text(value),
+                    id,
+                    ..
+                } if value == "Send prompt" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        reject.set(true);
+        dom.runtime().handle_event("click", click(), send);
+        dom.render_immediate(&mut NoOpMutations);
+        assert!(sent.borrow().is_empty());
+        assert!(
+            dioxus_ssr::render(&dom).contains("image-attachment"),
+            "local refusal preserves draft"
+        );
+        reject.set(false);
+        dom.runtime().handle_event("click", click(), send);
+        dom.render_immediate(&mut NoOpMutations);
+        assert_eq!(sent.borrow().len(), 1);
+        assert!(
+            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Image(image)] if image.data=="iVBORw0KGgo=" && image.mime_type=="image/png")
+        );
+        assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
+    }
+
     thread_local! {
         static LIVE_TURN: RefCell<Option<Signal<TurnState>>> = const { RefCell::new(None) };
     }
@@ -582,7 +794,7 @@ mod tests {
                 problem: None,
                 commands: Vec::new(),
                 mode: None,
-                on_prompt: move |_: String| {},
+                on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                 on_stop: move |()| {},
                 on_set_mode: move |_| {},
             }
@@ -601,7 +813,7 @@ mod tests {
                     problem: None,
                     commands: Vec::new(),
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                 }
@@ -633,7 +845,7 @@ mod tests {
                     problem: Some(problem),
                     commands: Vec::new(),
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                 }
@@ -870,7 +1082,7 @@ mod tests {
                     problem: None,
                     commands: published(),
                     mode: None,
-                    on_prompt: move |_: String| {},
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
                 }

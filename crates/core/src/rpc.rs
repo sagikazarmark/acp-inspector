@@ -105,26 +105,56 @@ impl Rpc {
     /// Allocates the id and registers the call. Nothing is on the wire yet, and
     /// nothing will be until [`send`](Self::send).
     pub(crate) fn prepare(&self, method: &str, params: Value) -> Result<Call, CallError> {
+        self.prepare_bounded(method, params, usize::MAX)
+    }
+
+    pub(crate) fn prepare_bounded(
+        &self,
+        method: &str,
+        params: Value,
+        max_bytes: usize,
+    ) -> Result<Call, CallError> {
         let mut calls = self.calls();
         if calls.closed {
             return Err(CallError::Disconnected);
         }
-        calls.next_id += 1;
-        let id = calls.next_id;
+        let id = calls.next_id + 1;
+        let frame = Frame::new(
+            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string(),
+        );
+        if frame.as_str().len() > max_bytes {
+            return Err(CallError::PromptTooLarge);
+        }
+        calls.next_id = id;
         let (answer, wait) = oneshot::channel();
         calls.pending.insert(id, answer);
 
         Ok(Call {
             id,
-            frame: Frame::new(
-                json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
-                    .to_string(),
-            ),
+            frame,
             answer: wait,
         })
     }
 
     /// Sends a prepared call and waits for its answer.
+    pub(crate) fn enqueue(&self, call: &Call) -> Result<(), CallError> {
+        self.outgoing
+            .try_send(call.frame.clone())
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => CallError::OutgoingBusy,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => CallError::Disconnected,
+            })
+            .inspect_err(|_| self.forget(call.id))
+    }
+
+    pub(crate) async fn wait(&self, call: Call) -> Result<Value, CallError> {
+        match call.answer.await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => Err(CallError::Rejected(error)),
+            Err(_) => Err(CallError::Disconnected),
+        }
+    }
+
     pub(crate) async fn send(&self, call: Call) -> Result<Value, CallError> {
         let Call { id, frame, answer } = call;
         if let Err(error) = self.outgoing.send(frame).await {

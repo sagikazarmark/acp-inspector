@@ -292,6 +292,7 @@ fn the_record_is_keyed_on_the_session_lifecycle_and_logout_and_nothing_else() {
             "session/delete",
             "additionalDirectories",
             "logout",
+            "image",
         ],
         "a capability the record cannot be keyed on is one the panel cannot draw the fact for"
     );
