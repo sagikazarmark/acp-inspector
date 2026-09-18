@@ -33,6 +33,12 @@ Node-free Rust build remain. Registry sources are installed unchanged, apart fro
 formatting, with provenance beside them. The host supplies the shell so the three
 answers appear once and consent/completion keep their existing meaning.
 
+The renderer's opt-in `Density::Compact` now puts presence operations beside field
+labels and removes empty finding-row spacing. The host styles its explicit markers;
+the installed renderer is still upstream source. Set/Remove operations remain
+visible and keyboard-reachable: density changes placement, never absence/empty
+semantics. The measured desktop comparison is in the smoke matrix.
+
 ## Consequences
 
 The measured dependency and density costs in the spike are accepted. The old

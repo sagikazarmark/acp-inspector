@@ -90,6 +90,31 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Compact form density, 2026-09-18
+
+The upstream opt-in Compact renderer (`606352f`, registry issue 30) places presence
+operations alongside labels, retains direct keyboard access, and permits options
+to wrap. The inspector supplies its layout under `Appearance::None`.
+
+Using the same Testy ten-field form and WebKitGTK at 96 DPI, the untouched form
+measured **1333.5px before / 877.5px after** at actual WebView sizes 1440 x 880 and
+960 x 640: **456px (34.2%) less vertical content**. Document scroll width remained
+equal to viewport width. Findings add their own content height; these measurements
+are before interaction, not a claim that every validation state fits on screen.
+
+Keyboard-only Set name, Set confirmed and Add tags produced `"name":""`,
+`"confirmed":false`, `"tags":[]`; Raw displayed those exact values. An age of 999
+was still accepted with its maximum finding, Accept retained focus, and the five
+Elicitation scenario requests completed. The narrow Dark layout was inspected;
+the upstream renderer's 60 Playwright tests passed across Chromium, Firefox and
+WebKit, including compact keyboard navigation, summary-to-checkbox focus,
+array removal/recreation and light/dark axe checks. The upstream three-field
+comparison measured 462px / 276px (40.3%). These are different fixtures and themes.
+
+Compact preserves the empty error-region element and its IDs/live semantics but
+uses `display: contents` to avoid a blank grid row. Actual spoken announcements
+remain part of the native screen-reader follow-up (#9/#10), not proved by axe.
+
 ### Finding language and Linux accessibility follow-up, 2026-09-18
 
 The host localization presents limits and parse-buffer consequences explicitly.

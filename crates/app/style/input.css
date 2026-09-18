@@ -128,6 +128,13 @@
 .elicitation-fields .alert > svg { width: 20px; height: 20px; }
 .elicitation-fields .link { text-align: start; }
 .elicitation-fields [data-finding] { color: var(--color-warning); }
+.elicitation-fields [data-schemaform-field-header] {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
+}
+.elicitation-fields [data-schemaform-presence] { display: flex; flex-wrap: wrap; gap: 4px; }
+.elicitation-fields [data-schemaform-options] { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.elicitation-fields [data-schemaform-options] > div { display: flex; align-items: center; gap: 6px; }
+.elicitation-fields [data-schemaform-density="compact"] [data-schemaform-errors] { display: contents; }
 
 *, *::before, *::after { box-sizing: border-box; }
 

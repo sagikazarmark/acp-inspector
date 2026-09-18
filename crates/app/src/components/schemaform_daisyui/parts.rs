@@ -111,17 +111,25 @@ pub(super) fn editable_field<T: 'static>(
     let label = widget_label(presentation, control);
     let label_id = label_id(presentation);
     let label_class = label_class(presentation);
+    let compact = super::density::compact();
     rsx! {
         Field { context: field_context, "data-schemaform-daisyui": kind,
+            "data-schemaform-density": if compact { "compact" } else { "default" },
             match layout {
                 WidgetLayout::Stacked => rsx! {
-                    FieldLabel { id: label_id, class: label_class, "{label}" }
+                    if compact {
+                        div { "data-schemaform-field-header": "", class: appearance.utilities("flex min-w-0 flex-wrap items-center justify-between gap-2"),
+                            FieldLabel { id: label_id, class: label_class, "{label}" }
+                            {presence_affordances(&presentation.presence, appearance)}
+                        }
+                    } else { FieldLabel { id: label_id, class: label_class, "{label}" } }
                     {widget}
                 },
                 WidgetLayout::Row => rsx! {
                     FieldRow {
                         {widget}
                         FieldLabel { id: label_id, class: label_class, "{label}" }
+                        if compact { {presence_affordances(&presentation.presence, appearance)} }
                     }
                 },
             }
@@ -169,7 +177,7 @@ pub(super) fn supplements(presentation: &NodePresentation, appearance: Appearanc
         {help_description(help)}
         {finding_descriptions(descriptions, appearance)}
         FindingErrors { id: errors_id, findings: errors, appearance }
-        {presence_affordances(&presentation.presence, appearance)}
+        if !super::density::compact() { {presence_affordances(&presentation.presence, appearance)} }
     }
 }
 
@@ -198,7 +206,7 @@ fn FindingErrors(id: String, findings: Vec<FindingDescriptor>, appearance: Appea
     rsx! {
         div {
             id: id.to_string(),
-            class: appearance.utilities("text-error"),
+            class: appearance.utilities(if super::density::compact() { "contents text-error" } else { "text-error" }),
             "aria-live": "polite",
             "data-schemaform-errors": "",
             for finding in findings {
@@ -270,7 +278,7 @@ pub(super) fn presence_affordances(presence: &[Affordance], appearance: Appearan
     let presence = presence.to_vec();
     rsx! {
         if !presence.is_empty() {
-            div { class: appearance.utilities("flex flex-wrap gap-2"),
+            div { "data-schemaform-presence": "", class: appearance.utilities("flex flex-wrap gap-2"),
                 for affordance in presence {
                     {presence_button(affordance)}
                 }
@@ -287,7 +295,7 @@ fn presence_button(affordance: Affordance) -> Element {
             key: "{affordance.id}",
             id: affordance.id.clone(),
             r#type: "button",
-            size: ButtonSize::Sm,
+            size: if super::density::compact() { ButtonSize::Xs } else { ButtonSize::Sm },
             "aria-label": affordance.accessible_name.clone(),
             onclick: move |_| invoke.invoke(),
             "{affordance.label}"
@@ -336,9 +344,16 @@ pub(super) fn read_only_field(
     let label = presentation.label.clone();
     let help = presentation.help.clone();
     let findings = presentation.findings.clone();
+    let compact = super::density::compact();
     rsx! {
         Field { context: field_context, "data-schemaform-daisyui": kind,
-            FieldLabel { id: label_id(presentation), class: label_class(presentation), "{label}" }
+            "data-schemaform-density": if compact { "compact" } else { "default" },
+            if compact {
+                div { "data-schemaform-field-header": "", class: appearance.utilities("flex min-w-0 flex-wrap items-center justify-between gap-2"),
+                    FieldLabel { id: label_id(presentation), class: label_class(presentation), "{label}" }
+                    {presence_affordances(presence, appearance)}
+                }
+            } else { FieldLabel { id: label_id(presentation), class: label_class(presentation), "{label}" } }
             output {
                 id: element_id,
                 name: control.name.clone(),
@@ -352,7 +367,7 @@ pub(super) fn read_only_field(
             }
             {help_description(help)}
             {finding_descriptions(findings, appearance)}
-            {presence_affordances(presence, appearance)}
+            if !compact { {presence_affordances(presence, appearance)} }
         }
     }
 }

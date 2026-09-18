@@ -327,7 +327,10 @@ fn BoundFields(
     let bound = use_hook(|| {
         RenderConfiguration::builder()
             .localizer(std::sync::Arc::new(crate::elicitation_words::FindingWords))
-            .controls(daisy::controls_with(daisy::Appearance::None))
+            .controls(daisy::controls_with_density(
+                daisy::Appearance::None,
+                daisy::Density::Compact,
+            ))
             .structure(
                 daisy::structure_with(daisy::Appearance::None).with_shell(InspectorFormShell),
             )

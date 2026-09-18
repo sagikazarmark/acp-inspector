@@ -6,7 +6,9 @@ use schemaform_dioxus::{ControlRenderContext, use_multiple_choice_edit};
 
 use super::Appearance;
 use super::mapping::field_meta_values;
-use super::parts::{incompatible_description, label_class, read_only_field, supplements};
+use super::parts::{
+    incompatible_description, label_class, presence_affordances, read_only_field, supplements,
+};
 use super::shell::advisory_presentation;
 use crate::components::field::Field;
 
@@ -57,23 +59,8 @@ pub(super) fn MultipleChoiceControl(
         described_by.push_str(&format!("{}-incompatible", presentation.element_id));
     }
     let described_by = (!described_by.is_empty()).then_some(described_by);
-    rsx! {
-        Field { context: field_context, "data-schemaform-daisyui": "multiple-choice",
-            fieldset {
-                id: presentation.element_id.clone(),
-                class: "fieldset",
-                tabindex: "-1",
-                "data-schemaform-control": "multiple-choice",
-                "data-focus-first-descendant": "",
-                legend {
-                    class: "fieldset-legend {label_class(presentation)}",
-                    "{presentation.label}"
-                    // Required describes array presence, never each option or its cardinality.
-                    if control.required { " (required)" }
-                }
-                if let Some(status) = control.write_only_status.clone() {
-                    output { "data-write-only-status": "", "{status}" }
-                }
+    let compact = super::density::compact();
+    let options = rsx! {
                 for option in edit.options.clone() {
                     div { key: "{option.identity.as_str()}", class: appearance.utilities("flex items-center gap-2"),
                         input {
@@ -92,6 +79,38 @@ pub(super) fn MultipleChoiceControl(
                         label { r#for: edit.option_element_id(&option.identity), "{option.label}" }
                     }
                 }
+    };
+    rsx! {
+        Field { context: field_context, "data-schemaform-daisyui": "multiple-choice",
+            "data-schemaform-density": if compact { "compact" } else { "default" },
+            if compact {
+                div { "data-schemaform-field-header": "", class: appearance.utilities("flex min-w-0 flex-wrap items-center justify-between gap-2"),
+                    span { id: format!("{}-legend", presentation.element_id), class: "fieldset-legend {label_class(presentation)}",
+                        "{presentation.label}"
+                        if control.required { " (required)" }
+                    }
+                    {presence_affordances(&presentation.presence, appearance)}
+                }
+            }
+            fieldset {
+                id: presentation.element_id.clone(),
+                class: "fieldset",
+                tabindex: "-1",
+                "data-schemaform-control": "multiple-choice",
+                "data-focus-first-descendant": "",
+                "aria-labelledby": compact.then(|| format!("{}-legend", presentation.element_id)),
+                if !compact {
+                    legend { class: "fieldset-legend {label_class(presentation)}",
+                        "{presentation.label}"
+                        if control.required { " (required)" }
+                    }
+                }
+                if let Some(status) = control.write_only_status.clone() {
+                    output { "data-write-only-status": "", "{status}" }
+                }
+                if compact {
+                    div { "data-schemaform-options": "", class: appearance.utilities("flex flex-wrap items-center gap-2"), {options} }
+                } else { {options} }
                 {incompatible_description(presentation, appearance)}
                 {supplements(presentation, appearance)}
             }
