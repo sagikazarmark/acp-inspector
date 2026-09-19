@@ -67,12 +67,9 @@ try {
 
 /// Puts one piece of text on the system clipboard, and answers whether it went.
 ///
-/// A clipboard that did not take is still not *reported*: what a failure looks
-/// like is the paste that does not happen, one keystroke away from being tried
-/// again, and a window that grew an error row for it would be spending the
-/// reader's attention on the tool instead of on the agent. What the answer is
-/// for is the other end — saying nothing rather than saying it worked.
-async fn copied(text: String) -> bool {
+/// Callers choose feedback: evidence Copy confirms success with a toast;
+/// export retrieval also displays failure beside the path.
+pub(crate) async fn copied(text: String) -> bool {
     // The script is the constant above and never anything else: a frame's text
     // is *sent* to it, so nothing an agent emitted is ever part of a program
     // this window runs. That is not a nicety here — the text being copied is

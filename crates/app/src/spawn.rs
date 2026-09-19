@@ -83,23 +83,25 @@ pub fn SpawnForm(
             div { class: "form-field",
                 div { class: "form-label",
                     span { class: "form-key", "cmd" }
-                    span { class: "form-note", "command to spawn" }
+                    span { class: "form-note", "executable only" }
                 }
                 input {
                     class: "input",
                     value: "{command}",
                     spellcheck: false,
                     aria_label: "Command",
+                    aria_describedby: "launch-command-help",
                     // **The platform focuses it, once per opening.**
                     // `showModal` puts the keyboard on the autofocus element of
                     // the dialog it is showing.
                     autofocus: true,
-                    placeholder: "npx @zed-industries/claude-code-acp",
+                    placeholder: "npx",
                     oninput: move |event| {
                         command.set(event.value());
                         clear_recall_confirmation();
                     },
                 }
+                p { id: "launch-command-help", class: "hint", "Executable name or path, without arguments or shell quotes." }
             }
             div { class: "form-field",
                 div { class: "form-label",
@@ -112,12 +114,14 @@ pub fn SpawnForm(
                     value: "{args}",
                     spellcheck: false,
                     aria_label: "Arguments",
-                    placeholder: "--log-level debug",
+                    aria_describedby: "launch-args-help",
+                    placeholder: "@zed-industries/claude-code-acp",
                     oninput: move |event| {
                         args.set(event.value());
                         clear_recall_confirmation();
                     },
                 }
+                p { id: "launch-args-help", class: "hint", "One argument per line; put a flag and its value on separate lines. Spaces within a line stay in that argument. No shell quoting or expansion; blank lines and surrounding whitespace are ignored." }
             }
             div { class: "form-field",
                 div { class: "form-label",
@@ -147,12 +151,14 @@ pub fn SpawnForm(
                     value: "{cwd}",
                     spellcheck: false,
                     aria_label: "Working directory",
+                    aria_describedby: "launch-cwd-help",
                     placeholder: "the inspector's own",
                     oninput: move |event| {
                         cwd.set(event.value());
                         clear_recall_confirmation();
                     },
                 }
+                p { id: "launch-cwd-help", class: "hint", "Empty uses the inspector's working directory; relative paths resolve against it. The Agent starts there, and session/new receives an absolute path." }
             }
 
             if !recent.is_empty() {
@@ -215,9 +221,9 @@ pub fn SpawnForm(
         div { class: "dialog-foot",
             p { class: "hint",
                 if running {
-                    "connected — launching again ends the agent that is running"
+                    "Stop the running Agent before launching another."
                 } else {
-                    "cwd is sent with session/new · must be absolute"
+                    "Launch starts the Agent and opens a Session."
                 }
             }
             button {
@@ -362,7 +368,8 @@ mod tests {
         // would be describing an agent nobody can see while it is shut.
         let html = shown();
         assert!(
-            html.contains(r#"placeholder="npx @zed-industries/claude-code-acp""#),
+            html.contains(r#"placeholder="npx""#)
+                && html.contains(r#"placeholder="@zed-industries/claude-code-acp""#),
             "the fields: {html}"
         );
         assert!(
@@ -402,7 +409,7 @@ mod tests {
             "one row per field the transport takes: {html}"
         );
         for (key, note) in [
-            ("cmd", "command to spawn"),
+            ("cmd", "executable only"),
             ("args", "arguments, one per line"),
             ("env", "environment, KEY=value per line"),
             ("cwd", "session working directory"),

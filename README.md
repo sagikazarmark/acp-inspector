@@ -146,7 +146,10 @@ toast: in ACP these are the main traffic of a turn, not an alert beside it.
 
 The trace exports as evidence. **Export** writes every frame the trace holds as JSONL — one
 record per frame with its timestamp, its connection, its direction and the frame verbatim, behind
-a self-describing header that warns nothing is redacted — and the shell shows the path it wrote.
+a self-describing header that warns nothing is redacted. The shell shows the temporary file's
+full path with **Copy export path** and desktop **Open containing folder**, reporting pending
+operations and failures beside it. Copy or move the file elsewhere to keep it: system temporary
+storage is not a durable archive. Each export creates a new file, never overwriting earlier evidence.
 The schema is pinned in [`docs/trace-export.md`](docs/trace-export.md), because ACP Wiretap and
 replay tooling are meant to read it: it aligns with the bridge's `--trace-frames` records field
 for field and adds what the inspector knows and the bridge did not record.
@@ -323,9 +326,14 @@ the composer do not navigate the inspector window.
 just run      # cargo run -p acp-inspector
 ```
 
-Fill the spawn form — command, one argument per line, `KEY=VALUE` environment per line, working
-directory — and launch. The console at the bottom fills as frames cross; its other tab carries the
-agent's stderr, and the console expands onto it if the agent never starts. Once the session is
+Fill the spawn form with an **executable only** in Command (for example `npx`), and
+`@zed-industries/claude-code-acp` on its own line in Arguments. Each nonblank argument line is
+one argument: a flag and its value go on separate lines, while a path containing spaces stays
+on one line **without shell quotes**. No shell expansion is performed; surrounding whitespace
+is trimmed. Environment takes one `KEY=VALUE` per line. An empty working directory uses the
+inspector's own; a relative directory resolves against it. The Agent starts there and
+`session/new` receives an absolute path. Launch, and the console fills as frames cross; its
+other tab carries the agent's stderr, and the console expands onto it if the agent never starts. Once the session is
 open, type a prompt and press enter (shift-enter for a newline) to watch the turn stream in.
 
 The desktop build is a WebView app, so building it needs the platform's browser engine: on Linux

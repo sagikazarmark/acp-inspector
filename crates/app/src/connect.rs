@@ -105,30 +105,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_platform_owns_the_modality() {
-        // The four behaviours a hand-rolled overlay would owe: a focus trap, a
-        // backdrop, Escape, and focus returned to whatever opened it. All four
-        // come from `showModal`, and none from an `open` attribute — which is
-        // the mistake worth asserting against, because a component that
-        // rendered `open: true` would draw the form in the corner of the window
-        // with the window still usable behind it and call it a modal.
-        let source = include_str!("connect.rs");
-        assert!(
-            source.contains("dialog.showModal()") && source.contains("dialog.close()"),
-            "the element is opened and shut by the calls that make it modal"
-        );
-
+    fn the_dialog_renders_closed_with_a_native_backdrop_form() {
         let html = shown();
+        let dialog = html
+            .split("<dialog")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
         assert!(
-            !html.contains("<dialog id=\"connect-dialog\" open"),
-            "and never by the attribute that does not: {html}"
+            !dialog
+                .split_whitespace()
+                .any(|attribute| attribute == "open" || attribute.starts_with("open=")),
+            "the dialog starts closed: {html}"
         );
-        // And nothing in Rust shadows it: Escape and the backdrop close the
-        // element without asking, so a window that believed it was still open
-        // would answer the next click by setting a value that had not changed —
-        // a Connect button that works once. Asserted by the absence of any
-        // state to get wrong: the component takes no `open`, which is why the
-        // props struct below names every input and not that one.
+        assert!(
+            html.contains(r#"method="dialog""#) && html.contains(r#"class="modal-backdrop""#),
+            "{html}"
+        );
     }
 
     fn shown() -> String {

@@ -22,7 +22,7 @@ publish.workspace = true
 # surface (docs/architecture.md §1).
 [features]
 default = ["desktop"]
-desktop = ["dioxus/desktop"]
+desktop = ["dioxus/desktop", "dep:open"]
 web = ["dioxus/web"]
 
 # State, rendering, form presentation, clocks and the answer's data format.
@@ -33,6 +33,8 @@ web = ["dioxus/web"]
 acp-inspector-core.workspace = true
 base64 = "0.22"
 url = "2"
+# Desktop folder retrieval, with platform launcher exit errors observed in shell.rs.
+open = { version = "5.3", optional = true }
 
 dioxus.workspace = true
 dioxus-field = { version = "0.7.0", default-features = false }

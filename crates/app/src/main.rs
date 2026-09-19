@@ -288,6 +288,8 @@ fn App() -> Element {
     });
     #[cfg(feature = "desktop")]
     shell::use_shutdown(inspector.clone());
+    #[cfg(feature = "desktop")]
+    use_context_provider(shell::export_retrieval);
     mcp::provide(inspector.clone());
 
     // What the spawn form remembers (§9). Read once, at the window's start,

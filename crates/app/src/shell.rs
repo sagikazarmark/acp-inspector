@@ -97,6 +97,31 @@ pub fn set_title(title: &str) {
     dioxus::desktop::window().set_title(title);
 }
 
+/// Native retrieval stays behind the renderer boundary. Observe launcher exit
+/// errors off the UI executor; success means dispatch, not proof a window opened.
+pub fn export_retrieval() -> crate::export::Retrieval {
+    crate::export::Retrieval {
+        open_folder: Some(|path| Box::pin(open_export_folder(path))),
+        ..Default::default()
+    }
+}
+
+async fn open_export_folder(path: std::path::PathBuf) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let folder = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Export has no containing folder"))?;
+        open::that(folder)
+    })
+    .await
+    .map_err(|error| format!("Could not open containing folder: {error}"))?
+    .map_err(|error| {
+        format!(
+            "Could not open containing folder: {error}. Use Copy export path to retrieve the file."
+        )
+    })
+}
+
 /// Tao may exit the process without dropping the runtime. Stop the owned
 /// Connection on the event-loop path itself, before that exit can happen.
 pub fn use_shutdown(inspector: acp_inspector_core::Inspector) {

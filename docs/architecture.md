@@ -1855,7 +1855,9 @@ Toolbar, command palette and native menu use one background export job. Activati
 snapshot, then serialization and writing run on the blocking pool. Pending status is visible,
 repeat activation while pending does not queue another snapshot, and success or failure replaces
 it. Clear/reconnect cannot change the job's evidence. The destination remains the temporary
-directory until the Save dialog work. Measurements and remaining limits:
+directory, explicitly labelled as temporary, with Copy export path and desktop Open containing
+folder controls and visible retrieval outcomes. Keeping evidence durably requires copying or
+moving that file elsewhere. Measurements and remaining limits:
 [`performance-hardening.md`](performance-hardening.md).
 
 Pulled *into* the MVP deliberately ([#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56)):

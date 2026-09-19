@@ -120,9 +120,11 @@ not the earlier evidence gone. On Unix the file is created `0600`, because nothi
 redacted and a world-readable copy in a shared temp directory is not what anybody asked for by
 pressing Export.
 
-The desktop shell shows the path it wrote. A native save dialog is a refinement, not a
-correction: where the file goes is core's decision and testable, and a dialog only changes who
-picks the directory.
+The shell shows the full path with **Copy export path** and, on desktop, **Open containing
+folder**. Both report pending state and failure beside the path; opening reports successful
+dispatch to the desktop, not proof that a folder window appeared. Copy or move the file to
+durable storage to keep it: the system may remove temporary files. Retrieval does not rewrite
+the export or change the snapshot/no-overwrite contract.
 
 ## Clear
 

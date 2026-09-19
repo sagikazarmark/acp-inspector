@@ -247,14 +247,7 @@ pub fn TraceView(
             if let Some(saved) = saved {
                 match saved {
                     Ok(path) => rsx! {
-                        p { class: "saved", role: "status",
-                            "Exported to "
-                            // Selectable, and the whole path: the next thing
-                            // the user does with it is attach it to a bug
-                            // report, and a path they have to retype is a path
-                            // they will get wrong.
-                            code { class: "mono", "{path.display()}" }
-                        }
+                        crate::export::Saved { key: "{path.display()}", path }
                     },
                     Err(problem) => rsx! {
                         p { class: "saved bad", role: "status", "The export was not written: {problem}" }

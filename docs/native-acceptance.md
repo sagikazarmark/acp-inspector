@@ -40,6 +40,38 @@ rows; the portable Agent implements none of those callbacks.
 
 ## Portable attachment/MCP acceptance Agent
 
+### Launch fields and export retrieval
+
+- Command contains only the executable (`npx` is the example); its package
+  `@zed-industries/claude-code-acp` belongs on one Arguments line. Flags and separate values
+  need separate lines. Paths with spaces need no shell quotes. Verify the Command, Arguments
+  and Working directory descriptions are reachable through their accessible descriptions.
+- With the portable Agent below, launch once with empty cwd and once with `.`. Inspect
+  `session/new`: both resolve against the inspector's working directory and send an absolute
+  path. Check a multi-line flag/value pair actually reaches the Agent.
+- Export through the Console, palette or native menu. Pending writing must leave the window
+  responsive. The result names **temporary storage** and shows the complete selectable path.
+  Activate **Copy export path**, paste into a text field, and compare with the displayed path.
+  Check focus stays on Copy while feedback updates. Activate **Open containing folder** and
+  locate the file; a missing/refusing desktop handler must produce visible failure with Copy
+  still usable. Repeat an export: the earlier file must remain intact.
+- Copy/move the file elsewhere for durable retention. Repeat keyboard/viewport checks at both
+  supported sizes. Native folder success, clipboard failure and spoken feedback need platform
+  evidence; callback tests alone do not establish them.
+
+September 2026 Linux WebKitGTK/Xvfb check (Phase 6, uncommitted build): corrected fields launched
+the Python fixture with separate `--prompt-capabilities` / `none` lines and cwd `.`; exported
+`session/new` carried `/home/laborant/acp-inspector/.`. Copy used the real clipboard, confirmed
+success, retained focus, and Ctrl+V pasted the exact JSONL path. The isolated desktop's `gio open`
+failed and that failure appeared beside the path. Injecting refusal into both WebView clipboard
+mechanisms displayed Copy failure; a second export kept the first file intact. At measured
+960 × 640 and 1440 × 880 viewports, the launch dialog stayed within the viewport and the document
+had no horizontal overflow; retrieval controls were visible at the smaller size. No native
+folder-success or spoken-feedback claim is made. Build/check target: `/tmp/opencode/inspector-final`,
+`CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0`.
+
+### Fixture launch
+
 `scripts/acceptance-agent.py` needs **Python 3.9+**, with no packages, Testy build,
 shell scripts or network access. Find the interpreter's absolute path by running
 `python3 -c "import sys; print(sys.executable)"` on Linux/macOS or
