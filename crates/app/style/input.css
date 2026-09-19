@@ -117,19 +117,19 @@
    names utilities in order to state rules about them. */
 @source not "../src/style.rs";
 
-.prompt-image-picker { padding: 8px 12px; }
-.prompt-images { max-height: 180px; overflow-y: auto; min-width: 0; }
-.prompt-image-picker label { display: grid; gap: 4px; }
-.prompt-image { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
-.prompt-image img { max-width: 96px; max-height: 72px; object-fit: contain; }
+.prompt-attachment-picker { padding: 8px 12px; }
+.prompt-attachments { max-height: 180px; overflow-y: auto; min-width: 0; }
+.prompt-attachment-picker label { display: grid; gap: 4px; }
+.prompt-attachment { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
+.prompt-attachment img { max-width: 96px; max-height: 72px; object-fit: contain; }
 .prompt-audio { min-width: 0; flex: 0 1 240px; }
 .prompt-audio audio { width: 100%; max-width: 240px; }
-.prompt-image:has(audio) { flex-wrap: wrap; }
-.prompt-image:has(details) { flex-wrap: wrap; }
-.prompt-image details { min-width: 0; max-width: 100%; }
+.prompt-attachment:has(audio) { flex-wrap: wrap; }
+.prompt-attachment:has(details) { flex-wrap: wrap; }
+.prompt-attachment details { min-width: 0; max-width: 100%; }
 .prompt-text-preview { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.prompt-image span { overflow-wrap: anywhere; min-width: 0; }
-.prompt-image button { flex: none; }
+.prompt-attachment span { overflow-wrap: anywhere; min-width: 0; }
+.prompt-attachment button { flex: none; }
 
 /* The registry at Appearance::None keeps component
    classes and its Field parts' utilities; the host owns flat form layout. */

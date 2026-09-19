@@ -25,6 +25,7 @@ compile_error!(
 
 mod agent;
 mod appearance;
+mod attachment_draft;
 mod clipboard;
 #[allow(dead_code, unused_imports)] // Unmodified registry install includes its complete public API.
 mod components;
@@ -38,17 +39,16 @@ mod elicitation_schema;
 mod elicitation_words;
 mod indent;
 mod json;
-mod media_draft;
 // The window's own mark, drawn into its icon: reached only through the shell,
 // so it goes where the shell goes. The bundle's icon includes the same file by
 // path and does not pass through here (`examples/bundle-icon.rs`).
+mod attachment;
 #[cfg(feature = "desktop")]
 mod mark;
 #[cfg(test)]
 mod mock;
 mod palette;
 mod permission;
-mod prompt_media;
 mod rail;
 mod session;
 mod session_settings;
