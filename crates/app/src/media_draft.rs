@@ -126,6 +126,34 @@ impl MediaDraft {
 mod tests {
     use super::*;
     use crate::prompt_media::PromptMedia;
+    #[test]
+    fn text_and_media_share_original_byte_budget_in_reservation_order() {
+        let mut draft = MediaDraft::default();
+        let a = draft.reserve("a.png".into()).unwrap();
+        let b = draft.reserve("context.rs".into()).unwrap();
+        let c = draft.reserve("overflow.txt".into()).unwrap();
+        let mut text = "\u{feff}é\r\n".to_owned();
+        text.push_str(&"x".repeat(2 * 1024 * 1024 - text.len()));
+        draft.finish(
+            c,
+            Ok(PromptMedia::from_bytes("overflow.txt".into(), b"x").unwrap()),
+        );
+        draft.finish(
+            b,
+            Ok(PromptMedia::from_bytes("context.rs".into(), text.as_bytes()).unwrap()),
+        );
+        assert!(!draft.sendable());
+        draft.finish(a, Ok(image("a.png", 4 * 1024 * 1024)));
+        assert_eq!(draft.bytes(), MAX_TOTAL_BYTES);
+        assert!(matches!(draft.entries()[1].state, MediaState::Ready(_)));
+        assert!(matches!(draft.entries()[2].state, MediaState::Failed(_)));
+        draft.remove(c);
+        assert!(draft.sendable());
+        let content = draft.content().unwrap();
+        assert!(
+            matches!(&content[1],v1::ContentBlock::Resource(resource) if matches!(&resource.resource,v1::EmbeddedResourceResource::TextResourceContents(value) if value.text == text))
+        );
+    }
 
     #[test]
     fn images_and_audio_share_order_and_the_same_byte_budget() {

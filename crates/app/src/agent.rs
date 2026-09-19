@@ -855,8 +855,6 @@ enum Unreached {
     /// affordances hang off a listing row, so there is no row to press them on
     /// — the consequence §7.5 records, made visible where it bites.
     NoListingRow,
-    /// Embedded context remains deferred (§1.1).
-    OneTextBlock,
     /// The two MCP transports. Every session is opened with an empty
     /// `mcpServers`, and that too is deferred with a ring owed (§1.1).
     NoMcpServers,
@@ -876,7 +874,6 @@ impl Unreached {
             Self::NoListingRow => {
                 "it is pressed on a listing row, and this agent advertised no session/list"
             }
-            Self::OneTextBlock => "the composer sends text, images and audio, not embedded context",
             Self::NoMcpServers => "a session is opened with an empty mcpServers",
         }
     }
@@ -1252,7 +1249,7 @@ fn advertised(
                     Claim::self_named("image", prompt.image).driven(record, AgentCapability::Image),
                     Claim::self_named("audio", prompt.audio).driven(record, AgentCapability::Audio),
                     Claim::self_named("embeddedContext", prompt.embedded_context)
-                        .undrivable(Unreached::OneTextBlock),
+                        .driven(record, AgentCapability::EmbeddedContext),
                 ],
             }],
         ),
@@ -3878,6 +3875,7 @@ mod tests {
         expected.push("authenticate");
         expected.push("image");
         expected.push("audio");
+        expected.push("embeddedContext");
         let panel = rendered_driven(record(Driven::Answered));
 
         let carrying = reporting(&panel);
@@ -3914,13 +3912,13 @@ mod tests {
             0,
             "none of them reports an outcome as well: {unreached:?}"
         );
-        for named in ["session/resume", "embeddedContext", "http", "sse"] {
+        for named in ["session/resume", "http", "sse"] {
             assert!(
                 unreached.iter().any(|row| row.contains(named)),
                 "{named} says this tool cannot drive it: {unreached:?}"
             );
         }
-        assert_eq!(unreached.len(), 4, "and only those: {unreached:?}");
+        assert_eq!(unreached.len(), 3, "and only those: {unreached:?}");
     }
 
     #[test]
@@ -4063,11 +4061,8 @@ mod tests {
         for agent in [everything(), nothing()] {
             let panel = shown(agent, true);
 
-            for (capability, because) in [
-                ("embeddedContext", "not embedded context"),
-                ("http", "empty mcpServers"),
-                ("sse", "empty mcpServers"),
-            ] {
+            for (capability, because) in [("http", "empty mcpServers"), ("sse", "empty mcpServers")]
+            {
                 let run = run_for(&panel, capability);
                 assert!(
                     (run.contains(CANNOT_ANY) || run.contains(CANNOT)) && run.contains(because),

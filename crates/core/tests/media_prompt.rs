@@ -7,7 +7,7 @@ use common::{sent, shell};
 async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
     let inspector = Inspector::new();
     inspector.start(&shell(concat!(
-        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"image\":true,\"audio\":true}}}}'; ",
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"image\":true,\"audio\":true,\"embeddedContext\":true}}}}'; ",
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s\"}}'; ",
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; cat >/dev/null"
     ))).await.unwrap();
@@ -16,6 +16,7 @@ async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
             v1::ContentBlock::from("Describe this"),
             v1::ContentBlock::Image(v1::ImageContent::new("iVBORw0KGgo=", "image/png")),
             v1::ContentBlock::Audio(v1::AudioContent::new("UklGRgQAAABXQVZF", "audio/wav")),
+            text_resource(),
             v1::ContentBlock::Image(v1::ImageContent::new("R0lGODlh", "image/gif")),
         ])
         .await
@@ -34,6 +35,7 @@ async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
             {"type":"text","text":"Describe this"},
             {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"},
             {"type":"audio","data":"UklGRgQAAABXQVZF","mimeType":"audio/wav"},
+            {"type":"resource","resource":{"uri":"file:///tmp/a%20%23.rs","mimeType":"text/plain","text":"\u{feff}<hello>é\r\n"}},
             {"type":"image","data":"R0lGODlh","mimeType":"image/gif"}
         ])
     );
@@ -44,6 +46,67 @@ async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
     assert_eq!(
         inspector.driven().of(AgentCapability::Audio),
         Driven::Answered
+    );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::EmbeddedContext),
+        Driven::Answered
+    );
+    inspector.disconnect();
+}
+
+fn text_resource() -> v1::ContentBlock {
+    v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+        v1::EmbeddedResourceResource::TextResourceContents(
+            v1::TextResourceContents::new("\u{feff}<hello>é\r\n", "file:///tmp/a%20%23.rs")
+                .mime_type("text/plain".to_owned()),
+        ),
+    ))
+}
+
+#[tokio::test]
+async fn embedded_only_agent_accepts_text_resources_but_not_blobs_or_oversized_frames() {
+    let inspector = Inspector::new();
+    inspector.start(&shell(concat!(
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"embeddedContext\":true}}}}'; ",
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s\"}}'; ",
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; cat >/dev/null"
+    ))).await.unwrap();
+    let blob = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+        v1::EmbeddedResourceResource::BlobResourceContents(v1::BlobResourceContents::new(
+            "AA==",
+            "file:///binary",
+        )),
+    ));
+    assert_eq!(
+        inspector.prompt_content(vec![blob]).await,
+        Err(CallError::UnsupportedPromptContent)
+    );
+    let large = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+        v1::EmbeddedResourceResource::TextResourceContents(v1::TextResourceContents::new(
+            "\t".repeat(5 * 1024 * 1024),
+            "file:///large.txt",
+        )),
+    ));
+    assert_eq!(
+        inspector.prompt_content(vec![large]).await,
+        Err(CallError::PromptTooLarge)
+    );
+    assert!(
+        !sent(&inspector)
+            .iter()
+            .any(|frame| frame.contains("session/prompt"))
+    );
+    inspector
+        .prompt_content(vec![text_resource()])
+        .await
+        .unwrap();
+    assert_eq!(
+        inspector.driven().of(AgentCapability::EmbeddedContext),
+        Driven::Answered
+    );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::Image),
+        Driven::Unasked
     );
     inspector.disconnect();
 }
@@ -75,6 +138,10 @@ async fn media_require_advertisement_and_oversized_prompts_send_no_frame() {
         Err(CallError::AudioNotAdvertised)
     );
     // JSON escaping, not just raw text size, determines whether a Frame fits.
+    assert_eq!(
+        inspector.prompt_content(vec![text_resource()]).await,
+        Err(CallError::EmbeddedContextNotAdvertised)
+    );
     assert_eq!(
         inspector.prompt(&"\"".repeat(6 * 1024 * 1024)).await,
         Err(CallError::PromptTooLarge)

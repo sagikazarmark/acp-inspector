@@ -33,7 +33,7 @@ pub fn image(
         .decode(data)
         .map_err(|_| "Could not decode clipboard image.")?;
     let media = PromptMedia::from_bytes(name, &bytes)?;
-    if media.is_audio() {
+    if media.is_audio() || media.is_text() {
         return Err("Paste a PNG, JPEG, GIF or WebP image.".into());
     }
     Ok(media)

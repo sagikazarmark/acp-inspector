@@ -22,9 +22,11 @@ pub enum CallError {
     ImageNotAdvertised,
     /// Audio content was supplied without an Agent audio advertisement.
     AudioNotAdvertised,
+    /// Embedded content was supplied without the Agent advertisement.
+    EmbeddedContextNotAdvertised,
     /// The complete outgoing prompt Frame exceeds the host's 10 MiB budget.
     PromptTooLarge,
-    /// This prompt entry point handles text, images and audio only.
+    /// This prompt entry point handles text, images, audio and embedded text only.
     UnsupportedPromptContent,
     /// The bounded outgoing queue cannot accept a prompt immediately.
     OutgoingBusy,
@@ -62,10 +64,13 @@ impl std::fmt::Display for CallError {
             }
             Self::ImageNotAdvertised => f.write_str("the agent did not advertise image prompts"),
             Self::AudioNotAdvertised => f.write_str("the agent did not advertise audio prompts"),
-            Self::PromptTooLarge => f.write_str("the complete prompt Frame exceeds 10 MiB"),
-            Self::UnsupportedPromptContent => {
-                f.write_str("this composer sends only text, image and audio content")
+            Self::EmbeddedContextNotAdvertised => {
+                f.write_str("the agent did not advertise embedded context prompts")
             }
+            Self::PromptTooLarge => f.write_str("the complete prompt Frame exceeds 10 MiB"),
+            Self::UnsupportedPromptContent => f.write_str(
+                "this composer sends only text, images, audio and embedded text resources",
+            ),
             Self::NoWorkingDirectory => {
                 f.write_str("the session's working directory could not be named")
             }

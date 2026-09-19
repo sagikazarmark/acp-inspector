@@ -90,6 +90,18 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Embedded text files, 2026-09-19
+
+Linux WebKitGTK, Xvfb/Openbox, scripted Agent advertising embedded context:
+native GTK drop of `context #.rs` followed by PNG produced two ordered rows. The
+63-byte UTF-8 file contained `café` and `<literal>` source text; the preview rendered
+it literally. Send reached `end_turn`, cleared the draft, and Trace contained the
+embedded text resource with `file:///tmp/opencode/context%20%23.rs`.
+Tests cover UTF-8 BOM/CRLF fidelity, URI escaping, binary rejection, shared original
+byte budgets, escaped previews, missing Advertisement, text-only Advertisement,
+and refusal of blobs or a JSON-escaped resource exceeding the 10 MiB Frame limit.
+Native macOS/Windows behavior remains tracked in #9.
+
 ### Clipboard images, 2026-09-19
 
 Linux WebKitGTK, Xvfb/Openbox, GTK native image clipboard: Ctrl+V in the composer

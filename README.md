@@ -228,7 +228,8 @@ host repository and depended on none of its crates: patterns were copied, never 
 ## Running it
 
 Where the Agent advertises `promptCapabilities.image`, the composer accepts PNG,
-JPEG, GIF and WebP; `promptCapabilities.audio` admits WAV and MP3. Mixed drafts
+JPEG, GIF and WebP; `promptCapabilities.audio` admits WAV and MP3;
+`promptCapabilities.embeddedContext` admits UTF-8 text/source files. Mixed drafts
 share a limit of eight attachments, 5 MiB each and 6 MiB of original bytes total.
 Select multiple files, drop them onto the composer, or paste clipboard images
 where the Agent advertises images. Ordinary text paste is preserved, including
@@ -238,8 +239,12 @@ order; files keep the order the picker/drop source supplied. Each row has a name
 loading/failure state or preview/MIME/byte count, and an individual Remove control.
 Repeated selections intentionally add duplicates. Send waits for reads to finish
 and failed rows or overflow notices to be dismissed, so a bad file is never
-silently omitted. Send media alone or after a text block. MIME comes from the signature;
-original bytes are base64 encoded without resizing or transcoding. Audio has native
+silently omitted. Send attachments alone or after a text block. Image/audio MIME comes
+from the signature; original media bytes are base64 encoded without resizing or transcoding.
+Text files use embedded `resource` blocks with `text/plain`, exact UTF-8 text (including
+BOM and line endings), and an escaped native file URI or unique browser attachment URI.
+The literal text preview shows at most 2000 characters. Non-UTF-8 files, binary controls
+and recognized binary formats are refused. Audio has native
 playback controls without autoplay. Playback errors are shown independently of sending;
 signature identification does not guarantee that the WebView can decode the file.
 A complete outgoing prompt over 10 MiB is refused before
@@ -250,7 +255,7 @@ the Agent's eventual answer is awaited separately.
 
 On Linux, native file selection needs a desktop file-picker portal or `zenity`
 (included in `devenv shell`). Audio playback needs GStreamer's base, good and ugly
-plugins, also exposed by the shell. Embedded context and clipboard audio input
+plugins, also exposed by the shell. Binary resource attachments and clipboard audio input
 remain deferred. Non-file text/URL drops are not attachments; file drops outside
 the composer do not navigate the inspector window.
 

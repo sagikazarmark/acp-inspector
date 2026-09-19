@@ -125,6 +125,9 @@
 .prompt-audio { min-width: 0; flex: 0 1 240px; }
 .prompt-audio audio { width: 100%; max-width: 240px; }
 .prompt-image:has(audio) { flex-wrap: wrap; }
+.prompt-image:has(details) { flex-wrap: wrap; }
+.prompt-image details { min-width: 0; max-width: 100%; }
+.prompt-text-preview { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .prompt-image span { overflow-wrap: anywhere; min-width: 0; }
 .prompt-image button { flex: none; }
 

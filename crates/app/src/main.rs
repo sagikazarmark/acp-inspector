@@ -1103,6 +1103,7 @@ fn App() -> Element {
                 prompt_epoch: prompt_epoch(),
                 image_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image),
                 audio_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.audio),
+                embedded_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.embedded_context),
                 entries,
                 turn: turn(),
                 session: session(),

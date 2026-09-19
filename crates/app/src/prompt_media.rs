@@ -1,4 +1,4 @@
-//! One selected image or audio file, encoded without changing its bytes.
+//! One selected attachment, preserving its original media bytes or UTF-8 text.
 use acp_inspector_core::v1;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -10,11 +10,13 @@ pub struct PromptMedia {
     pub bytes: usize,
     pub mime: &'static str,
     data: String,
+    text_uri: Option<String>,
 }
 
 impl PromptMedia {
     pub async fn from_file(file: dioxus::html::FileData) -> Result<Self, String> {
         let name = file.name();
+        let path = file.path();
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = if file
             .inner()
@@ -58,7 +60,15 @@ impl PromptMedia {
             }
             file.read_bytes().await.map_err(|e| e.to_string())?.to_vec()
         };
-        Self::from_bytes(name, &bytes)
+        let mut media = Self::from_bytes(name, &bytes)?;
+        if media.is_text() && path.is_absolute() {
+            media.text_uri = Some(
+                url::Url::from_file_path(path)
+                    .map_err(|_| "Could not represent the selected file as a URI.")?
+                    .into(),
+            );
+        }
+        Ok(media)
     }
     pub fn from_bytes(name: String, bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_MEDIA_BYTES {
@@ -77,23 +87,28 @@ impl PromptMedia {
         } else if is_mp3(bytes) {
             "audio/mpeg"
         } else {
-            return Err(
-                "Choose PNG, JPEG, GIF, WebP, WAV or MP3 (identified by its file signature)."
-                    .into(),
-            );
+            return Self::text(name, bytes);
         };
         Ok(Self {
             name,
             bytes: bytes.len(),
             mime,
             data: STANDARD.encode(bytes),
+            text_uri: None,
         })
     }
     pub fn preview(&self) -> String {
         format!("data:{};base64,{}", self.mime, self.data)
     }
     pub fn content(&self) -> v1::ContentBlock {
-        if self.is_audio() {
+        if let Some(uri) = &self.text_uri {
+            v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+                v1::EmbeddedResourceResource::TextResourceContents(
+                    v1::TextResourceContents::new(self.data.clone(), uri.clone())
+                        .mime_type(self.mime.to_owned()),
+                ),
+            ))
+        } else if self.is_audio() {
             v1::ContentBlock::Audio(v1::AudioContent::new(self.data.clone(), self.mime))
         } else {
             v1::ContentBlock::Image(v1::ImageContent::new(self.data.clone(), self.mime))
@@ -102,8 +117,90 @@ impl PromptMedia {
     pub fn is_audio(&self) -> bool {
         self.mime.starts_with("audio/")
     }
-    pub fn advertised(&self, image: bool, audio: bool) -> bool {
-        if self.is_audio() { audio } else { image }
+    pub fn is_text(&self) -> bool {
+        self.text_uri.is_some()
+    }
+    pub fn text_preview(&self) -> String {
+        self.data.chars().take(2000).collect()
+    }
+    fn text(name: String, bytes: &[u8]) -> Result<Self, String> {
+        let extension = std::path::Path::new(&name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let binary_name = matches!(
+            extension.as_str(),
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "wav"
+                | "mp3"
+                | "pdf"
+                | "zip"
+                | "gz"
+                | "exe"
+                | "wasm"
+                | "mp4"
+                | "ogg"
+                | "flac"
+                | "doc"
+                | "docx"
+        );
+        let text = std::str::from_utf8(bytes).map_err(|_| "Choose a UTF-8 text file or supported image/audio (identified by its file signature).")?;
+        let binary_signature = [
+            b"ID3".as_slice(),
+            b"RIFF",
+            b"fLaC",
+            b"OggS",
+            b"!<arch>\n",
+            b"%PDF-",
+            b"PK\x03\x04",
+            b"PK\x05\x06",
+            b"GIF",
+            b"\x89PNG",
+            b"\x7fELF",
+            b"\0asm",
+            b"\x1f\x8b",
+        ]
+        .iter()
+        .any(|signature| bytes.starts_with(signature));
+        if binary_name
+            || binary_signature
+            || text
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err("Choose a UTF-8 text file or supported image/audio (identified by its file signature).".into());
+        }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut uri = url::Url::parse("attachment:///text/").expect("attachment URI");
+        uri.path_segments_mut()
+            .expect("hierarchical URI")
+            .push(
+                &NEXT
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .to_string(),
+            )
+            .push(&name);
+        Ok(Self {
+            name,
+            bytes: bytes.len(),
+            mime: "text/plain",
+            data: text.to_owned(),
+            text_uri: Some(uri.into()),
+        })
+    }
+    pub fn advertised(&self, image: bool, audio: bool, embedded: bool) -> bool {
+        if self.is_text() {
+            embedded
+        } else if self.is_audio() {
+            audio
+        } else {
+            image
+        }
     }
 }
 
@@ -143,6 +240,65 @@ fn is_mp3(mut bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn native_text_file_metadata_keeps_escaped_absolute_uri() {
+        let media = PromptMedia::from_file(dioxus::html::FileData::new(
+            dioxus::html::SerializedFileData {
+                path: "/tmp/a #?.rs".into(),
+                size: 4,
+                last_modified: 0,
+                content_type: None,
+                contents: Some(b"text".to_vec().into()),
+            },
+        ))
+        .await
+        .unwrap();
+        assert_eq!(media.text_uri.as_deref(), Some("file:///tmp/a%20%23%3F.rs"));
+    }
+    #[test]
+    fn text_is_literal_utf8_with_distinct_escaped_uris_and_a_bounded_preview() {
+        let bytes = "\u{feff}<script>é</script>\r\n\t".as_bytes();
+        let first = PromptMedia::from_bytes("a #?.rs".into(), bytes).unwrap();
+        let second = PromptMedia::from_bytes("a #?.rs".into(), bytes).unwrap();
+        assert_eq!(first.bytes, bytes.len());
+        assert!(first.advertised(false, false, true));
+        assert!(!first.advertised(true, true, false));
+        assert_ne!(first.text_uri, second.text_uri);
+        let v1::ContentBlock::Resource(resource) = first.content() else {
+            panic!("resource")
+        };
+        let v1::EmbeddedResourceResource::TextResourceContents(text) = resource.resource else {
+            panic!("text")
+        };
+        assert_eq!(text.text.as_bytes(), bytes);
+        assert_eq!(text.mime_type.as_deref(), Some("text/plain"));
+        assert!(text.uri.ends_with("a%20%23%3F.rs"));
+        assert_eq!(
+            PromptMedia::from_bytes("large.txt".into(), "é".repeat(3000).as_bytes())
+                .unwrap()
+                .text_preview()
+                .chars()
+                .count(),
+            2000
+        );
+        assert!(
+            PromptMedia::from_bytes("empty.txt".into(), b"")
+                .unwrap()
+                .is_text()
+        );
+        for bytes in [
+            b"a\0b".as_slice(),
+            b"\xff",
+            b"%PDF-1.7",
+            b"PK\x03\x04",
+            b"ID3",
+            b"fLaC",
+            b"!<arch>\n",
+            b"RIFF",
+        ] {
+            assert!(PromptMedia::from_bytes("x.txt".into(), bytes).is_err());
+        }
+    }
     #[test]
     fn wav_and_mp3_keep_their_bytes_and_use_audio_content() {
         for (bytes, mime) in [
@@ -156,8 +312,8 @@ mod tests {
         ] {
             let attachment = PromptMedia::from_bytes("wrong.png".into(), bytes).unwrap();
             assert_eq!(attachment.mime, mime);
-            assert!(attachment.advertised(false, true));
-            assert!(!attachment.advertised(true, false));
+            assert!(attachment.advertised(false, true, false));
+            assert!(!attachment.advertised(true, false, true));
             let v1::ContentBlock::Audio(audio) = attachment.content() else {
                 panic!("audio block")
             };
@@ -179,8 +335,8 @@ mod tests {
         let bytes = b"\x89PNG\r\n\x1a\nunchanged";
         let image = PromptMedia::from_bytes("misnamed.jpg".into(), bytes).unwrap();
         assert_eq!(image.mime, "image/png");
-        assert!(image.advertised(true, false));
-        assert!(!image.advertised(false, true));
+        assert!(image.advertised(true, false, false));
+        assert!(!image.advertised(false, true, true));
         let v1::ContentBlock::Image(content) = image.content() else {
             panic!("image")
         };

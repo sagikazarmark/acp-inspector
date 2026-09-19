@@ -54,7 +54,7 @@ use crate::call::CallError;
 /// the exact failure that tripwire exists to prevent.
 ///
 /// The six the session lifecycle is made of (§7.5), logout, and image/audio prompts.
-/// Embedded context and the two MCP transports remain deferred (§1.1), and
+/// Embedded text context is driven; the two MCP transports remain deferred (§1.1), and
 /// `authenticate` is recorded in [`AuthState`](crate::AuthState), which has held
 /// exactly these three outcomes per connection since the MVP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -84,6 +84,8 @@ pub enum AgentCapability {
     Image,
     /// Audio content in `session/prompt`, claimed by promptCapabilities.audio.
     Audio,
+    /// Embedded content in `session/prompt`, claimed by promptCapabilities.embeddedContext.
+    EmbeddedContext,
 }
 
 /// What became of driving an Agent Capability on this connection (§7.7).
@@ -137,7 +139,7 @@ pub struct DrivenRecord {
 impl AgentCapability {
     /// Every capability this record can be keyed on, in the order the display
     /// draws them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Load,
         Self::List,
         Self::Resume,
@@ -147,6 +149,7 @@ impl AgentCapability {
         Self::Logout,
         Self::Image,
         Self::Audio,
+        Self::EmbeddedContext,
     ];
 
     /// What the protocol calls it — the method it gates where it gates one, the
@@ -166,6 +169,7 @@ impl AgentCapability {
             Self::Logout => v1::AGENT_METHOD_NAMES.logout,
             Self::Image => "image",
             Self::Audio => "audio",
+            Self::EmbeddedContext => "embeddedContext",
         }
     }
 
@@ -188,6 +192,7 @@ impl AgentCapability {
             Self::Logout => capabilities.auth.logout.is_some(),
             Self::Image => capabilities.prompt_capabilities.image,
             Self::Audio => capabilities.prompt_capabilities.audio,
+            Self::EmbeddedContext => capabilities.prompt_capabilities.embedded_context,
         }
     }
 }
