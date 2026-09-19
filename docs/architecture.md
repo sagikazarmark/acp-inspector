@@ -1300,6 +1300,8 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
 > Details and its tab. JSON-RPC full selects Messages too, so narrowing the window cannot hide both
 > screens. Choosing Split alone preserves the selected narrow region. Explicit destinations receive
 > keyboard focus once visible; layout-only choices keep focus unless they hide its control. The
+> shared focus bridge gives only the latest navigation intent ownership of the bounded paint wait,
+> including local waiting-request shortcuts; every layout choice cancels an older pending intent. The
 > automatic Diagnostics status path retains its guarded focus handoff rather than acting as an
 > explicit destination. Screens keeps the Timeline mounted through all these changes so drafts
 > survive; Session changes still own their reset.
@@ -1848,6 +1850,10 @@ ordinal's page before focus. Trace and Diagnostic previews are literal UTF-8 pre
 most 512 bytes. Longer Diagnostics offer an explicit complete-line disclosure with adjacent
 raw byte windows; Copy always takes the complete original line, shared until activation.
 An anchor excluded by a filter falls back to a full final page of matching rows.
+The default Trace detail pane reads the newest Frame on the displayed page; an explicitly selected
+Frame outside that page stays readable and is labelled as such. Both Latest and Newest frame/line
+reset paging before scrolling to the tail. Envelope method/id labels and tooltips also use at most
+512 bytes of field text, with an explicit preview marker when shortened.
 Frames over 16 KiB are read in adjacent literal raw byte windows rather than formatted/tokenized
 whole. Copy and export always take the complete original Frame. Smaller Frames keep indentation
 and token coloring. Timeline rendering is bounded by its retained entry policy.

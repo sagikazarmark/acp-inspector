@@ -41,33 +41,13 @@ use crate::permission::{self, Answer};
 use crate::time::stamp;
 use crate::update::{self, Voice};
 
-/// Put the Timeline entry named by another control under both the viewport and
-/// keyboard focus. Visibility is the readiness condition for both Trace navigation
-/// and the waiting-request shortcut: the latter does not mark an entry as sought.
-/// The ordinal is numeric and sent over Dioxus's channel, so no Agent-controlled
-/// text becomes executable code.
-const FOCUS_ENTRY: &str = r#"
-const ordinal = await dioxus.recv();
-let target;
-for (let attempt = 0; attempt < 60 && !target; attempt += 1) {
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  const entry = document.querySelector(`[data-frames~="${ordinal}"]`);
-  if (entry?.getClientRects().length) target = entry;
-}
-if (target) {
-  target.scrollIntoView({ block: "center" });
-  target.focus({ preventScroll: true });
-}
-"#;
-
 /// The entry list, by the name the scroll watcher and its control know it
 /// under (`tail.rs`).
 pub(crate) const ENTRIES: &str = "entries";
 
 /// Focus a Timeline entry after it has rendered.
 pub(crate) fn focus_entry(ordinal: u64) {
-    let focusing = document::eval(FOCUS_ENTRY);
-    let _ = focusing.send(ordinal);
+    crate::navigation::Destination::Entry { ordinal }.focus();
 }
 
 /// The center screen: what the agent has said this session, and the composer
@@ -281,7 +261,7 @@ pub fn Timeline(
                 }
                 // Beside the list and not in it: a control inside the scroller
                 // is a row of it, and this is about the list rather than in it.
-                {crate::tail::to_latest(ENTRIES, "entry")}
+                {crate::tail::to_latest(ENTRIES, "entry", None)}
                 }
             }
 
@@ -2044,15 +2024,6 @@ mod tests {
         assert!(
             marked.contains(r#"data-frames="9""#),
             "and it is the one asked for: {html}"
-        );
-    }
-
-    #[test]
-    fn timeline_navigation_scrolls_and_focuses_its_destination() {
-        assert!(FOCUS_ENTRY.contains("scrollIntoView"), "{FOCUS_ENTRY}");
-        assert!(
-            FOCUS_ENTRY.contains("target.focus({ preventScroll: true })"),
-            "{FOCUS_ENTRY}"
         );
     }
 

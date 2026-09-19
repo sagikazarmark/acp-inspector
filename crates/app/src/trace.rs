@@ -19,7 +19,7 @@
 //! and the wrong one beside it: a frame opened in place pushes every row under
 //! it down the list a reader is watching arrive, and the width a payload needs
 //! is not the width a column of rows has. One pane, at the foot of the list,
-//! showing the frame the reader pointed at — and the newest frame until they
+//! showing the frame the reader pointed at — and the newest displayed frame until they
 //! point at one, because an empty pane under a live trace is a region asking to
 //! be told something it can already see (ADR 0009).
 //!
@@ -44,24 +44,6 @@ use crate::console::{matching, narrowed};
 use crate::copy::Copy;
 use crate::json;
 use crate::time::stamp;
-
-/// Put a Frame named by the Timeline under both the viewport and keyboard
-/// focus. A Frame's row is a button, so it is the useful destination rather
-/// than the list item around it.
-const FOCUS_FRAME: &str = r#"
-const ordinals = await dioxus.recv();
-let target;
-for (let attempt = 0; attempt < 60 && !target; attempt += 1) {
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  target = ordinals
-    .map((ordinal) => document.querySelector(`[data-frame="${ordinal}"] .frame-row`))
-    .find((row) => row?.getClientRects().length && row.dataset.revealed === "true");
-}
-if (target) {
-  target.scrollIntoView({ block: "center" });
-  target.focus({ preventScroll: true });
-}
-"#;
 
 /// The frame list, by the name the scroll watcher and its control know it under
 /// (`tail.rs`).
@@ -165,13 +147,6 @@ fn kind_tone(kind: FrameKind) -> &'static str {
     }
 }
 
-/// Focus the first named Frame the bounded Trace still holds after the Console
-/// has rendered its Trace surface.
-pub(crate) fn focus_frames(ordinals: Vec<u64>) {
-    let focusing = document::eval(FOCUS_FRAME);
-    let _ = focusing.send(ordinals);
-}
-
 /// The frames, oldest at the top, following the newest as they arrive — and the
 /// selected one, whole, underneath.
 #[component]
@@ -201,7 +176,7 @@ pub fn TraceView(
     /// made is no less real for having no entry.
     decoded: ReadSignal<HashSet<u64>>,
     /// The frame the pane is reading, or `None` while nobody has chosen one —
-    /// which the pane answers with the newest frame rather than with an empty
+    /// which the pane answers with the newest displayed frame rather than with an empty
     /// region.
     selected: Option<u64>,
     on_choose: EventHandler<u64>,
@@ -222,7 +197,7 @@ pub fn TraceView(
     // same bytes they are looking at, `method`, `id`, session and all.
     let rows = rows(held_frames.clone());
     // Which rows survive the two narrowings, by their place in the list.
-    // Computed once: the list draws them, and the pane reads the newest of them
+    // Computed once: the list pages them, and the pane reads the newest on that page
     // — a pane reading a frame the reader has hidden would be the one surface
     // answering a narrowing with the row it just took away.
     let visible: Vec<usize> = rows
@@ -243,7 +218,7 @@ pub fn TraceView(
     rsx! {
         div { class: "trace", "data-slot": "trace",
             {narrowed(shown, held, "frames", narrowing)}
-            {crate::page::controls(&ordinals, range.clone(), anchor)}
+            {crate::page::controls(&ordinals, range.clone(), anchor, FRAMES)}
             if let Some(saved) = saved {
                 match saved {
                     Ok(path) => rsx! {
@@ -261,6 +236,7 @@ pub fn TraceView(
                 }
             } else {
                 ol { class: "wire-rows", "data-tail": FRAMES,
+                    "data-page-latest": "{range.end == ordinals.len()}",
                     // Newest first in the DOM, oldest first on screen: the list
                     // is laid out bottom-up, which is what keeps a live trace
                     // showing its latest frame without a scroll script — and
@@ -272,7 +248,7 @@ pub fn TraceView(
                     // shifts every position by one, and a row keyed by position
                     // would hand whatever the reader had selected to whichever
                     // frame landed there next.
-                    for position in visible[range].iter().copied().rev() {
+                    for position in visible[range.clone()].iter().copied().rev() {
                         {frame_row(
                             &rows[position],
                             (dropped + position) as u64,
@@ -284,12 +260,12 @@ pub fn TraceView(
                         )}
                     }
                 }
-                {crate::tail::to_latest(FRAMES, "frame")}
+                {crate::tail::to_latest(FRAMES, "frame", Some(anchor))}
 
                 // And the one the reader is reading. Always drawn while there
                 // are frames, because a pane that came and went would move the
                 // list under the click that selected a row in it.
-                {reading(&rows, &visible, dropped, selected)}
+                {reading(&rows, &visible[range.clone()], dropped, selected)}
             }
         }
     }
@@ -382,7 +358,7 @@ fn frame_row(
     }
 }
 
-/// The frame the pane is reading: the one that was chosen, or the newest.
+/// The frame the pane is reading: the one that was chosen, or the newest on the page.
 ///
 /// **The newest rather than nothing**, because that is what a reader watching a
 /// live trace is looking at anyway — and because a pane that is empty until
@@ -408,7 +384,11 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
     let entry = &row.entry;
     let way = way(entry.direction);
     let summary = entry.frame.summary();
-    let label = summary.label().unwrap_or("unreadable envelope").to_owned();
+    let label = envelope_preview(summary.label().unwrap_or("unreadable envelope"));
+    let outside_page = selected == Some(ordinal)
+        && !visible
+            .iter()
+            .any(|position| (dropped + position) as u64 == ordinal);
     // Laid out, always, and this is the surface that says why (see the module
     // note): one selected document, on the one screen whose subject it is.
     let large = entry.frame.as_str().len() > 16 * 1024;
@@ -433,6 +413,9 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
                 }
                 Copy { frame: entry.frame.clone(), what: "this frame" }
             }
+            if outside_page {
+                p { class: "narrowed", "Selected Frame (outside this page)" }
+            }
             if large {
                 crate::page::RawFrame { key: "{ordinal}", frame: entry.frame.clone() }
             } else { pre { class: "frame-json", "data-slot": "frame-payload",
@@ -456,12 +439,25 @@ fn summarised(frame: &Frame) -> Element {
     let Some(label) = summary.label() else {
         return rsx! {};
     };
+    let label = envelope_preview(label);
+    let id = summary.id.as_deref().map(envelope_preview);
 
     rsx! {
         span { class: "frame-method", "data-slot": "envelope", "{label}" }
-        if let Some(id) = &summary.id {
+        if let Some(id) = id {
             span { class: "frame-id", title: "JSON-RPC id {id}", "#{id}" }
         }
+    }
+}
+
+/// Labels are previews too, including their tooltips. The raw byte reader and
+/// Copy/export retain the complete envelope fields.
+fn envelope_preview(text: &str) -> std::borrow::Cow<'_, str> {
+    let prefix = crate::page::prefix(text, 512);
+    if prefix.len() == text.len() {
+        prefix.into()
+    } else {
+        format!("{prefix}… (preview)").into()
     }
 }
 
@@ -537,6 +533,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn older_page_reads_its_newest_frame_until_a_frame_is_explicitly_selected() {
+        for selected in [None, Some(999)] {
+            let mut dom = mounted(Screen {
+                frames: vec![crossed(1, Direction::FromAgent, "{}"); 1000],
+                selected,
+                ..Screen::default()
+            });
+            let edits = dom.rebuild_to_vec().edits;
+            let older = crate::page::tests::labelled(&edits, "Older evidence page");
+            crate::page::tests::click(&mut dom, older);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains("601–800 of 1000 retained rows"));
+            assert!(html.contains(r#"data-frame="799""#));
+            assert!(!html.contains(r#"data-frame="999""#));
+            let detail = pane(&html).unwrap();
+            if selected.is_some() {
+                assert!(detail.contains("· #999 ·"));
+                assert!(detail.contains("Selected Frame (outside this page)"));
+            } else {
+                assert!(detail.contains("· #799 ·"));
+            }
+        }
+    }
+
+    #[test]
+    fn newest_frame_returns_from_an_older_page() {
+        let mut dom = mounted(Screen {
+            frames: vec![crossed(1, Direction::FromAgent, "{}"); 1000],
+            ..Screen::default()
+        });
+        let edits = dom.rebuild_to_vec().edits;
+        let older = crate::page::tests::labelled(&edits, "Older evidence page");
+        for label in ["Newest frame", "Latest frames page"] {
+            let newest = crate::page::tests::labelled(&edits, label);
+            crate::page::tests::click(&mut dom, older);
+            assert!(dioxus_ssr::render(&dom).contains("601–800 of 1000 retained rows"));
+            crate::page::tests::click(&mut dom, newest);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains("801–1000 of 1000 retained rows"));
+            assert!(pane(&html).unwrap().contains("· #999 ·"));
+        }
+    }
+
+    #[test]
     fn retained_rows_are_paged_and_reveal_reaches_an_older_ordinal() {
         let traffic = vec![crossed(1, Direction::FromAgent, "{}"); 1000];
         let newest = shown(Screen {
@@ -553,6 +593,35 @@ mod tests {
         assert_eq!(rows_of(&older).len(), crate::page::SIZE);
         assert!(older.contains(r#"data-frame="20""#));
         assert!(older.contains(r#"data-revealed="true""#));
+    }
+
+    #[test]
+    fn multi_megabyte_envelope_fields_are_bounded_in_rows_and_detail() {
+        let method = format!(
+            "{}🦀{}METHOD_END",
+            "m".repeat(511),
+            "m".repeat(2 * 1024 * 1024)
+        );
+        let id = format!("{}é{}ID_END", "i".repeat(511), "i".repeat(2 * 1024 * 1024));
+        let raw = serde_json::json!({"method": method, "id": id}).to_string();
+        let html = shown(Screen {
+            frames: vec![crossed(1, Direction::FromAgent, &raw)],
+            ..Screen::default()
+        });
+        assert!(
+            rows_of(&html)[0].len() < 4000,
+            "row labels and titles must be bounded"
+        );
+        assert!(
+            pane(&html).unwrap().len() < 22000,
+            "detail header must be bounded too"
+        );
+        assert!(!html.contains("METHOD_END") && !html.contains("ID_END"));
+        assert!(
+            html.contains("preview")
+                && html.contains("Next bytes")
+                && html.contains("Copy this frame")
+        );
     }
 
     #[test]
@@ -677,7 +746,7 @@ mod tests {
         }
     }
 
-    fn shown(screen: Screen) -> String {
+    fn mounted(screen: Screen) -> VirtualDom {
         #[component]
         fn Host(screen: Screen) -> Element {
             let frames = use_signal(|| {
@@ -705,7 +774,11 @@ mod tests {
             }
         }
 
-        let mut dom = VirtualDom::new_with_props(Host, HostProps { screen });
+        VirtualDom::new_with_props(Host, HostProps { screen })
+    }
+
+    fn shown(screen: Screen) -> String {
+        let mut dom = mounted(screen);
         dom.rebuild_in_place();
         dioxus_ssr::render(&dom)
     }
@@ -969,20 +1042,6 @@ mod tests {
         assert!(
             !rows.contains(r#"data-slot="copy""#),
             "and no row carries one: {rows}"
-        );
-    }
-
-    #[test]
-    fn cross_screen_navigation_scrolls_and_focuses_the_row_itself() {
-        // The row is a button, so it is the useful destination rather than the
-        // list item around it — and the ordinals arrive over Dioxus's channel,
-        // so nothing an agent said becomes part of a program this window runs.
-        assert!(
-            FOCUS_FRAME.contains("dioxus.recv()")
-                && FOCUS_FRAME.contains(r#"[data-frame="${ordinal}"] .frame-row"#)
-                && FOCUS_FRAME.contains("scrollIntoView")
-                && FOCUS_FRAME.contains("focus({ preventScroll: true })"),
-            "{FOCUS_FRAME}"
         );
     }
 

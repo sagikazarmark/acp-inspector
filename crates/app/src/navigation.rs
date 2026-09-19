@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::{Focus, Spine, console::Tab, rail, timeline, trace};
+use crate::{Focus, Spine, console::Tab, rail};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Navigation {
@@ -25,61 +25,36 @@ pub(crate) fn use_navigation() -> Navigation {
     }
 }
 
-enum Destination {
-    Control(&'static str),
-    Entry(u64),
-    Frames(Vec<u64>),
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub(crate) enum Destination {
+    Control { id: &'static str },
+    Entry { ordinal: u64 },
+    Frames { ordinals: Vec<u64> },
+    Layout,
+    Cancel,
+    Latest { list: &'static str },
 }
 
 impl Destination {
-    fn focus(self) {
+    pub(crate) fn focus(self) {
         // Start from the handler; scripts wait for the destination's paint.
         // This also handles repeated navigation to an already-selected row.
-        match self {
-            Self::Control(id) => {
-                let focusing = document::eval(FOCUS_DESTINATION);
-                let _ = focusing.send(id);
-            }
-            Self::Entry(ordinal) => timeline::focus_entry(ordinal),
-            Self::Frames(frames) => trace::focus_frames(frames),
-        }
+        let focusing = document::eval(include_str!("navigation.js"));
+        let _ = focusing.send(self);
     }
 }
-
-const FOCUS_DESTINATION: &str = r#"
-const id = await dioxus.recv();
-for (let attempt = 0; attempt < 60; attempt += 1) {
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  const target = document.getElementById(id);
-  if (target?.getClientRects().length && target.getAttribute('aria-selected') !== 'false'
-      && !document.querySelector('dialog[open]')) {
-    target.focus({ preventScroll: true });
-    break;
-  }
-}
-"#;
-
-// Layout controls keep their focus. Only a keyboard user whose current region
-// is being hidden (e.g. by the native layout accelerator) needs a handoff.
-const PRESERVE_LAYOUT_FOCUS: &str = r#"
-const active = document.activeElement;
-for (let attempt = 0; attempt < 60; attempt += 1) {
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  if (document.querySelector('.spine-wire')) break;
-}
-if (active?.closest('.turns, .rail') && !active.getClientRects().length
-    && !document.querySelector('dialog[open]')) {
-  document.querySelector('.wire-tabs [aria-selected="true"]')?.focus();
-}
-"#;
 
 impl Navigation {
     /// A layout choice is not a request to move the keyboard. Preserve it
     /// unless the chosen layout actually hides the focused control.
     pub fn layout(mut self, chosen: Spine) {
         if chosen == Spine::Wire {
-            document::eval(PRESERVE_LAYOUT_FOCUS);
+            Destination::Layout
+        } else {
+            Destination::Cancel
         }
+        .focus();
         self.spine.set(chosen);
         // Full wire must also be Messages at narrow widths. Split restores
         // space without changing which narrow region the reader was using.
@@ -93,24 +68,26 @@ impl Navigation {
             self.spine.set(Spine::Split);
         }
         self.region.set(chosen);
-        Destination::Control(match chosen {
-            Focus::Turn => "timeline",
-            Focus::Wire => (self.console)().id(),
-            Focus::Rail => (self.rail)().id(),
-        })
+        Destination::Control {
+            id: match chosen {
+                Focus::Turn => "timeline",
+                Focus::Wire => (self.console)().id(),
+                Focus::Rail => (self.rail)().id(),
+            },
+        }
         .focus();
     }
 
     pub fn console(mut self, chosen: Tab) {
         self.region.set(Focus::Wire);
         self.console.set(chosen);
-        Destination::Control(chosen.id()).focus();
+        Destination::Control { id: chosen.id() }.focus();
     }
 
     pub fn rail(mut self, chosen: rail::Tab) {
         self.region.set(Focus::Rail);
         self.rail.set(chosen);
-        Destination::Control(chosen.id()).focus();
+        Destination::Control { id: chosen.id() }.focus();
     }
 
     pub fn reveal(mut self, frames: Vec<u64>) {
@@ -118,7 +95,7 @@ impl Navigation {
         self.console.set(Tab::Trace);
         self.revealed.set(frames.clone());
         self.sought.set(None);
-        Destination::Frames(frames).focus();
+        Destination::Frames { ordinals: frames }.focus();
     }
 
     pub fn seek(mut self, ordinal: u64) {
@@ -126,6 +103,6 @@ impl Navigation {
         self.region.set(Focus::Turn);
         self.sought.set(Some(ordinal));
         self.revealed.set(Vec::new());
-        Destination::Entry(ordinal).focus();
+        Destination::Entry { ordinal }.focus();
     }
 }

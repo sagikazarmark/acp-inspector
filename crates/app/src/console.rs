@@ -451,7 +451,7 @@ fn Diagnostics(
 
     rsx! {
         {narrowed(shown, held, "lines", !filter.trim().is_empty())}
-        {crate::page::controls(&ordinals, range.clone(), anchor)}
+        {crate::page::controls(&ordinals, range.clone(), anchor, LINES)}
 
         if held == 0 {
             p { class: "empty",
@@ -459,13 +459,14 @@ fn Diagnostics(
             }
         } else {
             ul { class: "lines", "data-slot": "diagnostics", "data-tail": LINES,
+                "data-page-latest": "{range.end == ordinals.len()}",
                 // Newest first in the DOM, oldest first on screen: the list is
                 // laid out bottom-up, which is what keeps a streaming console
                 // pinned to its latest line without a scroll script.
                 //
                 // Keyed by the ordinal the line was captured under, the way the
                 // Trace's rows are, even as the retention budgets rotate it.
-                for ordinal in ordinals[range].iter().copied().rev() {
+                for ordinal in ordinals[range.clone()].iter().copied().rev() {
                     { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
                     li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
@@ -476,7 +477,7 @@ fn Diagnostics(
                     } }
                 }
             }
-            {crate::tail::to_latest(LINES, "line")}
+            {crate::tail::to_latest(LINES, "line", Some(anchor))}
         }
     }
 }
@@ -587,6 +588,35 @@ mod tests {
     use std::time::SystemTime;
 
     use acp_inspector_core::{Direction, Frame};
+
+    #[test]
+    fn newest_line_and_latest_return_from_an_older_page() {
+        fn host() -> Element {
+            let lines = use_signal(|| {
+                (0..1000)
+                    .map(|id| Diagnostic {
+                        at: SystemTime::UNIX_EPOCH,
+                        kind: DiagnosticKind::Stderr(format!("diagnostic-{id}")),
+                    })
+                    .collect::<Vec<_>>()
+            });
+            rsx! { Diagnostics { lines, dropped: 0, filter: String::new() } }
+        }
+        let mut dom = VirtualDom::new(host);
+        let edits = dom.rebuild_to_vec().edits;
+        let older = crate::page::tests::labelled(&edits, "Older evidence page");
+        for label in ["Newest line", "Latest lines page"] {
+            let latest = crate::page::tests::labelled(&edits, label);
+            crate::page::tests::click(&mut dom, older);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains("601–800 of 1000 retained rows"));
+            assert!(html.contains("diagnostic-799") && !html.contains("diagnostic-999"));
+            crate::page::tests::click(&mut dom, latest);
+            let html = dioxus_ssr::render(&dom);
+            assert!(html.contains("801–1000 of 1000 retained rows"));
+            assert!(html.contains("diagnostic-999") && !html.contains("diagnostic-799"));
+        }
+    }
 
     #[test]
     fn multi_megabyte_diagnostic_is_a_bounded_preview_and_explicit_byte_reader() {

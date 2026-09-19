@@ -52,15 +52,15 @@ document.addEventListener(
 
 /// Send a list back to its newest row.
 ///
-/// **Nothing the agent said reaches this string.** The only value interpolated
-/// is the list's own name, which is a `const` this crate wrote, quoted by
-/// `{:?}`. Setting the position fires a scroll event of its own, so the mark
+/// Reset paging first, then let the shared navigation bridge wait for that
+/// page to render before scrolling. The list name is this crate's own constant,
+/// sent as data. Setting the position fires a scroll event of its own, so the mark
 /// [`WATCH`] keeps is corrected by the same path that set it.
-fn to_tail(list: &'static str) {
-    document::eval(&format!(
-        "document.querySelector('[data-tail={:?}]')?.scrollTo({{ top: 0 }})",
-        list
-    ));
+pub fn latest(list: &'static str, anchor: Option<Signal<Option<u64>>>) {
+    if let Some(mut anchor) = anchor {
+        anchor.set(None);
+    }
+    crate::navigation::Destination::Latest { list }.focus();
 }
 
 /// The control, beside the list rather than inside it.
@@ -80,7 +80,11 @@ fn to_tail(list: &'static str) {
 ///
 /// Hidden, it is hidden from the keyboard too: a control faded to nothing that
 /// still takes a tab stop is a focus ring on empty space.
-pub fn to_latest(list: &'static str, what: &'static str) -> Element {
+pub fn to_latest(
+    list: &'static str,
+    what: &'static str,
+    anchor: Option<Signal<Option<u64>>>,
+) -> Element {
     rsx! {
         div { class: "tail-anchor",
             button {
@@ -88,7 +92,8 @@ pub fn to_latest(list: &'static str, what: &'static str) -> Element {
                 "data-slot": "to-latest",
                 r#type: "button",
                 title: "Scroll back to the newest {what}",
-                onclick: move |_| to_tail(list),
+                aria_label: format!("Newest {what}"),
+                onclick: move |_| latest(list, anchor),
                 "Newest {what}"
             }
         }

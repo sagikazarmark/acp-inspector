@@ -9,7 +9,7 @@ pub fn range(ordinals: &[u64], anchor: Option<u64>) -> std::ops::Range<usize> {
         return 0..ordinals.len();
     }
     let start = anchor
-        .map(|id| ordinals.partition_point(|v| *v < id))
+        .and_then(|id| ordinals.binary_search(&id).ok())
         .unwrap_or_else(|| ordinals.len().saturating_sub(SIZE))
         .min(ordinals.len().saturating_sub(SIZE));
     start..(start + SIZE).min(ordinals.len())
@@ -19,6 +19,7 @@ pub fn controls(
     ordinals: &[u64],
     range: std::ops::Range<usize>,
     mut anchor: Signal<Option<u64>>,
+    list: &'static str,
 ) -> Element {
     if ordinals.len() <= SIZE {
         return rsx! {};
@@ -31,11 +32,13 @@ pub fn controls(
     rsx! {
         nav { class: "narrowed", aria_label: "Evidence pages", "data-slot": "pages",
             button { class: "btn btn-xs btn-quiet", disabled: range.start == 0,
+                aria_label: format!("Older evidence page (before row {start})"),
                 onclick: move |_| anchor.set(Some(older)), "Older" }
             span { " {start}–{end} of {total} retained rows " }
             button { class: "btn btn-xs btn-quiet", disabled: newer.is_none(),
                 onclick: move |_| anchor.set(newer), "Newer" }
-            button { class: "btn btn-xs btn-quiet", onclick: move |_| anchor.set(None), "Latest" }
+            button { class: "btn btn-xs btn-quiet", aria_label: format!("Latest {list} page"),
+                onclick: move |_| crate::tail::latest(list, Some(anchor)), "Latest" }
         }
     }
 }
@@ -98,8 +101,38 @@ pub fn RawText(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn click(dom: &mut VirtualDom, id: dioxus::core::ElementId) {
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+        use std::{any::Any, rc::Rc};
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let data = Rc::new(PlatformEventData::new(Box::new(
+            SerializedMouseData::default(),
+        ))) as Rc<dyn Any>;
+        dom.runtime()
+            .handle_event("click", Event::new(data, true), id);
+        dom.render_immediate_to_vec();
+    }
+
+    pub(crate) fn labelled(
+        edits: &[dioxus::core::Mutation],
+        prefix: &str,
+    ) -> dioxus::core::ElementId {
+        edits
+            .iter()
+            .find_map(|edit| match edit {
+                dioxus::core::Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: dioxus::core::AttributeValue::Text(text),
+                    id,
+                    ..
+                } if text.starts_with(prefix) => Some(*id),
+                _ => None,
+            })
+            .expect("labelled control")
+    }
     #[test]
     fn stable_older_page_and_reveal_survive_rotation() {
         let ids: Vec<_> = (100..10100).collect();
@@ -117,6 +150,9 @@ mod tests {
         let previous = older_matches[shown.start.saturating_sub(SIZE)];
         assert_eq!(range(&older_matches, Some(previous)), 200..400);
         assert_eq!(range(&older_matches, Some(699)), 400..600);
+        let sparse: Vec<_> = (0..1000).filter(|id| *id != 350).collect();
+        assert_eq!(range(&sparse, Some(350)), 799..999);
+        assert_eq!(range(&sparse, Some(351)), 350..550);
     }
 
     #[test]
