@@ -208,17 +208,19 @@ pub fn TraceView(
     /// A row's frame, on its way back to the entry it became.
     on_seek: EventHandler<u64>,
 ) -> Element {
-    let empty = frames().is_empty();
-    let held = frames().len();
+    let mut anchor = use_signal(|| revealed.read().first().copied());
+    use_effect(move || {
+        if let Some(first) = revealed.read().first().copied() {
+            anchor.set(Some(first));
+        }
+    });
+    let held_frames = frames.read();
+    let empty = held_frames.is_empty();
+    let held = held_frames.len();
     // The frame as the wire had it, which is what the row's preview draws and
     // what an export writes — so what the reader types is matched against the
     // same bytes they are looking at, `method`, `id`, session and all.
-    let shown = frames()
-        .iter()
-        .filter(|traced| kinds.shows(traced.frame.summary().kind))
-        .filter(|traced| matching(&traced.frame.to_string(), &filter))
-        .count();
-    let rows = rows(frames());
+    let rows = rows(held_frames.clone());
     // Which rows survive the two narrowings, by their place in the list.
     // Computed once: the list draws them, and the pane reads the newest of them
     // — a pane reading a frame the reader has hidden would be the one surface
@@ -227,9 +229,12 @@ pub fn TraceView(
         .iter()
         .enumerate()
         .filter(|(_, row)| kinds.shows(row.entry.frame.summary().kind))
-        .filter(|(_, row)| matching(&row.entry.frame.to_string(), &filter))
+        .filter(|(_, row)| filter.trim().is_empty() || matching(row.entry.frame.as_str(), &filter))
         .map(|(position, _)| position)
         .collect();
+    let shown = visible.len();
+    let ordinals: Vec<_> = visible.iter().map(|p| (dropped + p) as u64).collect();
+    let range = crate::page::range(&ordinals, anchor());
     // What the surface is hiding, said where the rows it hid would have been —
     // whether the narrowing was typed or pressed, because a chip that is off
     // takes rows away exactly as a filter does.
@@ -238,10 +243,11 @@ pub fn TraceView(
     rsx! {
         div { class: "trace", "data-slot": "trace",
             {narrowed(shown, held, "frames", narrowing)}
+            {crate::page::controls(&ordinals, range.clone(), anchor)}
             if let Some(saved) = saved {
                 match saved {
                     Ok(path) => rsx! {
-                        p { class: "saved",
+                        p { class: "saved", role: "status",
                             "Exported to "
                             // Selectable, and the whole path: the next thing
                             // the user does with it is attach it to a bug
@@ -251,7 +257,7 @@ pub fn TraceView(
                         }
                     },
                     Err(problem) => rsx! {
-                        p { class: "saved bad", "The export was not written: {problem}" }
+                        p { class: "saved bad", role: "status", "The export was not written: {problem}" }
                     },
                 }
             }
@@ -273,7 +279,7 @@ pub fn TraceView(
                     // shifts every position by one, and a row keyed by position
                     // would hand whatever the reader had selected to whichever
                     // frame landed there next.
-                    for position in visible.iter().copied().rev() {
+                    for position in visible[range].iter().copied().rev() {
                         {frame_row(
                             &rows[position],
                             (dropped + position) as u64,
@@ -354,7 +360,7 @@ fn frame_row(
                     // line whatever the indentation switch says: a preview is one
                     // line by construction, and the first line of an indented
                     // document is `{`.
-                    span { class: "frame-peek", "{entry.frame}" }
+                    span { class: "frame-peek", "{crate::page::prefix(entry.frame.as_str(), 512)}" }
                     span { class: "frame-kind {kind_tone(kind)}", "{named_kind(kind)}" }
                 }
                 // The row's own control sits beside it and never inside it, so
@@ -412,9 +418,14 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
     let label = summary.label().unwrap_or("unreadable envelope").to_owned();
     // Laid out, always, and this is the surface that says why (see the module
     // note): one selected document, on the one screen whose subject it is.
-    let payload = Indentation::Indented
-        .draw(entry.frame.as_str())
-        .into_owned();
+    let large = entry.frame.as_str().len() > 16 * 1024;
+    let payload = if large {
+        String::new()
+    } else {
+        Indentation::Indented
+            .draw(entry.frame.as_str())
+            .into_owned()
+    };
 
     rsx! {
         aside {
@@ -427,13 +438,15 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
                 span { class: "frame-pane-meta",
                     "{named_kind(summary.kind)} · #{ordinal} · {stamp(entry.at)}"
                 }
-                Copy { text: entry.frame.to_string(), what: "this frame" }
+                Copy { frame: entry.frame.clone(), what: "this frame" }
             }
-            pre { class: "frame-json", "data-slot": "frame-payload",
+            if large {
+                crate::page::RawFrame { key: "{ordinal}", frame: entry.frame.clone() }
+            } else { pre { class: "frame-json", "data-slot": "frame-payload",
                 for (position, (token, text)) in json::tokens(&payload).into_iter().enumerate() {
                     span { key: "{position}", class: token.class(), "{text}" }
                 }
-            }
+            } }
         }
     }
 }
@@ -529,6 +542,65 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::*;
+
+    #[test]
+    fn retained_rows_are_paged_and_reveal_reaches_an_older_ordinal() {
+        let traffic = vec![crossed(1, Direction::FromAgent, "{}"); 1000];
+        let newest = shown(Screen {
+            frames: traffic.clone(),
+            ..Screen::default()
+        });
+        assert_eq!(rows_of(&newest).len(), crate::page::SIZE);
+        assert!(newest.contains("801–1000 of 1000 retained rows"));
+        let older = shown(Screen {
+            frames: traffic,
+            revealed: vec![20],
+            ..Screen::default()
+        });
+        assert_eq!(rows_of(&older).len(), crate::page::SIZE);
+        assert!(older.contains(r#"data-frame="20""#));
+        assert!(older.contains(r#"data-revealed="true""#));
+    }
+
+    #[test]
+    fn large_raw_preview_is_bounded_without_rewriting_the_frame() {
+        let raw = format!(
+            r#" {{"method":"large","params":"{}🦀end"}} "#,
+            "x".repeat(100_000)
+        );
+        let frame = Frame::new(raw.clone());
+        let html = shown(Screen {
+            frames: vec![crossed(1, Direction::FromAgent, &raw)],
+            ..Screen::default()
+        });
+        assert!(html.len() < 25_000);
+        assert!(html.contains("Next bytes"));
+        assert!(html.contains("literal raw UTF-8"));
+        assert!(html.contains("Copy this frame"));
+        assert_eq!(frame.as_str(), raw);
+        assert!(rows_of(&html)[0].len() < 2000);
+    }
+
+    #[test]
+    #[ignore]
+    fn rendering_probe() {
+        let frame = crossed(
+            1,
+            Direction::FromAgent,
+            &format!(r#"{{"method":"probe","params":"{}"}}"#, "x".repeat(512)),
+        );
+        let start = std::time::Instant::now();
+        let html = shown(Screen {
+            frames: vec![frame; 10_000],
+            ..Screen::default()
+        });
+        eprintln!(
+            "10k Trace SSR: {:?}; HTML bytes={}; rows={}",
+            start.elapsed(),
+            html.len(),
+            rows_of(&html).len()
+        );
+    }
 
     fn at(second: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(second)

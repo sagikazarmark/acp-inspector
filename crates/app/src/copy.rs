@@ -98,7 +98,14 @@ async fn copied(text: String) -> bool {
 #[component]
 pub fn Copy(
     /// What lands on the clipboard, exactly.
+    #[props(default)]
     text: String,
+    /// Keep large immutable evidence shared until activation.
+    #[props(default)]
+    frame: Option<acp_inspector_core::Frame>,
+    /// Diagnostic text shared with its preview and byte-window reader.
+    #[props(default)]
+    shared: Option<std::sync::Arc<str>>,
     /// What it is, for the control's own name — "this frame", "this line".
     what: String,
 ) -> Element {
@@ -123,7 +130,7 @@ pub fn Copy(
                 // copy that also expanded it would be one click doing two
                 // things.
                 event.stop_propagation();
-                let text = text.clone();
+                let text = copy_text(&text, frame.as_ref(), shared.as_deref());
                 // The control's own name, said back: "Copy this frame" pressed
                 // is "Copied this frame". One string builds both, so the two
                 // cannot come to disagree about what was taken.
@@ -150,9 +157,31 @@ pub fn Copy(
     }
 }
 
+fn copy_text(
+    text: &str,
+    frame: Option<&acp_inspector_core::Frame>,
+    shared: Option<&str>,
+) -> String {
+    frame
+        .map(|frame| frame.as_str())
+        .or(shared)
+        .unwrap_or(text)
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_copy_takes_the_complete_shared_text_not_a_preview() {
+        let raw: std::sync::Arc<str> = format!("{}🦀\tEND\r", "x".repeat(7 * 1024 * 1024)).into();
+        let preview = crate::page::prefix(&raw, 512);
+        assert_eq!(
+            copy_text(preview, None, Some(&raw)).as_bytes(),
+            raw.as_bytes()
+        );
+    }
 
     #[test]
     fn the_shared_copy_control_names_what_it_takes() {

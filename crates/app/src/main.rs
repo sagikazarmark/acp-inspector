@@ -37,8 +37,10 @@ mod disclosure;
 mod elicitation;
 mod elicitation_schema;
 mod elicitation_words;
+mod export;
 mod indent;
 mod json;
+mod page;
 // The window's own mark, drawn into its icon: reached only through the shell,
 // so it goes where the shell goes. The bundle's icon includes the same file by
 // path and does not pass through here (`examples/bundle-icon.rs`).
@@ -66,7 +68,6 @@ mod trace;
 mod update;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use acp_inspector_core::{
     AgentCommand, Appearance, AuthState, CallError, ConnectionStatus, Cursor, Diagnostic,
@@ -345,10 +346,11 @@ fn App() -> Element {
     // The failure is a string because a rendered failure is a sentence: an
     // `io::Error` is neither cloneable nor comparable, and what the panel does
     // with one is print it.
-    let mut exported = use_signal(|| None::<Result<PathBuf, String>>);
+    let mut export_work = use_signal(export::Work::default);
+    let mut retention = use_signal(acp_inspector_core::Retention::default);
     let mut lines = use_signal(Vec::<Diagnostic>::new);
-    // What the console's log no longer holds. Zero for as long as it stays
-    // unbounded — it is carried because it is half of what a line's identity is
+    // What the Console's bounded Diagnostic channel no longer holds;
+    // it is half of what a line's identity is
     // made of, and a console that stopped tracking it would break silently on
     // the day the log is bounded rather than loudly now.
     let mut dropped_lines = use_signal(|| 0usize);
@@ -530,6 +532,7 @@ fn App() -> Element {
         async move {
             let mut changes = trace.changes();
             while changes.next().await.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 // The two together, from one moment: a trace at its cap drops
                 // one every time it records one, and clearing moves both numbers
                 // at once. Read a moment apart they would describe different
@@ -548,6 +551,7 @@ fn App() -> Element {
         async move {
             let mut changes = diagnostics.changes();
             while changes.next().await.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let (said, gone) = diagnostics.snapshot();
                 lines.set(said);
                 dropped_lines.set(gone);
@@ -565,12 +569,15 @@ fn App() -> Element {
         async move {
             let mut changes = timeline.changes();
             while changes.next().await.is_some() {
-                entries.set(timeline.entries());
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let (held, spans, holes) = timeline.snapshot();
+                entries.set(held);
+                retention.set(holes);
                 // From the same snapshot and the same announcement as the
                 // entries: an entry stamped with a turn and the turn it names
                 // have to reach the screen together, or it draws a group whose
                 // outcome it has not been told about yet.
-                turns.set(timeline.turns());
+                turns.set(spans);
                 blocked.set(waiting_on(&inspector));
             }
         }
@@ -719,7 +726,6 @@ fn App() -> Element {
     let recording = recent.clone();
     let stopping_rail = inspector.clone();
     let stopping_palette = inspector.clone();
-    let exporting_palette = inspector.clone();
     let clearing_palette = inspector.clone();
     let choosing_palette = settings.clone();
     let switching_palette = settings.clone();
@@ -737,6 +743,17 @@ fn App() -> Element {
     let authenticating = inspector.clone();
     let logging_out = inspector.clone();
     let exporting = inspector.clone();
+    let on_export = EventHandler::new(move |()| {
+        navigation.console(Tab::Trace);
+        // The activation owns this snapshot, even if Clear or reconnect follows.
+        let Some(snapshot) = export_work.write().begin(exporting.trace()) else {
+            return;
+        };
+        spawn(async move {
+            let result = export::write(snapshot).await;
+            export_work.write().finish(result);
+        });
+    });
     let clearing = inspector.clone();
 
     // The menu bar, answered. Every item is a control that is also on screen —
@@ -748,20 +765,12 @@ fn App() -> Element {
     // with it where there is no menu bar to answer.
     #[cfg(feature = "desktop")]
     {
-        let menu_export = inspector.clone();
         let menu_clear = inspector.clone();
         let menu_stop = inspector.clone();
         let menu_open = inspector.clone();
         shell::use_menu(move |command| match command {
             shell::command::EXPORT_TRACE => {
-                exported.set(Some(
-                    menu_export
-                        .trace()
-                        .export()
-                        .save()
-                        .map_err(|error| error.to_string()),
-                ));
-                navigation.console(Tab::Trace);
+                on_export.call(());
             }
             shell::command::CLEAR_TRACE => menu_clear.trace().clear(),
             shell::command::STOP_AGENT => menu_stop.disconnect(),
@@ -1065,12 +1074,7 @@ fn App() -> Element {
             on_rail: EventHandler::new(move |chosen| navigation.rail(chosen)),
             on_new_session: claims.on_new_session,
             on_stop: EventHandler::new(move |()| stopping_palette.disconnect()),
-            on_export: EventHandler::new(move |()| {
-                exported.set(Some(
-                    exporting_palette.trace().export().save().map_err(|error| error.to_string()),
-                ));
-                navigation.console(Tab::Trace);
-            }),
+            on_export,
             on_clear: EventHandler::new(move |()| clearing_palette.trace().clear()),
             on_indent: EventHandler::new(move |()| {
                 let chosen = Indentation::of(!indentation().indented());
@@ -1129,6 +1133,7 @@ fn App() -> Element {
             Screens { spine: spine(),
             timeline: rsx! {
             Timeline {
+                retention: retention(),
                 prompt_epoch: prompt_epoch(),
                 image_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image),
                 audio_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.audio),
@@ -1232,15 +1237,9 @@ fn App() -> Element {
             console: rsx! { Console {
                 frames,
                 dropped_frames: dropped(),
-                saved: exported(),
-                // Both are one call into core and nothing else. Neither is
-                // spawned: an export is a snapshot taken and written now, and a
-                // button whose file appears a moment later is a button that
-                // cannot say where it went.
-                on_export: move |()| {
-                    exported
-                        .set(Some(exporting.trace().export().save().map_err(|error| error.to_string())));
-                },
+                saved: export_work.read().result.clone(),
+                export_pending: export_work.read().pending,
+                on_export,
                 on_clear: move |()| clearing.trace().clear(),
                 lines,
                 dropped_lines: dropped_lines(),

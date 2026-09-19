@@ -84,9 +84,27 @@ pub enum ConnectionStatus {
 /// The Console's Diagnostics tab is a rendering of this, and so is the evidence
 /// behind a failed spawn: one channel, so an agent's own diagnostics and the
 /// inspector's remarks about the connection sit in one timeline instead of two.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct DiagnosticLog {
     entries: Log<Diagnostic>,
+}
+
+impl Default for DiagnosticLog {
+    fn default() -> Self {
+        Self {
+            entries: Log::budgeted(Self::CAPACITY, Self::BYTE_CAPACITY, |line| {
+                std::mem::size_of::<Diagnostic>()
+                    + match &line.kind {
+                        DiagnosticKind::Stderr(text) => text.len(),
+                        DiagnosticKind::SpawnFailed { command, error } => {
+                            command.len() + error.to_string().len()
+                        }
+                        DiagnosticKind::TransportFailed(error) => error.to_string().len(),
+                        _ => 0,
+                    }
+            }),
+        }
+    }
 }
 
 /// The inspector: an agent connection and the record of it.
@@ -1076,6 +1094,8 @@ impl Inspector {
 }
 
 impl DiagnosticLog {
+    pub const CAPACITY: usize = 10_000;
+    pub const BYTE_CAPACITY: usize = 8 * 1024 * 1024;
     pub fn entries(&self) -> Vec<Diagnostic> {
         self.entries.entries()
     }
@@ -1084,12 +1104,9 @@ impl DiagnosticLog {
     /// moment — [`Trace::snapshot`](crate::Trace::snapshot)'s reason, for the
     /// other log a window renders.
     ///
-    /// The second number is `0` today and the accessor still hands it over:
-    /// this log is unbounded for now (§15 q8 is the volume question, still
-    /// open), and a console that keyed its lines by position alone would be a
-    /// console that quietly starts mixing rows up on the day it is not. A line's
-    /// identity is the ordinal it was captured under, whether or not anything
-    /// has been dropped yet.
+    /// The second number counts entries aged out under either budget. A line's
+    /// identity remains `dropped + position`, including transport remarks that
+    /// reported holes in stdout or stderr and have themselves aged out.
     pub fn snapshot(&self) -> (Vec<Diagnostic>, usize) {
         self.entries.snapshot()
     }

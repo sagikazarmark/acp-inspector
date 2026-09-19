@@ -166,6 +166,8 @@ pub use session_settings::{ConfigRefusal, ModeChange, SessionSettings};
 pub use settings::Settings;
 pub use stdio::StdioSpawn;
 pub use store::Changes;
-pub use timeline::{EntryId, EntryKind, Recorded, Timeline, TimelineEntry, Turn, Unrecognized};
+pub use timeline::{
+    EntryId, EntryKind, Recorded, Retention, Timeline, TimelineEntry, Turn, Unrecognized,
+};
 pub use trace::{Trace, TracedFrame};
 pub use turn::{TurnOutcome, TurnState};

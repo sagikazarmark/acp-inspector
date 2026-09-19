@@ -1808,6 +1808,56 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
 
 ## 10. The JSONL trace export
 
+### Retention and desktop performance (first-release hardening)
+
+Capture still precedes decoding. Retention is bounded independently of transport framing:
+
+- **Trace:** newest 10,000 Frames within 64 MiB of raw UTF-8; evict whole oldest Frames until
+  both budgets fit. Clear and either budget contribute to the same lifetime `dropped` count,
+  in the Console and every export. Ordinals never reset or renumber.
+- **Diagnostic channel:** newest 10,000 entries within 8 MiB of accounted text and fixed entry
+  storage. Whole oldest entries leave, including transport remarks, counted on its Console tab.
+  A retained `FrameDropped`/`StderrLineDropped` still names a transport hole; an aged-out diagnostic
+  is counted as a missing diagnostic, not misrepresented as a captured Frame.
+- **Timeline:** oldest eligible entries leave whole at 1,000 entries, 2,000 raw Frames, or
+  16 MiB of raw evidence. Counts of removed entries, Frames, raw bytes and Turn records remain
+  visible for that Session. Holes can be between retained entries, not just at the beginning.
+  A Conformance Annotation leaves with all its deciding evidence; no retained claim loses its
+  Frames. An evicted tool call's later patch starts a new entry, never merges into a reused index.
+  Waiting **and answering** Blocking Requests and the latest available-commands Advertisement
+  are exempt; no retention pressure answers on the reader's behalf or retracts an Affordance.
+  Turn records with retained entries and the open Turn stay; otherwise keep at most 1,000, with
+  monotonic ids and explicit counts. Session switches reset this Session-local account.
+
+These are evidence budgets, not a process RSS ceiling: decoded values, UI snapshots, in-flight
+transport queues and one pending export consume additional memory. A hostile Agent can exceed
+Timeline budgets with outstanding Blocking Requests; refusing or automatically answering them
+would require a separate protocol policy. Completed requests become eligible on the next
+mutation/snapshot. The Trace's retention is independent of Timeline retention: saying traffic
+"remains in Trace" means subject to its visible budgets, never durable storage.
+
+The Console draws **200 retained rows per page**, with Older, Newer, Latest and position/count
+controls. Filters still search all retained Frames. Timeline-to-Trace navigation opens the named
+ordinal's page before focus. Trace and Diagnostic previews are literal UTF-8 prefixes of at
+most 512 bytes. Longer Diagnostics offer an explicit complete-line disclosure with adjacent
+raw byte windows; Copy always takes the complete original line, shared until activation.
+An anchor excluded by a filter falls back to a full final page of matching rows.
+Frames over 16 KiB are read in adjacent literal raw byte windows rather than formatted/tokenized
+whole. Copy and export always take the complete original Frame. Smaller Frames keep indentation
+and token coloring. Timeline rendering is bounded by its retained entry policy.
+
+Immutable Frames cache their envelope summary once, shared by clones; payloads are scanned as
+borrowed raw JSON without constructing payload value trees. Typed numeric decoding is unchanged.
+Desktop subscriptions coalesce at 50 ms before copying bounded snapshots; Timeline entries,
+Turn records and hole counts come from one lock acquisition.
+
+Toolbar, command palette and native menu use one background export job. Activation takes the
+snapshot, then serialization and writing run on the blocking pool. Pending status is visible,
+repeat activation while pending does not queue another snapshot, and success or failure replaces
+it. Clear/reconnect cannot change the job's evidence. The destination remains the temporary
+directory until the Save dialog work. Measurements and remaining limits:
+[`performance-hardening.md`](performance-hardening.md).
+
 Pulled *into* the MVP deliberately ([#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56)):
 the export is **the seed of the event log** that ACP Wiretap and future replay tooling wait on
 (the surveyed ecosystem's open gap is exactly live capture + JSONL replay + validation in one
@@ -2243,9 +2293,10 @@ backlog.
    > the same seam, and the rejected looser formulation is asserted as rejected: an agent that drops
    > a *different* option from the answer draws nothing, with the store showing the shrink it took
    > the agent's word for.
-8. **No performance facts.** Frame volume per turn, stderr volume under a chatty agent, and
-   Dioxus desktop's rendering behaviour over a fast-appending log are all unmeasured; the
-   research's numbers stop at the protocol.
+8. **First-release performance measured**, with debug-profile baseline/comparison and native
+   WebKitGTK stress in [`performance-hardening.md`](performance-hardening.md). Release-profile
+   and other desktop platform latency measurements remain open; retention and pagination are
+   specified in §10 above.
 9. **System appearance has a release check and still needs a rendered desktop result.** The switch
    ([§9](#9-screens)) and its production stylesheet are now one release check
    ([desktop smoke matrix](desktop-smoke-matrix.md)): System removes `data-theme` and the generated

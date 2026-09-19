@@ -144,7 +144,8 @@ is defined in both directions:
 
 ## Bounding
 
-**A ring of `Trace::CAPACITY` (10 000) frames**, oldest dropped, counted in `dropped`. §15 q3
+**A ring of `Trace::CAPACITY` (10 000) frames and `Trace::BYTE_CAPACITY` (64 MiB raw UTF-8)**,
+oldest whole Frames dropped until both budgets fit, counted in `dropped`. §15 q3
 asked for cap, ring, or unbounded; the argument:
 
 - **A cap that stops recording is the worst of the three for an inspector.** The frames being
@@ -160,5 +161,11 @@ tool calls can run to hundreds of frames and a debugging session is several turn
 the number is a policy, not part of the contract above — it can change without a `version`
 bump.
 
-The diagnostic channel (stderr) is a separate log and stays unbounded for now; its volume
-question is open the same way frame volume was ([§15](architecture.md#15-open-questions--validation-gaps) q8).
+The diagnostic channel is separate: 10,000 entries / 8 MiB, with its own visible missing-entry
+count, and is not part of this export. Timeline retention is likewise independent; see
+[architecture §10](architecture.md#10-the-jsonl-trace-export).
+
+All desktop export entry points take one activation snapshot and write it in the background,
+with pending, success and error states. A repeated activation while pending is ignored; Clear
+or a new Connection cannot alter the snapshot. This changes neither the JSONL v1 schema nor
+the current temporary-directory destination.

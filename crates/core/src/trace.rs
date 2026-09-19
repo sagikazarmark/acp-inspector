@@ -5,8 +5,8 @@
 //! **One capture mechanism for the whole program.** The trace view, the JSONL
 //! export and misbehaving-agent logging are three consumers of this one log;
 //! nothing else in the inspector touches the wire. That is what makes the trace
-//! trustworthy: there is no path a frame can take that skips it, so "not in the
-//! trace" means "never crossed", always.
+//! trustworthy: there is no path a frame can take that skips capture. Retention
+//! and Clear can remove captured Frames, always counted in `dropped`.
 //!
 //! It is a decorator rather than something the transport does, because then
 //! every transport gets it — the deferred WebSocket factory records identically
@@ -68,6 +68,8 @@ impl Trace {
     /// which this deliberately does not do (an agent that died is when its
     /// frames are worth the most).
     pub const CAPACITY: usize = 10_000;
+    /// Raw UTF-8 bytes, independently of the entry cap.
+    pub const BYTE_CAPACITY: usize = 64 * 1024 * 1024;
 
     /// Wraps a connection so both of its frame ends record into a new trace.
     ///
@@ -246,7 +248,9 @@ impl Tap {
 impl Default for Trace {
     fn default() -> Self {
         Self {
-            entries: Log::bounded(Self::CAPACITY),
+            entries: Log::budgeted(Self::CAPACITY, Self::BYTE_CAPACITY, |entry| {
+                entry.frame.as_str().len()
+            }),
             connections: Arc::default(),
         }
     }

@@ -75,6 +75,7 @@ pub(crate) fn focus_entry(ordinal: u64) {
 #[component]
 pub fn Timeline(
     entries: ReadSignal<Vec<TimelineEntry>>,
+    #[props(default)] retention: acp_inspector_core::Retention,
     turn: TurnState,
     session: Option<v1::SessionId>,
     /// Whether the agent that opened the session is still there. A session
@@ -132,7 +133,7 @@ pub fn Timeline(
 ) -> Element {
     let blocks = blocks(entries());
     let count = blocks.len();
-    let commands = commands(&entries());
+    let commands = commands(&entries.read());
     let rows = rows(blocks, &turns);
     let crossing = Crossing {
         sought,
@@ -148,15 +149,11 @@ pub fn Timeline(
     // not a distinction their next action turns on.
     let waiting = blocked
         .then(|| {
-            entries()
+            entries
+                .read()
                 .iter()
                 .rev()
-                .find(|entry| {
-                    matches!(
-                        entry.kind,
-                        EntryKind::Permission(_) | EntryKind::Elicitation(_)
-                    )
-                })
+                .find(|entry| entry.is_waiting())
                 .and_then(|entry| entry.frames.iter().find_map(|recorded| recorded.captured))
         })
         .flatten();
@@ -190,6 +187,11 @@ pub fn Timeline(
                 {composer::badge(&composer::presented(&turn, blocked, problem.as_ref(), connected && session.is_some(), connected))}
             }
 
+            if retention.entries > 0 || retention.turns > 0 {
+                p { class: "narrowed", "data-slot": "timeline-retention",
+                    "Timeline retention: {retention.entries} entries, {retention.frames} raw Frames ({retention.bytes} bytes), and {retention.turns} Turn records no longer held. Gaps may occur between retained entries. Trace has its own retention budget. Pending Blocking Requests remain answerable."
+                }
+            }
             if count == 0 {
                 div { class: "empty", "data-slot": "timeline-empty",
                     // Two empties, and they are not the same news. A session
@@ -1033,11 +1035,15 @@ fn frames_of(entries: &[TimelineEntry]) -> Element {
         div { class: "raws", "data-slot": "wire",
             for (position, recorded) in frames.into_iter().enumerate() {
                 div { key: "{position}", class: "raw-row",
+                    if recorded.frame.as_str().len() > 16 * 1024 {
+                        crate::page::RawFrame { frame: recorded.frame.clone() }
+                    } else {
                     pre {
                         class: "raw",
                         "{crate::indent::drawn(&key, true, recorded.frame.as_str())}"
                     }
-                    Copy { text: recorded.frame.to_string(), what: "this frame" }
+                    }
+                    Copy { frame: recorded.frame.clone(), what: "this frame" }
                 }
             }
         }

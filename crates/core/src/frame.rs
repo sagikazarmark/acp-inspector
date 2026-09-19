@@ -1,7 +1,8 @@
 //! The unit of the wire: one JSON-RPC message, verbatim, and which way it went.
 
+use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// One JSON-RPC message as it crossed the wire (`CONTEXT.md`, *Frame*).
 ///
@@ -13,8 +14,20 @@ use std::sync::Arc;
 ///
 /// Cheap to clone, because every frame is cloned at least once: the trace keeps
 /// a copy of everything that passes the seam.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Frame(Arc<str>);
+#[derive(Clone)]
+pub struct Frame(Arc<Contents>);
+
+struct Contents {
+    text: Arc<str>,
+    summary: OnceLock<FrameSummary>,
+}
+
+impl PartialEq for Frame {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+    }
+}
+impl Eq for Frame {}
 
 /// Which way a frame went. The inspector is always the client, so the two
 /// directions are the two ends of its own connection — never a third party's
@@ -27,11 +40,14 @@ pub enum Direction {
 
 impl Frame {
     pub fn new(text: impl Into<Arc<str>>) -> Self {
-        Self(text.into())
+        Self(Arc::new(Contents {
+            text: text.into(),
+            summary: OnceLock::new(),
+        }))
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.0.text
     }
 
     /// What the frame says it is, for a surface that has to draw a thousand of
@@ -49,36 +65,10 @@ impl Frame {
     /// object is [`FrameKind::Unreadable`], and the surface that asked draws
     /// exactly what it drew before — the frame's own text, verbatim. The
     /// summary is a thing put *in front of* the bytes, never instead of them.
-    pub fn summary(&self) -> FrameSummary {
-        let Ok(serde_json::Value::Object(envelope)) =
-            serde_json::from_str::<serde_json::Value>(&self.0)
-        else {
-            return FrameSummary::unreadable();
-        };
-
-        // The id as it was written. JSON-RPC allows a string or a number and
-        // this is a label, so it is rendered rather than typed: an agent that
-        // sent `"3"` where it sent `3` last time is a difference worth seeing
-        // on the row rather than one normalised away by the tool reporting it.
-        let id = match envelope.get("id") {
-            Some(serde_json::Value::String(id)) => Some(id.clone()),
-            Some(serde_json::Value::Number(id)) => Some(id.to_string()),
-            _ => None,
-        };
-        let method = match envelope.get("method") {
-            Some(serde_json::Value::String(method)) => Some(method.clone()),
-            _ => None,
-        };
-
-        let kind = match (&method, envelope.contains_key("error"), &id) {
-            (Some(_), _, Some(_)) => FrameKind::Call,
-            (Some(_), _, None) => FrameKind::Notification,
-            (None, true, _) => FrameKind::Error,
-            (None, false, _) if envelope.contains_key("result") => FrameKind::Result,
-            _ => FrameKind::Unreadable,
-        };
-
-        FrameSummary { kind, method, id }
+    pub fn summary(&self) -> &FrameSummary {
+        self.0.summary.get_or_init(|| {
+            serde_json::from_str(self.as_str()).unwrap_or_else(|_| FrameSummary::unreadable())
+        })
     }
 
     /// Whether this frame can cross a message-per-line transport as the single
@@ -89,7 +79,7 @@ impl Frame {
     /// showed one — the inspector lying about the wire, which is the one thing
     /// it may never do.
     pub(crate) fn is_one_message(&self) -> bool {
-        !self.0.contains('\n')
+        !self.as_str().contains('\n')
     }
 }
 
@@ -123,6 +113,52 @@ pub struct FrameSummary {
     pub id: Option<String>,
 }
 
+// Validate the envelope once, borrowing and skipping payloads without allocating
+// their object trees. Last duplicate key wins, as in the former Value reader.
+impl<'de> Deserialize<'de> for FrameSummary {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Envelope;
+        impl<'de> Visitor<'de> for Envelope {
+            type Value = FrameSummary;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an envelope object")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let (mut method, mut id, mut result, mut error) = (None, None, false, false);
+                while let Some(key) = map.next_key::<String>()? {
+                    let raw = map.next_value::<&serde_json::value::RawValue>()?;
+                    match key.as_str() {
+                        "method" => method = serde_json::from_str::<String>(raw.get()).ok(),
+                        "id" => {
+                            // Use the existing Value number semantics for this label only;
+                            // never convert IDs through f64 ourselves or decode payloads.
+                            id = match serde_json::from_str::<serde_json::Value>(raw.get())
+                                .map_err(serde::de::Error::custom)?
+                            {
+                                serde_json::Value::String(s) => Some(s),
+                                serde_json::Value::Number(n) => Some(n.to_string()),
+                                _ => None,
+                            };
+                        }
+                        "result" => result = true,
+                        "error" => error = true,
+                        _ => {}
+                    }
+                }
+                let kind = match (&method, error, &id) {
+                    (Some(_), _, Some(_)) => FrameKind::Call,
+                    (Some(_), _, None) => FrameKind::Notification,
+                    (None, true, _) => FrameKind::Error,
+                    (None, false, _) if result => FrameKind::Result,
+                    _ => FrameKind::Unreadable,
+                };
+                Ok(FrameSummary { kind, method, id })
+            }
+        }
+        deserializer.deserialize_map(Envelope)
+    }
+}
+
 impl FrameSummary {
     fn unreadable() -> Self {
         Self {
@@ -151,7 +187,7 @@ impl FrameSummary {
 
 impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
@@ -159,7 +195,7 @@ impl fmt::Debug for Frame {
     /// The frame's text, not `Frame("…")` around it: every place this shows up —
     /// a failed assertion, a log line — wants the JSON that was on the wire.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
+        fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
@@ -167,8 +203,23 @@ impl fmt::Debug for Frame {
 mod tests {
     use super::*;
 
+    #[test]
+    fn envelope_cache_is_shared_and_payload_numbers_are_not_interpreted() {
+        let frame = Frame::new(
+            r#"{"id":18446744073709551615,"method":"first","method":"last","params":{"huge":1e9999,"marker":{"$serde_json::private::Number":"x"}}}"#,
+        );
+        let clone = frame.clone();
+        assert!(std::ptr::eq(frame.summary(), clone.summary()));
+        assert_eq!(frame.summary().method.as_deref(), Some("last"));
+        assert_eq!(frame.summary().id.as_deref(), Some("18446744073709551615"));
+        assert_eq!(
+            Frame::new(r#"{"method":"x","params":[1,]}"#).summary().kind,
+            FrameKind::Unreadable
+        );
+    }
+
     fn summary(text: &str) -> FrameSummary {
-        Frame::new(text).summary()
+        Frame::new(text).summary().clone()
     }
 
     #[test]

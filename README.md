@@ -39,7 +39,7 @@ call recorded as evidence.
 The window is a rail and two screens ([ADR 0009](docs/adr/0009-the-window-is-the-drawing.md)):
 the connection on the left with the live session's settings and both parties' capabilities behind
 two tabs, the turn timeline in the middle, and the console beside it — the trace and the agent's
-stderr as two tabs, opening on the trace, with the frame a reader selects read whole in a pane at
+stderr as two tabs, opening on the trace, with the frame a reader selects read in a pane at
 the foot of the list, and expanding onto stderr by itself when an agent is gone without being asked
 to go. A **Split | JSON-RPC full** control in the toolbar says whether the two screens share the
 width or the wire takes all of it; a window too narrow for three columns shows one region at a time
@@ -76,9 +76,8 @@ running is cancelled first, every waiting permission request is answered `cancel
 the stop button already owes them — and the timeline is discarded and rebuilt, because the
 inspector holds one live session and the timeline is the view of it. It does not wait for the
 cancelled turn to end, since an agent that never ends one is the sort this tool is pointed at; what
-answers that turn afterwards answers the call and nothing on screen. **The trace is untouched**:
-every frame of the session that was left is where it was, so a switch costs the view and never the
-evidence.
+answers that turn afterwards answers the call and nothing on screen. **The trace is untouched
+by the switch**: retained Frames stay subject to its independent, counted retention budgets.
 
 **The roots a session opens with are yours to supply**, where the agent advertised
 `sessionCapabilities.additionalDirectories`: a list beside the create button and on every row that
@@ -118,7 +117,7 @@ asked to send and reports what came back, without saying what should have happen
 button would be the tool deciding what may be observed. Ending the live session leaves the inspector
 with **no live session**, and the screen says so as itself — the timeline goes with the session it
 was a view of, the composer says nothing is open to prompt into and names the two ways to open one,
-and every frame is still in the trace. A close or a delete the agent *refused* ended nothing: the
+and retained Frames stay in the Trace under its retention budgets. A close or a delete the agent *refused* ended nothing: the
 session stays live and the failure is named by the method that failed.
 
 **What a `session/close` does to an in-flight prompt was settled by driving it, not by reading**
@@ -152,6 +151,26 @@ The schema is pinned in [`docs/trace-export.md`](docs/trace-export.md), because 
 replay tooling are meant to read it: it aligns with the bridge's `--trace-frames` records field
 for field and adds what the inspector knows and the bridge did not record.
 
+**Retention is bounded and loss is explicit.** Trace keeps the newest **10,000 Frames within
+64 MiB of raw UTF-8**, dropping whole oldest Frames until both budgets fit. Its missing-Frame
+count stays visible and appears in every export, including Frames removed by Clear. Diagnostics
+keep 10,000 entries within 8 MiB, with their own missing-entry count. The Timeline keeps up to
+1,000 entries, 2,000 raw Frames and 16 MiB of raw evidence; whole entries leave with their
+evidence, and removed entries, Frames, bytes and Turn records are counted on screen. Pending
+and answering Blocking Requests and the latest command Advertisement are exempt, so requests
+remain answerable and can exceed those budgets. Turn records needed by retained entries or the
+open Turn stay; otherwise up to 1,000 are retained. These are evidence budgets, not an RSS limit
+or a durable archive. See [architecture §10](docs/architecture.md#10-the-jsonl-trace-export).
+
+Console lists use **200-row pages** with Older, Newer and Latest controls; filters search all
+retained evidence and reveal-by-ordinal opens the destination page. Trace and Diagnostic row
+previews are literal prefixes of at most 512 UTF-8 bytes. A longer Diagnostic offers **Read
+complete line**, opening adjacent raw byte windows. Frames larger than 16 KiB also use literal
+byte windows in the selected-frame pane, rather than laying out the entire payload at once.
+**Copy always takes the complete original Frame or Diagnostic line**, regardless of the window
+being read. Export takes the complete retained Trace snapshot on activation and writes it in the
+background, showing pending status and then the path or failure.
+
 The spawn form remembers what answered. An invocation whose agent described itself — a session
 opened, or an agent that wants a login before it will open one — joins a short list under the
 form: newest first, ten of them, one click to put one back in the four fields, and the Launch
@@ -183,8 +202,10 @@ that is JSON is drawn with whitespace between its tokens wherever this window dr
 read — the frames under an entry this window has no rendering for, a tool call's raw input and
 output — and **only where somebody is looking**, so a trace of ten thousand frames lays out the one
 being read rather than all of them. The Console's own pane is the exception and needs no switch: it holds the
-one frame a reader selected, on the surface whose whole subject that frame is, so it is always laid
-out and coloured by what it is made of. It **adds whitespace and changes nothing else** — the text is validated as JSON and then
+one frame a reader selected, on the surface whose whole subject that frame is. Frames up to
+16 KiB are laid out and coloured by what they are made of; larger raw Frames use the literal,
+unformatted byte windows described above, including in Timeline raw evidence. Indentation
+**adds whitespace and changes nothing else** — the text is validated as JSON and then
 re-spaced rather than decoded and printed back, so an object's keys keep the agent's order, two
 fields that share a name both survive, and numbers and escapes stay spelled the way they arrived. A
 frame that is not JSON is drawn exactly as it arrived, because a frame can be anything and that is

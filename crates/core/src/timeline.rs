@@ -256,16 +256,42 @@ struct Entries {
     /// Which of them is open, if one is. What an entry made now is stamped
     /// with.
     open: Option<u64>,
+    next_turn: u64,
+    dropped: Retention,
+    raw_bytes: usize,
+    raw_frames: usize,
+}
+
+/// Explicit holes in this Session's retained Timeline. Entries leave whole,
+/// including their deciding evidence; pending Blocking Requests are exempt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retention {
+    pub entries: usize,
+    pub frames: usize,
+    pub bytes: usize,
+    pub turns: usize,
 }
 
 impl Timeline {
-    /// Every entry so far, oldest first.
+    pub const CAPACITY: usize = 1_000;
+    pub const BYTE_CAPACITY: usize = 16 * 1024 * 1024;
+    pub const FRAME_CAPACITY: usize = 2_000;
+
+    /// Entries, Turn records and hole counts from one instant.
+    pub fn snapshot(&self) -> (Vec<TimelineEntry>, Vec<Turn>, Retention) {
+        let mut held = self.lock();
+        held.retain();
+        (held.entries.clone(), held.turns.clone(), held.dropped)
+    }
+    /// Every retained entry, oldest first. Retention holes are in `snapshot`.
     ///
     /// A snapshot by value, like the trace's: consumers read while the agent
     /// keeps talking, and none of them should be holding a lock while they
     /// render.
     pub fn entries(&self) -> Vec<TimelineEntry> {
-        self.lock().entries.clone()
+        let mut held = self.lock();
+        held.retain();
+        held.entries.clone()
     }
 
     pub fn len(&self) -> usize {
@@ -305,14 +331,15 @@ impl Timeline {
             return open;
         }
 
-        let id = entries.turns.len() as u64 + 1;
+        entries.next_turn += 1;
+        let id = entries.next_turn;
         entries.turns.push(Turn {
             id,
             at: SystemTime::now(),
             outcome: None,
         });
         entries.open = Some(id);
-        self.moved(&entries);
+        self.moved(&mut entries);
         id
     }
 
@@ -329,7 +356,7 @@ impl Timeline {
         if let Some(turn) = entries.turns.iter_mut().find(|turn| turn.id == open) {
             turn.outcome = Some(outcome);
         }
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Puts one decoded notification where it belongs: onto the entry it
@@ -337,6 +364,7 @@ impl Timeline {
     pub(crate) fn update(&self, notification: v1::SessionNotification, frame: Recorded) {
         let id = merge_key(&notification);
         let mut entries = self.lock();
+        entries.charge(&frame);
         let existing = id.as_ref().and_then(|id| entries.index.get(id)).copied();
 
         match existing {
@@ -362,7 +390,7 @@ impl Timeline {
             }
         }
 
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Puts a blocking request where the turn stopped for it (§7.2).
@@ -372,6 +400,7 @@ impl Timeline {
     /// twice, and two entries is what that looks like.
     pub(crate) fn blocked(&self, request: PermissionRequest, frame: Recorded) {
         let mut entries = self.lock();
+        entries.charge(&frame);
         let turn = entries.open;
         entries.entries.push(TimelineEntry::new(
             EntryId::Permission(request.id().clone()),
@@ -379,7 +408,7 @@ impl Timeline {
             EntryKind::Permission(request),
             turn,
         ));
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Puts an elicitation where the agent asked it (§7.8).
@@ -391,6 +420,7 @@ impl Timeline {
     /// entry says so rather than being filed under a session it never named.
     pub(crate) fn elicited(&self, request: ElicitationRequest, frame: Recorded) {
         let mut entries = self.lock();
+        entries.charge(&frame);
         let turn = entries.open;
         entries.entries.push(TimelineEntry::new(
             EntryId::Elicitation(request.id().clone()),
@@ -398,7 +428,7 @@ impl Timeline {
             EntryKind::Elicitation(request),
             turn,
         ));
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Adds the frame that said an elicitation's out-of-band half finished, to
@@ -412,14 +442,35 @@ impl Timeline {
     /// it.
     pub(crate) fn completed(&self, requests: &[RequestId], frame: Recorded) {
         let mut entries = self.lock();
+        let mut added = 0;
         for entry in &mut entries.entries {
             if let EntryId::Elicitation(id) = &entry.id
                 && requests.contains(id)
             {
                 entry.frames.push(frame.clone());
+                added += 1;
             }
         }
-        self.moved(&entries);
+        entries.raw_frames += added;
+        entries.raw_bytes += added * frame.frame.as_str().len();
+        if added == 0 {
+            // The named request may have aged out since its answer. Completion
+            // is still traffic: retain it raw rather than swallowing it into a
+            // row that no longer exists.
+            entries.charge(&frame);
+            let id = entries.arrival();
+            let turn = entries.open;
+            entries.entries.push(TimelineEntry::new(
+                id,
+                frame,
+                EntryKind::Unrecognized(Unrecognized::Undecodable {
+                    method: Some("elicitation/complete".into()),
+                    problem: "The elicitation's Timeline entry is no longer retained.".into(),
+                }),
+                turn,
+            ));
+        }
+        self.moved(&mut entries);
     }
 
     /// Says that a rule the specification states as a MUST was not met, beside
@@ -432,7 +483,7 @@ impl Timeline {
     pub(crate) fn annotate(&self, annotation: Annotation, frames: Vec<Frame>) {
         // Frames this client sent, mostly, and the ordinal for one of those is
         // not carried back up the send path (`Recorded::captured`).
-        let frames = frames
+        let frames: Vec<_> = frames
             .into_iter()
             .map(|frame| Recorded {
                 frame,
@@ -440,6 +491,9 @@ impl Timeline {
             })
             .collect();
         let mut entries = self.lock();
+        for frame in &frames {
+            entries.charge(frame);
+        }
         let id = entries.arrival();
         let turn = entries.open;
         entries.entries.push(TimelineEntry {
@@ -449,7 +503,7 @@ impl Timeline {
             kind: EntryKind::Annotation(annotation),
             turn,
         });
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Adds a frame the typed layer could not use. Never merges: there is no id
@@ -457,6 +511,7 @@ impl Timeline {
     /// traffic it just said it does not understand.
     pub(crate) fn unrecognized(&self, unrecognized: Unrecognized, frame: Recorded) {
         let mut entries = self.lock();
+        entries.charge(&frame);
         let id = entries.arrival();
         let turn = entries.open;
         entries.entries.push(TimelineEntry::new(
@@ -465,7 +520,7 @@ impl Timeline {
             EntryKind::Unrecognized(unrecognized),
             turn,
         ));
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Starts a new connection's worth of timeline.
@@ -489,7 +544,7 @@ impl Timeline {
         // ([`discard`](Self::discard)), which a launch that never started an
         // agent never reaches.
         entries.open = None;
-        self.moved(&entries);
+        self.moved(&mut entries);
     }
 
     /// Discards the session this is a view of, so the next one can be built
@@ -501,10 +556,9 @@ impl Timeline {
     /// hydration, and the one `session/load` exists to make possible: a session
     /// re-opened is a session replayed into an empty timeline.
     ///
-    /// **Nothing is lost that was ever evidence.** Every frame behind every
-    /// entry is in the trace, recorded before this layer was allowed an opinion
-    /// (§6.2), and the trace is untouched by a switch — so this costs the view
-    /// and never the record. The arrival counter keeps counting for the same
+    /// Every frame was captured in Trace before this layer had an opinion.
+    /// Trace is untouched by a switch, subject to its own counted retention
+    /// budgets. The arrival counter keeps counting for the same
     /// reason it survives a connection: an entry's id has to stay unique for as
     /// long as the window is open.
     pub(crate) fn discard(&self) {
@@ -515,7 +569,11 @@ impl Timeline {
         // session is what a discard replaces.
         entries.turns.clear();
         entries.open = None;
-        self.moved(&entries);
+        entries.next_turn = 0;
+        entries.dropped = Retention::default();
+        entries.raw_bytes = 0;
+        entries.raw_frames = 0;
+        self.moved(&mut entries);
     }
 
     /// A way to say the timeline changed, for a change this store did not make.
@@ -532,7 +590,8 @@ impl Timeline {
     /// Announces a change while the entries are still held, so a subscriber
     /// that wakes on a revision and then reads can never find less than it was
     /// told about.
-    fn moved(&self, _held: &MutexGuard<'_, Entries>) {
+    fn moved(&self, held: &mut MutexGuard<'_, Entries>) {
+        held.retain();
         self.revision.send_modify(|revision| *revision += 1);
     }
 
@@ -562,6 +621,84 @@ impl Default for Timeline {
 }
 
 impl Entries {
+    fn charge(&mut self, frame: &Recorded) {
+        self.raw_bytes += frame.frame.as_str().len();
+        self.raw_frames += 1;
+    }
+
+    fn retain(&mut self) {
+        if self.entries.len() <= Timeline::CAPACITY
+            && self.raw_frames <= Timeline::FRAME_CAPACITY
+            && self.raw_bytes <= Timeline::BYTE_CAPACITY
+            && self.turns.len() <= Timeline::CAPACITY
+        {
+            return;
+        }
+        let latest_commands = self.entries.iter().rposition(|entry| {
+            matches!(
+                entry.kind,
+                EntryKind::Update(v1::SessionUpdate::AvailableCommandsUpdate(_))
+            )
+        });
+        let mut count = self.entries.len();
+        let mut removed = Vec::new();
+        for (position, entry) in self.entries.iter().enumerate() {
+            if count <= Timeline::CAPACITY
+                && self.raw_frames <= Timeline::FRAME_CAPACITY
+                && self.raw_bytes <= Timeline::BYTE_CAPACITY
+            {
+                break;
+            }
+            if entry.retention_pinned() || latest_commands == Some(position) {
+                continue;
+            }
+            count -= 1;
+            let bytes = entry
+                .frames
+                .iter()
+                .map(|f| f.frame.as_str().len())
+                .sum::<usize>();
+            self.raw_frames -= entry.frames.len();
+            self.raw_bytes -= bytes;
+            self.dropped.entries += 1;
+            self.dropped.frames += entry.frames.len();
+            self.dropped.bytes += bytes;
+            removed.push(position);
+        }
+        if !removed.is_empty() {
+            // Preserve the Connection boundary in the merge index: rebuilding
+            // it from every retained entry would resurrect the previous Agent's IDs.
+            self.index
+                .retain(|_, position| match removed.binary_search(position) {
+                    Ok(_) => false,
+                    Err(before) => {
+                        *position -= before;
+                        true
+                    }
+                });
+            let mut position = 0;
+            self.entries.retain(|_| {
+                let keep = removed.binary_search(&position).is_err();
+                position += 1;
+                keep
+            });
+        }
+        if self.turns.len() > Timeline::CAPACITY {
+            let mut excess = self.turns.len() - Timeline::CAPACITY;
+            self.turns.retain(|turn| {
+                if excess == 0
+                    || self.open == Some(turn.id)
+                    || self.entries.iter().any(|e| e.turn == Some(turn.id))
+                {
+                    return true;
+                }
+                excess -= 1;
+                self.dropped.turns += 1;
+                false
+            });
+        }
+    }
+
     fn arrival(&mut self) -> EntryId {
         self.arrivals += 1;
         EntryId::Arrival(self.arrivals)
@@ -569,6 +706,28 @@ impl Entries {
 }
 
 impl TimelineEntry {
+    fn retention_pinned(&self) -> bool {
+        match &self.kind {
+            EntryKind::Permission(request) => matches!(
+                request.state(),
+                crate::permission::PermissionState::Waiting
+                    | crate::permission::PermissionState::Answering
+            ),
+            EntryKind::Elicitation(request) => matches!(
+                request.state(),
+                crate::elicitation::ElicitationState::Waiting
+                    | crate::elicitation::ElicitationState::Answering
+            ),
+            _ => false,
+        }
+    }
+    pub fn is_waiting(&self) -> bool {
+        match &self.kind {
+            EntryKind::Permission(request) => request.is_waiting(),
+            EntryKind::Elicitation(request) => request.is_waiting(),
+            _ => false,
+        }
+    }
     /// An entry as it starts: one frame, and what the typed layer made of it.
     fn new(id: EntryId, frame: Recorded, kind: EntryKind, turn: Option<u64>) -> Self {
         Self {
@@ -698,4 +857,94 @@ fn patch_fields(fields: &mut v1::ToolCallUpdateFields, update: v1::ToolCallUpdat
     fields.locations = locations.or_else(|| fields.locations.take());
     fields.raw_input = raw_input.or_else(|| fields.raw_input.take());
     fields.raw_output = raw_output.or_else(|| fields.raw_output.take());
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    fn recorded(text: &str, ordinal: u64) -> Recorded {
+        Recorded {
+            frame: Frame::new(text),
+            captured: Some(ordinal),
+        }
+    }
+
+    #[test]
+    fn merged_tool_evidence_leaves_whole_and_later_patch_starts_a_new_entry() {
+        let timeline = Timeline::default();
+        for i in 0..=Timeline::FRAME_CAPACITY {
+            let notification = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","title":"updated"}}"#).unwrap();
+            timeline.update(notification, recorded("raw patch", i as u64));
+        }
+        let (entries, _, holes) = timeline.snapshot();
+        assert!(entries.is_empty());
+        assert_eq!(holes.entries, 1);
+        assert_eq!(holes.frames, Timeline::FRAME_CAPACITY + 1);
+        let notification = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","status":"completed"}}"#).unwrap();
+        timeline.update(notification, recorded("last patch", 3000));
+        let entries = timeline.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].frames.len(), 1);
+        assert_eq!(entries[0].frames[0].captured, Some(3000));
+    }
+
+    #[test]
+    fn turn_ordinals_do_not_reset_when_empty_turn_records_age_out() {
+        let timeline = Timeline::default();
+        for id in 1..=1500 {
+            assert_eq!(timeline.open_turn(), id);
+            timeline.close_turn(TurnOutcome::Ended(v1::StopReason::EndTurn));
+        }
+        let (_, turns, holes) = timeline.snapshot();
+        assert_eq!(turns.len(), Timeline::CAPACITY);
+        assert_eq!(turns[0].id, 501);
+        assert_eq!(holes.turns, 500);
+        assert_eq!(timeline.open_turn(), 1501);
+    }
+
+    #[test]
+    fn completion_after_entry_retention_is_still_raw_evidence() {
+        let timeline = Timeline::default();
+        timeline.completed(&[], recorded("completion", 42));
+        let entries = timeline.entries();
+        assert_eq!(entries[0].frames[0].captured, Some(42));
+        assert_eq!(entries[0].frames[0].frame.as_str(), "completion");
+    }
+
+    #[test]
+    fn annotation_and_deciding_frames_age_out_together_and_commands_remain_advertised() {
+        let timeline = Timeline::default();
+        let commands = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","description":"Help"}]}}"#).unwrap();
+        timeline.update(commands, recorded("commands", 0));
+        timeline.annotate(
+            Annotation::Replay(crate::conformance::Replay::Nothing),
+            vec![Frame::new("request"), Frame::new("response")],
+        );
+        for ordinal in 1..Timeline::CAPACITY as u64 {
+            timeline.unrecognized(Unrecognized::Unsolicited, recorded("traffic", ordinal));
+        }
+        let (entries, _, holes) = timeline.snapshot();
+        assert_eq!(entries.len(), Timeline::CAPACITY);
+        assert!(matches!(
+            entries[0].kind,
+            EntryKind::Update(v1::SessionUpdate::AvailableCommandsUpdate(_))
+        ));
+        assert!(
+            entries
+                .iter()
+                .all(|e| !matches!(e.kind, EntryKind::Annotation(_)))
+        );
+        assert_eq!((holes.entries, holes.frames, holes.bytes), (1, 2, 15));
+        // A new annotation can retain both deciding Frames even if Trace has
+        // already lost them: no dangling evidence reference is introduced.
+        timeline.annotate(
+            Annotation::Replay(crate::conformance::Replay::Nothing),
+            vec![Frame::new("request"), Frame::new("response")],
+        );
+        let held = timeline.entries();
+        let annotation = held.last().unwrap();
+        assert_eq!(annotation.frames.len(), 2);
+        assert_eq!(annotation.frames[0].frame.as_str(), "request");
+    }
 }

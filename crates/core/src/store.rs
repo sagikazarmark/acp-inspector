@@ -27,7 +27,7 @@ pub(crate) fn locked<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
 ///
 /// Entries arrive at the end and are never reordered or edited — a log's order
 /// is the order things happened in. What it does not promise is to keep them
-/// all: a [`bounded`](Log::bounded) log gives up its oldest to stay a fixed
+/// all: a [`budgeted`](Log::budgeted) log gives up its oldest to stay a fixed
 /// size, and a [`clear`](Log::clear) gives up everything, both of them counted
 /// so that a log which has forgotten something can say so.
 ///
@@ -56,6 +56,9 @@ struct Held<T> {
     dropped: usize,
     /// How many entries this log keeps, or `None` to keep everything.
     capacity: Option<usize>,
+    bytes: usize,
+    byte_limit: usize,
+    weight: fn(&T) -> usize,
 }
 
 /// One value that changes, and a signal when it does.
@@ -80,10 +83,12 @@ impl<T> Log<T> {
     /// A log that keeps its newest `capacity` entries and counts the rest as
     /// dropped — a ring, not a stop: the entries a bounded log gives up are the
     /// oldest, because the newest are the ones whoever is watching came for.
-    pub(crate) fn bounded(capacity: usize) -> Self {
+    pub(crate) fn budgeted(capacity: usize, byte_limit: usize, weight: fn(&T) -> usize) -> Self {
         Self {
             held: Arc::new(Mutex::new(Held {
                 capacity: Some(capacity),
+                byte_limit,
+                weight,
                 ..Held::empty()
             })),
             length: Arc::new(watch::Sender::new(0)),
@@ -112,6 +117,7 @@ impl<T> Log<T> {
         let mut held = self.lock();
         held.dropped += held.entries.len();
         held.entries.clear();
+        held.bytes = 0;
         self.length.send_replace(0);
     }
 
@@ -141,21 +147,24 @@ impl<T> Log<T> {
     /// that kept one find the entry again in `dropped + position`.
     pub(crate) fn append_then(&self, entry: T, handoff: impl FnOnce()) -> u64 {
         let mut held = self.lock();
+        let ordinal = (held.dropped + held.entries.len()) as u64;
+        held.bytes += (held.weight)(&entry);
         held.entries.push_back(entry);
         // The oldest goes to make room, under the same lock as the newest
         // arriving, so what the log holds and what it says it dropped are never
         // read apart.
-        if held
+        while held
             .capacity
             .is_some_and(|capacity| held.entries.len() > capacity)
+            || held.bytes > held.byte_limit
         {
-            held.entries.pop_front();
+            let removed = held.entries.pop_front().expect("over budget has entries");
+            held.bytes -= (held.weight)(&removed);
             held.dropped += 1;
         }
         handoff();
         // What the entry just appended is called, in the same terms a reader of
         // this log has: the last position, plus everything that has left.
-        let ordinal = (held.dropped + held.entries.len() - 1) as u64;
         // Announced while the log is still held, so a subscriber that wakes on
         // a count and then reads the entries can never find fewer than it was
         // told about, and concurrent appends cannot announce out of order.
@@ -218,6 +227,9 @@ impl<T> Held<T> {
             entries: VecDeque::new(),
             dropped: 0,
             capacity: None,
+            bytes: 0,
+            byte_limit: usize::MAX,
+            weight: |_| 0,
         }
     }
 }

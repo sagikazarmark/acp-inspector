@@ -87,12 +87,11 @@ pub fn Console(
     dropped_frames: usize,
     /// What became of the last export: the file it wrote, or why it did not.
     saved: Option<Result<PathBuf, String>>,
+    #[props(default)] export_pending: bool,
     on_export: EventHandler<()>,
     on_clear: EventHandler<()>,
     lines: ReadSignal<Vec<Diagnostic>>,
-    /// How many lines the diagnostic log captured and no longer holds — `0`
-    /// while it is unbounded, and half of what a row's key is made of either
-    /// way.
+    /// How many Diagnostic entries aged out under either retention budget.
     dropped_lines: usize,
     tab: Tab,
     on_select: EventHandler<Tab>,
@@ -106,12 +105,13 @@ pub fn Console(
     // Whether there is anything to export or clear. Read here rather than in
     // the Trace because the controls are here, and it is the same question the
     // tab's own count answers.
-    let nothing_traced = frames().is_empty();
+    let nothing_traced = frames.read().is_empty();
+    let cannot_export = nothing_traced || export_pending;
     // And whether the surface in front of the reader has captured anything at
     // all, which is what decides whether there is anything to narrow.
     let empty = match tab {
         Tab::Trace => nothing_traced,
-        Tab::Diagnostics => lines().is_empty(),
+        Tab::Diagnostics => lines.read().is_empty(),
     };
 
     // What the reader is looking for, narrowing whichever surface is on screen.
@@ -150,7 +150,7 @@ pub fn Console(
     // decides whether the fifth chip is worth drawing: a chip that can hide
     // nothing is chrome, and one missing for traffic that exists would be a
     // surface able to hide frames with nothing to press to bring them back.
-    let unreadable = frames().iter().any(|traced| {
+    let unreadable = frames.read().iter().any(|traced| {
         !matches!(
             traced.frame.summary().kind,
             FrameKind::Call | FrameKind::Result | FrameKind::Notification | FrameKind::Error
@@ -164,18 +164,14 @@ pub fn Console(
                     TabControl {
                         tab: Tab::Trace,
                         selected: tab,
-                        held: frames().len(),
+                        held: frames.read().len(),
                         gone: dropped_frames,
                         on_select,
                     }
                     TabControl {
                         tab: Tab::Diagnostics,
                         selected: tab,
-                        held: lines().len(),
-                        // `0` for as long as the diagnostic log is unbounded,
-                        // so nothing is drawn — passed the way the trace's is
-                        // so that the day it is bounded, the strip already
-                        // says so.
+                        held: lines.read().len(),
                         gone: dropped_lines,
                         on_select,
                     }
@@ -193,11 +189,11 @@ pub fn Console(
                         "data-slot": "export",
                         r#type: "button",
                         aria_label: "Export the trace",
-                        aria_disabled: nothing_traced.then_some("true"),
-                        tabindex: nothing_traced.then_some("-1"),
+                        aria_disabled: cannot_export.then_some("true"),
+                        tabindex: cannot_export.then_some("-1"),
                         title: "Write every frame to a JSONL file, nothing redacted",
                         onclick: move |_| {
-                            if !nothing_traced {
+                            if !cannot_export {
                                 on_export.call(());
                             }
                         },
@@ -224,6 +220,10 @@ pub fn Console(
                         "clear"
                     }
                 }
+            }
+
+            if export_pending {
+                p { class: "saved", role: "status", "Writing Trace snapshot…" }
             }
 
             // Only where there is something to narrow. A surface that has
@@ -431,18 +431,27 @@ fn Diagnostics(
     /// What the Console's bar is narrowing both surfaces to.
     filter: String,
 ) -> Element {
-    let held = lines().len();
+    let anchor = use_signal(|| None);
+    let held_lines = lines.read();
+    let held = held_lines.len();
     // The line as it is *rendered*, which is what the reader is looking at and
     // therefore what they are searching: the transport's own remarks are part
     // of this channel, and a filter that only read the agent's stderr would
     // hide the line saying the agent never started.
-    let shown = lines()
+    let ordinals: Vec<_> = held_lines
         .iter()
-        .filter(|diagnostic| matching(&diagnostic.to_string(), &filter))
-        .count();
+        .enumerate()
+        .filter(|(_, diagnostic)| {
+            filter.trim().is_empty() || matching(&diagnostic.to_string(), &filter)
+        })
+        .map(|(position, _)| (dropped + position) as u64)
+        .collect();
+    let shown = ordinals.len();
+    let range = crate::page::range(&ordinals, anchor());
 
     rsx! {
         {narrowed(shown, held, "lines", !filter.trim().is_empty())}
+        {crate::page::controls(&ordinals, range.clone(), anchor)}
 
         if held == 0 {
             p { class: "empty",
@@ -455,29 +464,49 @@ fn Diagnostics(
                 // pinned to its latest line without a scroll script.
                 //
                 // Keyed by the ordinal the line was captured under, the way the
-                // trace's rows are: `dropped` is `0` while this log is
-                // unbounded, and the sum is what keeps that a fact about today
-                // rather than something the rows depend on.
-                for (position, diagnostic) in lines()
-                    .into_iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, diagnostic)| matching(&diagnostic.to_string(), &filter))
-                {
-                    li { key: "{dropped + position}", class: "line {tone(&diagnostic.kind).line_class()}",
+                // Trace's rows are, even as the retention budgets rotate it.
+                for ordinal in ordinals[range].iter().copied().rev() {
+                    { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
+                    li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
                         span { class: "dot dot-{tone(&diagnostic.kind).dot()}", aria_hidden: "true" }
                         span { class: "sr-only", "{diagnostic_source(&diagnostic.kind)}: " }
-                        span { class: "line-text", "{diagnostic}" }
-                        // The agent's own words about why it would not start are
-                        // the thing a reader pastes into an issue, and this is
-                        // the surface they are on (§9).
-                        Copy { text: diagnostic.to_string(), what: "this line" }
+                        DiagnosticEvidence { text: std::sync::Arc::<str>::from(diagnostic.to_string()) }
                     }
+                    } }
                 }
             }
             {crate::tail::to_latest(LINES, "line")}
         }
+    }
+}
+
+/// Ordinary rows carry only a literal prefix. Opening one mounts a bounded
+/// byte-window reader; Copy shares the original text and materializes it only
+/// on activation, never the preview or the current window.
+#[component]
+fn DiagnosticEvidence(text: std::sync::Arc<str>) -> Element {
+    let mut open = use_signal(|| false);
+    let large = text.len() > 512;
+    rsx! {
+        div { class: "line-text",
+            if large {
+                button { class: "btn btn-xs btn-quiet",
+                    aria_label: format!("Read complete diagnostic ({} bytes)", text.len()),
+                    aria_expanded: open(),
+                    onclick: move |_| { let next = !open(); open.set(next); },
+                    if open() { "Close complete line" } else { "Read complete line" }
+                }
+                span { "{crate::page::prefix(&text, 512)}" }
+                span { class: "hint", " (preview; {text.len()} bytes total)" }
+                if open() {
+                    crate::page::RawText { shared: text.clone(), what: "diagnostic" }
+                }
+            } else {
+                "{text}"
+            }
+        }
+        Copy { shared: text, what: "this line" }
     }
 }
 
@@ -558,6 +587,72 @@ mod tests {
     use std::time::SystemTime;
 
     use acp_inspector_core::{Direction, Frame};
+
+    #[test]
+    fn multi_megabyte_diagnostic_is_a_bounded_preview_and_explicit_byte_reader() {
+        use dioxus::core::{AttributeValue, Mutation};
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+        use std::{any::Any, rc::Rc};
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        fn host() -> Element {
+            let lines = use_signal(|| {
+                vec![Diagnostic {
+                    at: SystemTime::UNIX_EPOCH,
+                    kind: DiagnosticKind::Stderr(format!(
+                        "{}🦀{}END",
+                        "x".repeat(16383),
+                        "y".repeat(7 * 1024 * 1024)
+                    )),
+                }]
+            });
+            rsx! { Diagnostics { lines, dropped: 0, filter: String::new() } }
+        }
+        let mut dom = VirtualDom::new(host);
+        let edits = dom.rebuild_to_vec().edits;
+        let target = |edits: &[Mutation], prefix: &str| {
+            edits
+                .iter()
+                .find_map(|edit| match edit {
+                    Mutation::SetAttribute {
+                        name: "aria-label",
+                        value: AttributeValue::Text(text),
+                        id,
+                        ..
+                    } if text.starts_with(prefix) => Some(*id),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let click = |dom: &mut VirtualDom, id| {
+            let data = Rc::new(PlatformEventData::new(Box::new(
+                SerializedMouseData::default(),
+            ))) as Rc<dyn Any>;
+            dom.runtime()
+                .handle_event("click", Event::new(data, true), id);
+            dom.render_immediate_to_vec().edits
+        };
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.len() < 5000,
+            "closed row must not place megabytes in the DOM"
+        );
+        assert!(html.contains("preview;") && html.contains("Copy this line"));
+        assert!(!html.contains("literal raw UTF-8"));
+        let edits = click(&mut dom, target(&edits, "Read complete diagnostic"));
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.len() < 22000);
+        assert!(html.contains("Bytes 0–16383"));
+        assert!(html.contains("Raw diagnostic byte windows"));
+        click(&mut dom, target(&edits, "Next raw diagnostic bytes"));
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.len() < 22000);
+        assert!(html.contains("Bytes 16383–32768"));
+        assert!(
+            html.contains("🦀yyyy"),
+            "window boundary must preserve UTF-8"
+        );
+        assert!(html.contains("Copy this line"));
+    }
 
     use super::*;
 
