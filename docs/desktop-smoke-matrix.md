@@ -90,6 +90,24 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Clipboard images, 2026-09-19
+
+Linux WebKitGTK, Xvfb/Openbox, GTK native image clipboard: Ctrl+V in the composer
+added a PNG preview, and repeating paste added a second intentional duplicate.
+WebKit exposed empty paste-event types/files; gesture-scoped clipboard reading
+returned PNG. The platform supplied 136 bytes from a 128-byte fixture, illustrating
+why clipboard-byte preservation is not a claim about the originating disk file.
+Text-only clipboard paste inserted `ordinary clipboard text` and added no image.
+Submitting reached `end_turn` and cleared attachments. macOS/Windows acceptance
+remains in #9. Automated bridge tests cover mixed representations, bounded reads,
+reservation before reading, immediate Send, cancellation and unmount; rendered
+Composer coverage checks paste admission before a later picker selection.
+Discovery holds a submission/admission fence until the actual clipboard image
+names are known; text-only discovery consumes no attachment row. Reads abort on
+removal or unmount, and leaving the composer terminates the bridge receiver.
+
+Run bridge tests with `npm run test:clipboard` alongside the Rust suite.
+
 ### Mixed media and audio playback, 2026-09-19
 
 Linux WebKitGTK, Xvfb/Openbox, scripted Agent advertising images and audio:

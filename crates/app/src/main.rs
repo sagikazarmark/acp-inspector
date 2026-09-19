@@ -25,6 +25,7 @@ compile_error!(
 
 mod agent;
 mod appearance;
+mod clipboard;
 #[allow(dead_code, unused_imports)] // Unmodified registry install includes its complete public API.
 mod components;
 mod composer;

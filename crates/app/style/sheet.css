@@ -2211,6 +2211,9 @@
   .text-warning {
     color: var(--color-warning);
   }
+  .lowercase {
+    text-transform: lowercase;
+  }
   .uppercase {
     text-transform: uppercase;
   }
