@@ -655,7 +655,7 @@ impl Inspector {
             .await
     }
 
-    /// Starts a Turn with ordered text/image/audio/embedded-text blocks. Each attachment kind
+    /// Starts a Turn with ordered text/image/audio/embedded-text/PDF blocks. Each attachment kind
     /// requires its Agent advertisement; the outgoing Frame is bounded.
     pub async fn prompt_content(
         &self,

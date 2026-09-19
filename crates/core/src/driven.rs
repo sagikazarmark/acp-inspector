@@ -54,7 +54,7 @@ use crate::call::CallError;
 /// the exact failure that tripwire exists to prevent.
 ///
 /// The six the session lifecycle is made of (§7.5), logout, and image/audio prompts.
-/// Embedded text context is driven; the two MCP transports remain deferred (§1.1), and
+/// Embedded text and PDF context are driven; the two MCP transports remain deferred (§1.1), and
 /// `authenticate` is recorded in [`AuthState`](crate::AuthState), which has held
 /// exactly these three outcomes per connection since the MVP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
