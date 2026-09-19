@@ -227,22 +227,27 @@ host repository and depended on none of its crates: patterns were copied, never 
 
 ## Running it
 
-Where the Agent advertises `promptCapabilities.image`, the composer accepts up to
-eight PNG, JPEG, GIF or WebP images: up to 5 MiB each, 6 MiB of image bytes in total.
+Where the Agent advertises `promptCapabilities.image`, the composer accepts PNG,
+JPEG, GIF and WebP; `promptCapabilities.audio` admits WAV and MP3. Mixed drafts
+share a limit of eight attachments, 5 MiB each and 6 MiB of original bytes total.
 Select multiple files or drop them onto the composer. Batches append in arrival
 order; files keep the order the picker/drop source supplied. Each row has a name,
 loading/failure state or preview/MIME/byte count, and an individual Remove control.
 Repeated selections intentionally add duplicates. Send waits for reads to finish
 and failed rows or overflow notices to be dismissed, so a bad file is never
-silently omitted. Send images alone or after a text block. MIME comes from the signature; original bytes are base64
-encoded without resizing. A complete outgoing prompt over 10 MiB is refused before
+silently omitted. Send media alone or after a text block. MIME comes from the signature;
+original bytes are base64 encoded without resizing or transcoding. Audio has native
+playback controls without autoplay. Playback errors are shown independently of sending;
+signature identification does not guarantee that the WebView can decode the file.
+A complete outgoing prompt over 10 MiB is refused before
 it crosses the wire. Attachment drafts reset on Session switches.
 Local refusal retains the draft for correction. Admission enqueues the Frame
 synchronously for the selected Session before a later Stop or Session switch;
 the Agent's eventual answer is awaited separately.
 
 On Linux, native file selection needs a desktop file-picker portal or `zenity`
-(included in `devenv shell`). Audio, embedded context and clipboard prompt input
+(included in `devenv shell`). Audio playback needs GStreamer's base, good and ugly
+plugins, also exposed by the shell. Embedded context and clipboard prompt input
 remain deferred. Non-file text/URL drops are not attachments; file drops outside
 the composer do not navigate the inspector window.
 

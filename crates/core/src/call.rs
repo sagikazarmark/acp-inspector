@@ -20,9 +20,11 @@ pub enum CallError {
     NoSession,
     /// Image content was supplied without an Agent image advertisement.
     ImageNotAdvertised,
+    /// Audio content was supplied without an Agent audio advertisement.
+    AudioNotAdvertised,
     /// The complete outgoing prompt Frame exceeds the host's 10 MiB budget.
     PromptTooLarge,
-    /// This prompt entry point handles text and images only.
+    /// This prompt entry point handles text, images and audio only.
     UnsupportedPromptContent,
     /// The bounded outgoing queue cannot accept a prompt immediately.
     OutgoingBusy,
@@ -59,9 +61,10 @@ impl std::fmt::Display for CallError {
                 f.write_str("the outgoing queue is full; the draft can be retried")
             }
             Self::ImageNotAdvertised => f.write_str("the agent did not advertise image prompts"),
+            Self::AudioNotAdvertised => f.write_str("the agent did not advertise audio prompts"),
             Self::PromptTooLarge => f.write_str("the complete prompt Frame exceeds 10 MiB"),
             Self::UnsupportedPromptContent => {
-                f.write_str("this composer sends only text and image content")
+                f.write_str("this composer sends only text, image and audio content")
             }
             Self::NoWorkingDirectory => {
                 f.write_str("the session's working directory could not be named")

@@ -2699,6 +2699,17 @@
   max-height: 72px;
   object-fit: contain;
 }
+.prompt-audio {
+  min-width: 0;
+  flex: 0 1 240px;
+}
+.prompt-audio audio {
+  width: 100%;
+  max-width: 240px;
+}
+.prompt-image:has(audio) {
+  flex-wrap: wrap;
+}
 .prompt-image span {
   overflow-wrap: anywhere;
   min-width: 0;

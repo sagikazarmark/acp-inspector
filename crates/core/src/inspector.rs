@@ -655,8 +655,8 @@ impl Inspector {
             .await
     }
 
-    /// Starts a Turn with ordered ACP content blocks. Image blocks require the
-    /// Agent's image advertisement; the complete outgoing Frame is bounded.
+    /// Starts a Turn with ordered text/image/audio blocks. Each media kind
+    /// requires its Agent advertisement; the outgoing Frame is bounded.
     pub async fn prompt_content(
         &self,
         content: Vec<v1::ContentBlock>,

@@ -111,6 +111,7 @@ pub fn Timeline(
     /// (`composer::Cycle`).
     mode: Option<composer::Cycle>,
     #[props(default)] image_advertised: bool,
+    #[props(default)] audio_advertised: bool,
     #[props(default)] prompt_epoch: u64,
     on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
@@ -326,6 +327,7 @@ pub fn Timeline(
                 Composer {
                     key: "{prompt_epoch}-{session:?}",
                     image_advertised,
+                    audio_advertised,
                     turn,
                     ready: connected && session.is_some(),
                     connected,
