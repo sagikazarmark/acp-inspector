@@ -1,6 +1,6 @@
 //! Ordered attachment work, independent of how files entered the composer.
 
-use crate::prompt_media::PromptMedia;
+use crate::attachment::Attachment;
 use acp_inspector_core::v1;
 use std::collections::BTreeMap;
 
@@ -8,38 +8,38 @@ pub const MAX_ATTACHMENTS: usize = 8;
 pub const MAX_TOTAL_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, PartialEq)]
-pub enum MediaState {
+pub enum AttachmentState {
     Reading,
-    Ready(PromptMedia),
+    Ready(Attachment),
     Failed(String),
 }
 
 #[derive(Clone, PartialEq)]
-pub struct MediaEntry {
+pub struct AttachmentEntry {
     pub id: u64,
     pub name: String,
-    pub state: MediaState,
+    pub state: AttachmentState,
 }
 
 /// IDs never repeat, even after clearing. Late completions cannot resurrect a
 /// removed row. Results settle in selection order, so disk speed cannot decide
 /// which attachment gets the remaining byte budget.
 #[derive(Default)]
-pub struct MediaDraft {
+pub struct AttachmentDraft {
     next: u64,
-    entries: Vec<MediaEntry>,
-    completed: BTreeMap<u64, Result<PromptMedia, String>>,
+    entries: Vec<AttachmentEntry>,
+    completed: BTreeMap<u64, Result<Attachment, String>>,
 }
 
-impl MediaDraft {
-    pub fn entries(&self) -> &[MediaEntry] {
+impl AttachmentDraft {
+    pub fn entries(&self) -> &[AttachmentEntry] {
         &self.entries
     }
     pub fn bytes(&self) -> usize {
         self.entries
             .iter()
             .filter_map(|entry| match &entry.state {
-                MediaState::Ready(media) => Some(media.bytes),
+                AttachmentState::Ready(media) => Some(media.bytes),
                 _ => None,
             })
             .sum()
@@ -53,18 +53,18 @@ impl MediaDraft {
         }
         let id = self.next;
         self.next += 1;
-        self.entries.push(MediaEntry {
+        self.entries.push(AttachmentEntry {
             id,
             name,
-            state: MediaState::Reading,
+            state: AttachmentState::Reading,
         });
         Ok(id)
     }
-    pub fn finish(&mut self, id: u64, result: Result<PromptMedia, String>) {
+    pub fn finish(&mut self, id: u64, result: Result<Attachment, String>) {
         if !self
             .entries
             .iter()
-            .any(|entry| entry.id == id && matches!(entry.state, MediaState::Reading))
+            .any(|entry| entry.id == id && matches!(entry.state, AttachmentState::Reading))
         {
             return;
         }
@@ -83,14 +83,14 @@ impl MediaDraft {
     pub fn sendable(&self) -> bool {
         self.entries
             .iter()
-            .all(|entry| matches!(entry.state, MediaState::Ready(_)))
+            .all(|entry| matches!(entry.state, AttachmentState::Ready(_)))
     }
     pub fn content(&self) -> Option<Vec<v1::ContentBlock>> {
         self.sendable().then(|| {
             self.entries
                 .iter()
                 .filter_map(|entry| match &entry.state {
-                    MediaState::Ready(media) => Some(media.content()),
+                    AttachmentState::Ready(media) => Some(media.content()),
                     _ => None,
                 })
                 .collect()
@@ -100,12 +100,12 @@ impl MediaDraft {
         let mut bytes = 0;
         for entry in &mut self.entries {
             match &entry.state {
-                MediaState::Ready(media) => {
+                AttachmentState::Ready(media) => {
                     bytes += media.bytes;
                     continue;
                 }
-                MediaState::Failed(_) => continue,
-                MediaState::Reading => {}
+                AttachmentState::Failed(_) => continue,
+                AttachmentState::Reading => {}
             }
             let Some(result) = self.completed.remove(&entry.id) else {
                 break;
@@ -113,10 +113,10 @@ impl MediaDraft {
             entry.state = match result {
                 Ok(media) if bytes + media.bytes <= MAX_TOTAL_BYTES => {
                     bytes += media.bytes;
-                    MediaState::Ready(media)
+                    AttachmentState::Ready(media)
                 }
-                Ok(_) => MediaState::Failed("This file would exceed the 6 MiB total attachment budget. Dismiss it and select it again after freeing room.".into()),
-                Err(error) => MediaState::Failed(error),
+                Ok(_) => AttachmentState::Failed("This file would exceed the 6 MiB total attachment budget. Dismiss it and select it again after freeing room.".into()),
+                Err(error) => AttachmentState::Failed(error),
             };
         }
     }
@@ -125,10 +125,10 @@ impl MediaDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_media::PromptMedia;
+    use crate::attachment::Attachment;
     #[test]
     fn text_and_media_share_original_byte_budget_in_reservation_order() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         let a = draft.reserve("a.png".into()).unwrap();
         let b = draft.reserve("context.rs".into()).unwrap();
         let c = draft.reserve("overflow.txt".into()).unwrap();
@@ -136,17 +136,23 @@ mod tests {
         text.push_str(&"x".repeat(2 * 1024 * 1024 - text.len()));
         draft.finish(
             c,
-            Ok(PromptMedia::from_bytes("overflow.txt".into(), b"x").unwrap()),
+            Ok(Attachment::from_bytes("overflow.txt".into(), b"x").unwrap()),
         );
         draft.finish(
             b,
-            Ok(PromptMedia::from_bytes("context.rs".into(), text.as_bytes()).unwrap()),
+            Ok(Attachment::from_bytes("context.rs".into(), text.as_bytes()).unwrap()),
         );
         assert!(!draft.sendable());
         draft.finish(a, Ok(image("a.png", 4 * 1024 * 1024)));
         assert_eq!(draft.bytes(), MAX_TOTAL_BYTES);
-        assert!(matches!(draft.entries()[1].state, MediaState::Ready(_)));
-        assert!(matches!(draft.entries()[2].state, MediaState::Failed(_)));
+        assert!(matches!(
+            draft.entries()[1].state,
+            AttachmentState::Ready(_)
+        ));
+        assert!(matches!(
+            draft.entries()[2].state,
+            AttachmentState::Failed(_)
+        ));
         draft.remove(c);
         assert!(draft.sendable());
         let content = draft.content().unwrap();
@@ -157,17 +163,17 @@ mod tests {
 
     #[test]
     fn images_and_audio_share_order_and_the_same_byte_budget() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         let first = draft.reserve("picture.png".into()).unwrap();
         let second = draft.reserve("sound.wav".into()).unwrap();
         let third = draft.reserve("music.mp3".into()).unwrap();
         draft.finish(
             third,
-            Ok(PromptMedia::from_bytes("music.mp3".into(), b"\xff\xfb\x90\x64").unwrap()),
+            Ok(Attachment::from_bytes("music.mp3".into(), b"\xff\xfb\x90\x64").unwrap()),
         );
         draft.finish(
             second,
-            Ok(PromptMedia::from_bytes("sound.wav".into(), b"RIFF\x04\0\0\0WAVE").unwrap()),
+            Ok(Attachment::from_bytes("sound.wav".into(), b"RIFF\x04\0\0\0WAVE").unwrap()),
         );
         draft.finish(first, Ok(image("picture.png", 8)));
         let content = draft.content().unwrap();
@@ -179,22 +185,28 @@ mod tests {
         assert_eq!(draft.bytes(), 12);
     }
 
-    fn image(name: &str, size: usize) -> PromptMedia {
+    fn image(name: &str, size: usize) -> Attachment {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.resize(size.max(8), 0);
-        PromptMedia::from_bytes(name.into(), &bytes).unwrap()
+        Attachment::from_bytes(name.into(), &bytes).unwrap()
     }
 
     #[test]
     fn completion_order_does_not_change_selection_order_or_budget_priority() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         let first = draft.reserve("first.png".into()).unwrap();
         let second = draft.reserve("second.png".into()).unwrap();
         draft.finish(second, Ok(image("second.png", 3 * 1024 * 1024)));
         assert!(!draft.sendable());
         draft.finish(first, Ok(image("first.png", 4 * 1024 * 1024)));
-        assert!(matches!(draft.entries()[0].state, MediaState::Ready(_)));
-        assert!(matches!(draft.entries()[1].state, MediaState::Failed(_)));
+        assert!(matches!(
+            draft.entries()[0].state,
+            AttachmentState::Ready(_)
+        ));
+        assert!(matches!(
+            draft.entries()[1].state,
+            AttachmentState::Failed(_)
+        ));
         assert!(
             !draft.sendable(),
             "a failed file cannot be silently omitted"
@@ -206,7 +218,7 @@ mod tests {
 
     #[test]
     fn removal_and_clear_discard_late_reads_and_ids_never_repeat() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         let removed = draft.reserve("same.png".into()).unwrap();
         draft.remove(removed);
         draft.finish(removed, Ok(image("same.png", 8)));
@@ -225,7 +237,7 @@ mod tests {
 
     #[test]
     fn eight_rows_bound_reads_and_duplicates_keep_their_places() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         for _ in 0..8 {
             let id = draft.reserve("same.png".into()).unwrap();
             draft.finish(id, Ok(image("same.png", 8)));
@@ -240,7 +252,7 @@ mod tests {
 
     #[test]
     fn the_exact_total_budget_fits_and_one_more_byte_is_a_visible_failure() {
-        let mut draft = MediaDraft::default();
+        let mut draft = AttachmentDraft::default();
         let first = draft.reserve("five.png".into()).unwrap();
         draft.finish(first, Ok(image("five.png", 5 * 1024 * 1024)));
         let second = draft.reserve("one.png".into()).unwrap();
@@ -249,7 +261,10 @@ mod tests {
         assert!(draft.sendable());
         let third = draft.reserve("extra.png".into()).unwrap();
         draft.finish(third, Ok(image("extra.png", 8)));
-        assert!(matches!(draft.entries()[2].state, MediaState::Failed(_)));
+        assert!(matches!(
+            draft.entries()[2].state,
+            AttachmentState::Failed(_)
+        ));
         assert!(draft.content().is_none());
     }
 }

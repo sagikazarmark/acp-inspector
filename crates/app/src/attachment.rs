@@ -2,18 +2,30 @@
 use acp_inspector_core::v1;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-pub const MAX_MEDIA_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, PartialEq)]
-pub struct PromptMedia {
+pub struct Attachment {
     pub name: String,
     pub bytes: usize,
-    pub mime: &'static str,
-    data: String,
-    text_uri: Option<String>,
+    content: AttachmentContent,
 }
 
-impl PromptMedia {
+#[derive(Clone, PartialEq)]
+enum AttachmentContent {
+    Image { mime: &'static str, base64: String },
+    Audio { mime: &'static str, base64: String },
+    EmbeddedText { text: String, uri: String },
+}
+
+/// Presentation data, without exposing or reclassifying the stored payload.
+pub enum AttachmentPreview {
+    Image { src: String },
+    Audio { src: String },
+    Text { excerpt: String },
+}
+
+impl Attachment {
     pub async fn from_file(file: dioxus::html::FileData) -> Result<Self, String> {
         let name = file.name();
         let path = file.path();
@@ -37,7 +49,7 @@ impl PromptMedia {
                     return Err("Choose a regular media file.".into());
                 }
                 let mut bytes = Vec::new();
-                file.take((MAX_MEDIA_BYTES + 1) as u64)
+                file.take((MAX_ATTACHMENT_BYTES + 1) as u64)
                     .read_to_end(&mut bytes)
                     .map_err(|e| e.to_string())?;
                 Ok(bytes)
@@ -55,73 +67,91 @@ impl PromptMedia {
         };
         #[cfg(target_arch = "wasm32")]
         let bytes = {
-            if file.size() > MAX_MEDIA_BYTES as u64 {
+            if file.size() > MAX_ATTACHMENT_BYTES as u64 {
                 return Err("A media file may be at most 5 MiB.".into());
             }
             file.read_bytes().await.map_err(|e| e.to_string())?.to_vec()
         };
         let mut media = Self::from_bytes(name, &bytes)?;
-        if media.is_text() && path.is_absolute() {
-            media.text_uri = Some(
-                url::Url::from_file_path(path)
-                    .map_err(|_| "Could not represent the selected file as a URI.")?
-                    .into(),
-            );
+        if let AttachmentContent::EmbeddedText { uri, .. } = &mut media.content
+            && path.is_absolute()
+        {
+            *uri = url::Url::from_file_path(path)
+                .map_err(|_| "Could not represent the selected file as a URI.")?
+                .into();
         }
         Ok(media)
     }
     pub fn from_bytes(name: String, bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_MEDIA_BYTES {
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
             return Err("A media file may be at most 5 MiB.".into());
         }
-        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            "image/png"
+        let image = |mime| AttachmentContent::Image {
+            mime,
+            base64: STANDARD.encode(bytes),
+        };
+        let audio = |mime| AttachmentContent::Audio {
+            mime,
+            base64: STANDARD.encode(bytes),
+        };
+        let content = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            image("image/png")
         } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-            "image/jpeg"
+            image("image/jpeg")
         } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            "image/gif"
+            image("image/gif")
         } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-            "image/webp"
+            image("image/webp")
         } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
-            "audio/wav"
+            audio("audio/wav")
         } else if is_mp3(bytes) {
-            "audio/mpeg"
+            audio("audio/mpeg")
         } else {
             return Self::text(name, bytes);
         };
         Ok(Self {
             name,
             bytes: bytes.len(),
-            mime,
-            data: STANDARD.encode(bytes),
-            text_uri: None,
+            content,
         })
     }
-    pub fn preview(&self) -> String {
-        format!("data:{};base64,{}", self.mime, self.data)
-    }
-    pub fn content(&self) -> v1::ContentBlock {
-        if let Some(uri) = &self.text_uri {
-            v1::ContentBlock::Resource(v1::EmbeddedResource::new(
-                v1::EmbeddedResourceResource::TextResourceContents(
-                    v1::TextResourceContents::new(self.data.clone(), uri.clone())
-                        .mime_type(self.mime.to_owned()),
-                ),
-            ))
-        } else if self.is_audio() {
-            v1::ContentBlock::Audio(v1::AudioContent::new(self.data.clone(), self.mime))
-        } else {
-            v1::ContentBlock::Image(v1::ImageContent::new(self.data.clone(), self.mime))
+    pub fn mime(&self) -> &'static str {
+        match &self.content {
+            AttachmentContent::Image { mime, .. } | AttachmentContent::Audio { mime, .. } => mime,
+            AttachmentContent::EmbeddedText { .. } => "text/plain",
         }
     }
-    pub fn is_audio(&self) -> bool {
-        self.mime.starts_with("audio/")
+    pub fn preview(&self) -> AttachmentPreview {
+        match &self.content {
+            AttachmentContent::Image { mime, base64 } => AttachmentPreview::Image {
+                src: format!("data:{mime};base64,{base64}"),
+            },
+            AttachmentContent::Audio { mime, base64 } => AttachmentPreview::Audio {
+                src: format!("data:{mime};base64,{base64}"),
+            },
+            AttachmentContent::EmbeddedText { text, .. } => AttachmentPreview::Text {
+                excerpt: text.chars().take(2000).collect(),
+            },
+        }
     }
-    pub fn is_text(&self) -> bool {
-        self.text_uri.is_some()
+    pub fn content(&self) -> v1::ContentBlock {
+        match &self.content {
+            AttachmentContent::EmbeddedText { text, uri } => v1::ContentBlock::Resource(
+                v1::EmbeddedResource::new(v1::EmbeddedResourceResource::TextResourceContents(
+                    v1::TextResourceContents::new(text.clone(), uri.clone())
+                        .mime_type(self.mime().to_owned()),
+                )),
+            ),
+            AttachmentContent::Audio { mime, base64 } => {
+                v1::ContentBlock::Audio(v1::AudioContent::new(base64.clone(), *mime))
+            }
+            AttachmentContent::Image { mime, base64 } => {
+                v1::ContentBlock::Image(v1::ImageContent::new(base64.clone(), *mime))
+            }
+        }
     }
-    pub fn text_preview(&self) -> String {
-        self.data.chars().take(2000).collect()
+    pub fn is_image(&self) -> bool {
+        matches!(self.content, AttachmentContent::Image { .. })
     }
     fn text(name: String, bytes: &[u8]) -> Result<Self, String> {
         let extension = std::path::Path::new(&name)
@@ -188,18 +218,27 @@ impl PromptMedia {
         Ok(Self {
             name,
             bytes: bytes.len(),
-            mime: "text/plain",
-            data: text.to_owned(),
-            text_uri: Some(uri.into()),
+            content: AttachmentContent::EmbeddedText {
+                text: text.to_owned(),
+                uri: uri.into(),
+            },
         })
     }
-    pub fn advertised(&self, image: bool, audio: bool, embedded: bool) -> bool {
-        if self.is_text() {
-            embedded
-        } else if self.is_audio() {
-            audio
+    pub fn require_advertisement(
+        &self,
+        image: bool,
+        audio: bool,
+        embedded: bool,
+    ) -> Result<(), String> {
+        let (advertised, kind) = match &self.content {
+            AttachmentContent::Image { .. } => (image, "image"),
+            AttachmentContent::Audio { .. } => (audio, "audio"),
+            AttachmentContent::EmbeddedText { .. } => (embedded, "embedded context"),
+        };
+        if advertised {
+            Ok(())
         } else {
-            image
+            Err(format!("The Agent did not advertise {kind} prompts."))
         }
     }
 }
@@ -242,7 +281,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn native_text_file_metadata_keeps_escaped_absolute_uri() {
-        let media = PromptMedia::from_file(dioxus::html::FileData::new(
+        let media = Attachment::from_file(dioxus::html::FileData::new(
             dioxus::html::SerializedFileData {
                 path: "/tmp/a #?.rs".into(),
                 size: 4,
@@ -253,17 +292,19 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(media.text_uri.as_deref(), Some("file:///tmp/a%20%23%3F.rs"));
+        assert!(
+            matches!(media.content(), v1::ContentBlock::Resource(resource) if matches!(&resource.resource, v1::EmbeddedResourceResource::TextResourceContents(text) if text.uri == "file:///tmp/a%20%23%3F.rs"))
+        );
     }
     #[test]
     fn text_is_literal_utf8_with_distinct_escaped_uris_and_a_bounded_preview() {
         let bytes = "\u{feff}<script>é</script>\r\n\t".as_bytes();
-        let first = PromptMedia::from_bytes("a #?.rs".into(), bytes).unwrap();
-        let second = PromptMedia::from_bytes("a #?.rs".into(), bytes).unwrap();
+        let first = Attachment::from_bytes("a #?.rs".into(), bytes).unwrap();
+        let second = Attachment::from_bytes("a #?.rs".into(), bytes).unwrap();
         assert_eq!(first.bytes, bytes.len());
-        assert!(first.advertised(false, false, true));
-        assert!(!first.advertised(true, true, false));
-        assert_ne!(first.text_uri, second.text_uri);
+        assert!(first.require_advertisement(false, false, true).is_ok());
+        assert!(first.require_advertisement(true, true, false).is_err());
+        assert_ne!(first.content(), second.content());
         let v1::ContentBlock::Resource(resource) = first.content() else {
             panic!("resource")
         };
@@ -273,18 +314,11 @@ mod tests {
         assert_eq!(text.text.as_bytes(), bytes);
         assert_eq!(text.mime_type.as_deref(), Some("text/plain"));
         assert!(text.uri.ends_with("a%20%23%3F.rs"));
-        assert_eq!(
-            PromptMedia::from_bytes("large.txt".into(), "é".repeat(3000).as_bytes())
-                .unwrap()
-                .text_preview()
-                .chars()
-                .count(),
-            2000
+        assert!(
+            matches!(Attachment::from_bytes("large.txt".into(), "é".repeat(3000).as_bytes()).unwrap().preview(), AttachmentPreview::Text { excerpt } if excerpt.chars().count() == 2000)
         );
         assert!(
-            PromptMedia::from_bytes("empty.txt".into(), b"")
-                .unwrap()
-                .is_text()
+            matches!(Attachment::from_bytes("empty.txt".into(), b"").unwrap().preview(), AttachmentPreview::Text { excerpt } if excerpt.is_empty())
         );
         for bytes in [
             b"a\0b".as_slice(),
@@ -296,7 +330,7 @@ mod tests {
             b"!<arch>\n",
             b"RIFF",
         ] {
-            assert!(PromptMedia::from_bytes("x.txt".into(), bytes).is_err());
+            assert!(Attachment::from_bytes("x.txt".into(), bytes).is_err());
         }
     }
     #[test]
@@ -310,44 +344,46 @@ mod tests {
             (b"\xff\xfb\x90\x64".as_slice(), "audio/mpeg"),
             (b"\xff\xfb\x00\x64".as_slice(), "audio/mpeg"),
         ] {
-            let attachment = PromptMedia::from_bytes("wrong.png".into(), bytes).unwrap();
-            assert_eq!(attachment.mime, mime);
-            assert!(attachment.advertised(false, true, false));
-            assert!(!attachment.advertised(true, false, true));
+            let attachment = Attachment::from_bytes("wrong.png".into(), bytes).unwrap();
+            assert_eq!(attachment.mime(), mime);
+            assert!(attachment.require_advertisement(false, true, false).is_ok());
+            assert!(attachment.require_advertisement(true, false, true).is_err());
             let v1::ContentBlock::Audio(audio) = attachment.content() else {
                 panic!("audio block")
             };
             assert_eq!(STANDARD.decode(audio.data).unwrap(), bytes);
             assert_eq!(audio.mime_type, mime);
         }
-        assert!(PromptMedia::from_bytes("wrong.mp3".into(), b"\xff\xff\xff\xff").is_err());
-        assert!(PromptMedia::from_bytes("aac.mp3".into(), b"\xff\xf1\x50\x80").is_err());
+        assert!(Attachment::from_bytes("wrong.mp3".into(), b"\xff\xff\xff\xff").is_err());
+        assert!(Attachment::from_bytes("aac.mp3".into(), b"\xff\xf1\x50\x80").is_err());
         for bytes in [
             b"ID3\x04\0\0\0\0\0\0\xff\xf1\x50\x80".as_slice(),
             b"ID3\x04\0\0\0\0\0\0",
             b"ID3\x04\0\0\x7f\x7f\x7f\x7f\xff\xfb\x90\x64",
         ] {
-            assert!(PromptMedia::from_bytes("tagged.mp3".into(), bytes).is_err());
+            assert!(Attachment::from_bytes("tagged.mp3".into(), bytes).is_err());
         }
     }
     #[test]
     fn signature_controls_mime_and_encoded_content_preserves_every_byte() {
         let bytes = b"\x89PNG\r\n\x1a\nunchanged";
-        let image = PromptMedia::from_bytes("misnamed.jpg".into(), bytes).unwrap();
-        assert_eq!(image.mime, "image/png");
-        assert!(image.advertised(true, false, false));
-        assert!(!image.advertised(false, true, true));
+        let image = Attachment::from_bytes("misnamed.jpg".into(), bytes).unwrap();
+        assert_eq!(image.mime(), "image/png");
+        assert!(image.require_advertisement(true, false, false).is_ok());
+        assert!(image.require_advertisement(false, true, true).is_err());
         let v1::ContentBlock::Image(content) = image.content() else {
             panic!("image")
         };
         assert_eq!(STANDARD.decode(content.data).unwrap(), bytes);
-        assert!(image.preview().starts_with("data:image/png;base64,"));
+        assert!(
+            matches!(image.preview(), AttachmentPreview::Image { src } if src.starts_with("data:image/png;base64,"))
+        );
     }
     #[test]
     fn unsupported_or_oversized_selections_fail_without_an_attachment() {
-        assert!(PromptMedia::from_bytes("x.png".into(), b"not an image").is_err());
+        assert!(Attachment::from_bytes("x.png".into(), b"not an image").is_err());
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-        bytes.resize(MAX_MEDIA_BYTES + 1, 0);
-        assert!(PromptMedia::from_bytes("x".into(), &bytes).is_err());
+        bytes.resize(MAX_ATTACHMENT_BYTES + 1, 0);
+        assert!(Attachment::from_bytes("x".into(), &bytes).is_err());
     }
 }

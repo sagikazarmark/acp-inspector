@@ -9,14 +9,14 @@
 //! a request, and the turn is over when the agent says it is, with
 //! `stopReason: "cancelled"` if it behaves (§7.1).
 
-use crate::media_draft::{MediaDraft, MediaState};
-use crate::prompt_media::PromptMedia;
+use crate::attachment::{Attachment, AttachmentPreview};
+use crate::attachment_draft::{AttachmentDraft, AttachmentState};
 use acp_inspector_core::{CallError, TurnState, v1};
 use dioxus::html::{FileData, HasFileData};
 
 /// Native file drops must be accepted synchronously, before IPC. Do not let a
 /// synthetic or same-document URI drag reuse Dioxus's last native file paths.
-const IMAGE_DROP_BRIDGE: &str = r#"
+const ATTACHMENT_DROP_BRIDGE: &str = r#"
 const [id, windows] = await dioxus.recv();
 const root = document.getElementById(id)?.closest('[data-slot=composer]');
 if (root) {
@@ -58,7 +58,7 @@ use dioxus_free_icons::{
 };
 
 /// Picker hints follow each advertisement; signature validation is independent.
-fn accepted_media(image: bool, audio: bool, embedded: bool) -> &'static str {
+fn accepted_attachments(image: bool, audio: bool, embedded: bool) -> &'static str {
     // Text/source filenames are open-ended. Validate contents after selection.
     if embedded {
         return "";
@@ -72,10 +72,10 @@ fn accepted_media(image: bool, audio: bool, embedded: bool) -> &'static str {
 }
 
 #[component]
-fn AudioPreview(media: PromptMedia) -> Element {
+fn AudioPreview(name: String, src: String) -> Element {
     let mut unavailable = use_signal(|| false);
     rsx! { div { class: "prompt-audio",
-        audio { controls: true, preload: "none", src: media.preview(), aria_label: "Preview audio: {media.name}",
+        audio { controls: true, preload: "none", src, aria_label: "Preview audio: {name}",
             onerror: move |_| unavailable.set(true),
         }
         if unavailable() { span { class: "hint", role: "status", "Playback is unavailable in this WebView. The original file can still be sent." } }
@@ -177,10 +177,10 @@ pub fn Composer(
     on_set_mode: EventHandler<v1::SessionModeId>,
 ) -> Element {
     let mut text = use_signal(String::new);
-    let mut media = use_signal(MediaDraft::default);
+    let mut draft = use_signal(AttachmentDraft::default);
     let mut queued = use_signal(std::collections::VecDeque::<(u64, FileData)>::new);
     let mut reading = use_signal(|| false);
-    let mut media_problem = use_signal(|| None::<String>);
+    let mut attachment_problem = use_signal(|| None::<String>);
     let mut overflow = use_signal(|| None::<String>);
     let mut clipboard_bridge = use_signal(|| None::<document::Eval>);
     let mut paste_waiting = use_signal(|| 0usize);
@@ -188,7 +188,7 @@ pub fn Composer(
     let picker_id = use_hook(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         format!(
-            "prompt-media-{}",
+            "prompt-attachment-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
     });
@@ -203,7 +203,7 @@ pub fn Composer(
         let mut rejected = Vec::new();
         let ids = names
             .into_iter()
-            .map(|name| match media.write().reserve(name.clone()) {
+            .map(|name| match draft.write().reserve(name.clone()) {
                 Ok(id) => Some(id),
                 Err(_) => {
                     rejected.push(name);
@@ -214,7 +214,7 @@ pub fn Composer(
         if !rejected.is_empty() {
             overflow.set(Some(format!("Not added (8 attachment rows maximum): {}. Dismiss this notice to send the remaining files.", rejected.join(", "))));
         }
-        media_problem.set(None);
+        attachment_problem.set(None);
         ids
     });
     let ingest = use_callback(move |files: Vec<FileData>| {
@@ -244,23 +244,15 @@ pub fn Composer(
                 let Some((id, file)) = next else {
                     break;
                 };
-                let result = PromptMedia::from_file(file).await.and_then(|media| {
-                    if media.advertised(image_advertised, audio_advertised, embedded_advertised) {
-                        Ok(media)
-                    } else {
-                        Err(format!(
-                            "The Agent did not advertise {} prompts.",
-                            if media.is_text() {
-                                "embedded context"
-                            } else if media.is_audio() {
-                                "audio"
-                            } else {
-                                "image"
-                            }
-                        ))
-                    }
+                let result = Attachment::from_file(file).await.and_then(|attachment| {
+                    attachment.require_advertisement(
+                        image_advertised,
+                        audio_advertised,
+                        embedded_advertised,
+                    )?;
+                    Ok(attachment)
                 });
-                let Ok(mut draft) = media.try_write() else {
+                let Ok(mut draft) = draft.try_write() else {
                     return;
                 };
                 draft.finish(id, result);
@@ -294,14 +286,14 @@ pub fn Composer(
                 Some(ids)
             }
             ClipboardInput::Finish { id, data, error } => {
-                let name = media
+                let name = draft
                     .read()
                     .entries()
                     .iter()
                     .find(|entry| entry.id == id)
                     .map(|entry| entry.name.clone());
                 if let Some(name) = name {
-                    media
+                    draft
                         .write()
                         .finish(id, crate::clipboard::image(name, data, error));
                 }
@@ -317,10 +309,10 @@ pub fn Composer(
     // a time, and a second prompt is the stop button's job first.
     let sendable = ready
         && !running
-        && media.read().sendable()
+        && draft.read().sendable()
         && overflow.read().is_none()
         && (!text().trim().is_empty()
-            || attachments_advertised && !media.read().entries().is_empty());
+            || attachments_advertised && !draft.read().entries().is_empty());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -340,7 +332,7 @@ pub fn Composer(
             if paste_waiting() > 0 {
                 return;
             }
-            let Some(attachments) = media.read().content() else {
+            let Some(attachments) = draft.read().content() else {
                 return;
             };
             if prompt.trim().is_empty() && (!attachments_advertised || attachments.is_empty()) {
@@ -354,12 +346,12 @@ pub fn Composer(
                 content.extend(attachments);
             }
             if let Err(error) = on_prompt.call(content) {
-                media_problem.set(Some(error.to_string()));
+                attachment_problem.set(Some(error.to_string()));
                 return;
             }
             text.set(String::new());
-            media_problem.set(None);
-            media.write().clear();
+            attachment_problem.set(None);
+            draft.write().clear();
             queued.write().clear();
         }
     };
@@ -382,7 +374,7 @@ pub fn Composer(
                 move |_| {
                     let mut bridge = document::eval(crate::clipboard::BRIDGE);
                     clipboard_bridge.set(Some(bridge));
-                    let _ = bridge.send((id.clone(), crate::prompt_media::MAX_MEDIA_BYTES));
+                    let _ = bridge.send((id.clone(), crate::attachment::MAX_ATTACHMENT_BYTES));
                     spawn(async move {
                         while let Ok(input) = bridge.recv::<crate::clipboard::ClipboardInput>().await {
                             if let Some(ids) = clipboard_input.call(input) { let _ = bridge.send(ids); }
@@ -453,15 +445,15 @@ pub fn Composer(
 
             div { class: "prompt-box",
                 if attachments_advertised {
-                    div { class: "prompt-image-picker",
+                    div { class: "prompt-attachment-picker",
                         label { class: "hint",
                             "Add or drop files · 8 attachments · 5 MiB each · 6 MiB total"
                             if embedded_advertised { span { "UTF-8 text files are embedded as contents. Preview shows the first 2000 characters." } }
                             if image_advertised { span { "Images can also be pasted from the clipboard." } }
-                            input { id: picker_id.clone(), name: "prompt-media", r#type: "file", accept: accepted_media(image_advertised, audio_advertised, embedded_advertised), multiple: true,
+                            input { id: picker_id.clone(), name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
                                 onmounted: {
                                     let id = picker_id.clone();
-                                    move |_| { let bridge = document::eval(IMAGE_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
+                                    move |_| { let bridge = document::eval(ATTACHMENT_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
                                 },
                                 aria_label: "Attach media", disabled: !ready || running,
                                 onchange: move |event| {
@@ -472,33 +464,35 @@ pub fn Composer(
                                 },
                             }
                         }
-                        if !media.read().entries().is_empty() {
-                            span { class: "hint", "{media.read().entries().len()} attachment rows · {media.read().bytes()} / 6291456 bytes ready" }
+                        if !draft.read().entries().is_empty() {
+                            span { class: "hint", "{draft.read().entries().len()} attachment rows · {draft.read().bytes()} / 6291456 bytes ready" }
                         }
                     }
                 }
-                if let Some(problem) = media_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
+                if let Some(problem) = attachment_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
                 if let Some(problem) = overflow() {
                     div { class: "detail detail-warn", role: "status", "{problem}"
                         button { r#type: "button", class: "btn btn-ghost btn-xs", onclick: move |_| overflow.set(None), "Dismiss attachment limit notice" }
                     }
                 }
-                div { class: "prompt-images",
-                for entry in media.read().entries().to_vec() {
-                    div { key: "{entry.id}", class: "prompt-image", "data-slot": "image-attachment", "data-image-id": "{entry.id}",
+                div { class: "prompt-attachments",
+                for entry in draft.read().entries().to_vec() {
+                    div { key: "{entry.id}", class: "prompt-attachment", "data-slot": "attachment", "data-attachment-id": "{entry.id}",
                         match &entry.state {
-                            MediaState::Ready(held) => rsx! {
-                                if held.is_text() { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{held.text_preview()}" } } }
-                                else if held.is_audio() { AudioPreview { media: held.clone() } }
-                                else { img { src: held.preview(), alt: "Selected image: {held.name}" } }
-                                span { "{held.name} · {held.mime} · {held.bytes} bytes" }
+                            AttachmentState::Ready(held) => rsx! {
+                                {match held.preview() {
+                                    AttachmentPreview::Text { excerpt } => rsx! { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{excerpt}" } } },
+                                    AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
+                                    AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
+                                }}
+                                span { "{held.name} · {held.mime()} · {held.bytes} bytes" }
                             },
-                            MediaState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
-                            MediaState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
+                            AttachmentState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
+                            AttachmentState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
                         }
                         button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove attachment {entry.id}: {entry.name}",
                             onclick: move |_| {
-                                media.write().remove(entry.id);
+                                draft.write().remove(entry.id);
                                 if let Some(bridge) = clipboard_bridge() { let _ = bridge.send(serde_json::json!({"cancel":entry.id})); }
                                 queued.write().retain(|(id, _)| *id != entry.id);
                             }, "Remove"
@@ -1020,7 +1014,7 @@ mod tests {
         for _ in 0..5 {
             dom.wait_for_work().await;
             mutations.extend(dom.render_immediate_to_vec().edits);
-            if dioxus_ssr::render(&dom).contains("image-attachment") {
+            if dioxus_ssr::render(&dom).contains("data-slot=\"attachment\"") {
                 break;
             }
         }
@@ -1045,7 +1039,7 @@ mod tests {
         };
         dom.runtime().handle_event("click", click(), remove);
         dom.render_immediate(&mut NoOpMutations);
-        assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
+        assert!(!dioxus_ssr::render(&dom).contains("data-slot=\"attachment\""));
         let paste_target = edits
             .iter()
             .find_map(|edit| match edit {
@@ -1102,7 +1096,7 @@ mod tests {
         for _ in 0..5 {
             dom.wait_for_work().await;
             dom.render_immediate(&mut NoOpMutations);
-            if dioxus_ssr::render(&dom).contains("image-attachment") {
+            if dioxus_ssr::render(&dom).contains("data-slot=\"attachment\"") {
                 break;
             }
         }
@@ -1183,7 +1177,7 @@ mod tests {
         }
         assert_eq!(
             dioxus_ssr::render(&dom)
-                .matches("data-slot=\"image-attachment\"")
+                .matches("data-slot=\"attachment\"")
                 .count(),
             4
         );
@@ -1252,7 +1246,7 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
         assert_eq!(
             dioxus_ssr::render(&dom)
-                .matches("data-slot=\"image-attachment\"")
+                .matches("data-slot=\"attachment\"")
                 .count(),
             3,
             "non-file drop adds nothing"
@@ -1262,7 +1256,7 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
         assert!(sent.borrow().is_empty());
         assert!(
-            dioxus_ssr::render(&dom).contains("image-attachment"),
+            dioxus_ssr::render(&dom).contains("data-slot=\"attachment\""),
             "local refusal preserves draft"
         );
         reject.set(false);
@@ -1291,7 +1285,7 @@ mod tests {
         assert!(
             matches!(&sent.borrow()[0][..],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second),v1::ContentBlock::Resource(resource)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav" && matches!(&resource.resource,v1::EmbeddedResourceResource::TextResourceContents(file) if file.text=="<script>\r\ntext" && file.uri=="file:///tmp/context%20%23.rs"))
         );
-        assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
+        assert!(!dioxus_ssr::render(&dom).contains("data-slot=\"attachment\""));
     }
 
     thread_local! {

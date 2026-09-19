@@ -2678,26 +2678,26 @@
   --lit: #c792ea;
   --ink-shadow: #000000;
 }
-.prompt-image-picker {
+.prompt-attachment-picker {
   padding: 8px 12px;
 }
-.prompt-images {
+.prompt-attachments {
   max-height: 180px;
   overflow-y: auto;
   min-width: 0;
 }
-.prompt-image-picker label {
+.prompt-attachment-picker label {
   display: grid;
   gap: 4px;
 }
-.prompt-image {
+.prompt-attachment {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   min-width: 0;
 }
-.prompt-image img {
+.prompt-attachment img {
   max-width: 96px;
   max-height: 72px;
   object-fit: contain;
@@ -2710,13 +2710,13 @@
   width: 100%;
   max-width: 240px;
 }
-.prompt-image:has(audio) {
+.prompt-attachment:has(audio) {
   flex-wrap: wrap;
 }
-.prompt-image:has(details) {
+.prompt-attachment:has(details) {
   flex-wrap: wrap;
 }
-.prompt-image details {
+.prompt-attachment details {
   min-width: 0;
   max-width: 100%;
 }
@@ -2726,11 +2726,11 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.prompt-image span {
+.prompt-attachment span {
   overflow-wrap: anywhere;
   min-width: 0;
 }
-.prompt-image button {
+.prompt-attachment button {
   flex: none;
 }
 .elicitation-fields .schemaform {
