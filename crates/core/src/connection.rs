@@ -124,6 +124,10 @@ pub enum DiagnosticKind {
     },
     /// The agent process ended, on its own or because the connection was
     /// dropped.
+    ///
+    /// Stdio emits this after its stdout and stderr pumps finish. Frames may
+    /// still be queued: consumers must drain the incoming stream before using
+    /// this diagnostic to tear down the Connection.
     AgentExited(ExitStatus),
     /// A frame past the transport's length limit was dropped — the one hole the
     /// trace can have, so it is announced rather than silently left.

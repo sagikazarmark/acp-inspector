@@ -1103,7 +1103,13 @@ impl State {
     /// there by the time the status tells it to look — and the teardown is what
     /// wakes everyone waiting on an answer, so the status has to be there by
     /// the time they ask why.
-    fn observe(&self, diagnostic: Diagnostic) {
+    fn observe(&self, diagnostic: Diagnostic, shutdown: &CancellationToken) {
+        let mut connection = self.connection();
+        // A reader can wake after reconnect. Its evidence and teardown belong
+        // only to the Connection whose token it holds.
+        if shutdown.is_cancelled() {
+            return;
+        }
         let status = match diagnostic.kind {
             DiagnosticKind::SpawnFailed { .. } => Some(ConnectionStatus::FailedToStart),
             // The agent is gone either way; which way is what the console says.
@@ -1120,7 +1126,7 @@ impl State {
             // Nothing is on the other end any more, so nothing here should be
             // holding a connection to it: "connected" and "holding a
             // connection" are the same fact, and this is where they stay one.
-            self.release(status);
+            self.release_locked(&mut connection, status);
         }
     }
 
@@ -1145,19 +1151,34 @@ impl State {
     /// against, and a turn is the one that would be visible: it would sit on
     /// the screen looking like it was still running.
     fn release(&self, status: ConnectionStatus) {
-        let released = {
-            let mut connection = self.connection();
-            let released = connection.take();
-            if released.is_some() {
-                self.status.set(status);
-            }
-            released
-        };
+        self.release_locked(&mut self.connection(), status);
+    }
 
-        if let Some(connection) = released {
+    fn release_locked(&self, live: &mut Option<Live>, status: ConnectionStatus) {
+        if let Some(connection) = live.take() {
+            self.status.set(status);
             connection.client.disconnected();
             connection.shutdown.cancel();
         }
+    }
+
+    /// Poll only while this reader owns the stores. The lock is held for each
+    /// synchronous poll, never over an await: reconnect cannot reset the stores
+    /// halfway through an old Frame being recorded or decoded.
+    async fn while_connected<F: std::future::Future>(
+        &self,
+        shutdown: &CancellationToken,
+        future: F,
+    ) -> Option<F::Output> {
+        tokio::pin!(future);
+        std::future::poll_fn(|cx| {
+            let _connection = self.connection();
+            if shutdown.is_cancelled() {
+                return std::task::Poll::Ready(None);
+            }
+            future.as_mut().poll(cx).map(Some)
+        })
+        .await
     }
 
     fn connection(&self) -> MutexGuard<'_, Option<Live>> {
@@ -1193,10 +1214,12 @@ async fn read(
 ) {
     let mut frames = true;
     let mut lines = true;
+    let mut exit = None;
 
     while frames || lines {
         tokio::select! {
-            frame = incoming.recv(), if frames => match frame {
+            () = shutdown.cancelled() => return,
+            frame = state.while_connected(&shutdown, incoming.recv()), if frames => match frame {
                 // Reading *is* the recording: a frame is in the trace by the
                 // time this has it (§6.2), so everything the typed layer does
                 // with it next is decoration over a record already made.
@@ -1206,19 +1229,27 @@ async fn read(
                 // has stopped reading its stdin will never make. A teardown
                 // that could not interrupt that would be a stop button that
                 // does not stop the one kind of agent worth stopping.
-                Some(frame) => tokio::select! {
-                    () = client.receive(frame) => {}
+                Some(Some(frame)) => tokio::select! {
+                    biased;
                     () = shutdown.cancelled() => return,
+                    _ = state.while_connected(&shutdown, client.receive(frame)) => {}
                 },
-                None => frames = false,
+                Some(None) => frames = false,
+                None => return,
             },
-            diagnostic = diagnostics.recv(), if lines => match diagnostic {
-                Some(diagnostic) => state.observe(diagnostic),
+            diagnostic = diagnostics.recv(), if lines && exit.is_none() => match diagnostic {
+                Some(diagnostic) if matches!(diagnostic.kind, DiagnosticKind::AgentExited(_)) => {
+                    // The transport finished producing Frames, but a separate
+                    // channel means its exit can overtake the queued tail.
+                    exit = Some(diagnostic);
+                }
+                Some(diagnostic) => state.observe(diagnostic, &shutdown),
                 None => lines = false,
             },
-            // Disconnected: letting go of these two ends is half of the
-            // teardown, and `Live` dropping the client is the other half.
-            () = shutdown.cancelled() => return,
+        }
+        if !frames && let Some(diagnostic) = exit.take() {
+            state.observe(diagnostic, &shutdown);
+            return;
         }
     }
 }

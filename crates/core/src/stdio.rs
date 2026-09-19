@@ -182,9 +182,15 @@ fn pump(mut child: Child, ends: TransportEnds) {
     let (stderr_drained, stderr_done) = oneshot::channel();
 
     tokio::spawn(write_frames(stdin, outgoing, diagnostics.clone()));
-    tokio::spawn(read_frames(stdout, incoming, diagnostics.clone()));
+    let stdout_done = tokio::spawn(read_frames(stdout, incoming, diagnostics.clone()));
     tokio::spawn(read_stderr(stderr, diagnostics.clone(), stderr_drained));
-    tokio::spawn(watch(child, diagnostics, shutdown, stderr_done));
+    tokio::spawn(watch(
+        child,
+        diagnostics,
+        shutdown,
+        stdout_done,
+        stderr_done,
+    ));
 }
 
 /// Client frames onto the agent's stdin, one per line.
@@ -286,19 +292,22 @@ async fn watch(
     mut child: Child,
     diagnostics: mpsc::Sender<Diagnostic>,
     shutdown: CancellationToken,
+    stdout_drained: tokio::task::JoinHandle<()>,
     stderr_drained: oneshot::Receiver<()>,
 ) {
     tokio::select! {
-        exit = child.wait() => {
-            // Stderr first: an agent that explains itself and then dies should
-            // have the explanation appear above the death, not after it.
+        () = async {
+            let exit = child.wait().await;
+            // Exit is not EOF: both pipes can still hold final evidence. The
+            // Inspector must also consume the queued Frames before teardown.
+            let _ = stdout_drained.await;
             let _ = stderr_drained.await;
             if let Ok(status) = exit {
                 let _ = diagnostics
                     .send(Diagnostic::now(DiagnosticKind::AgentExited(status)))
                     .await;
             }
-        }
+        } => {}
         () = shutdown.cancelled() => {
             // Nobody is left to tell, so this is teardown and not reporting.
             // `kill` reaches the child alone; a launcher's grandchildren are the

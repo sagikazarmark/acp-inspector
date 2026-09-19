@@ -306,6 +306,15 @@ messages. The MVP ships exactly one factory:
   spawn fields are the MCP Inspector's, unchanged
   ([#49 §2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
 
+**Process exit is not the end of its evidence.** Stdio finishes reading stdout and stderr
+before publishing `AgentExited`; the Inspector then consumes the incoming Frame stream through
+its end before recording that diagnostic and reporting `Lost`. The final prompt response therefore
+settles the Turn before teardown fails any unanswered calls. Stderr stays in channel order, ahead
+of the exit diagnostic. Both channels are drained concurrently under backpressure; stdout EOF
+alone does not end a still-running Agent. Explicit disconnect and transport failures still interrupt
+the reader rather than waiting for a drain, and a cancelled reader cannot mutate the replacement
+Connection's stores or release it.
+
 WebSocket later is a **second factory**, not a redesign: WS is natively message-framed, and the
 transport RFD's `/acp` upgrade (Active, explicitly additive to v1) slots behind the same
 contract ([#51 §3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)). The native
