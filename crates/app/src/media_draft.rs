@@ -1,70 +1,70 @@
 //! Ordered attachment work, independent of how files entered the composer.
 
-use crate::prompt_image::PromptImage;
+use crate::prompt_media::PromptMedia;
 use acp_inspector_core::v1;
 use std::collections::BTreeMap;
 
-pub const MAX_IMAGES: usize = 8;
+pub const MAX_ATTACHMENTS: usize = 8;
 pub const MAX_TOTAL_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, PartialEq)]
-pub enum ImageState {
+pub enum MediaState {
     Reading,
-    Ready(PromptImage),
+    Ready(PromptMedia),
     Failed(String),
 }
 
 #[derive(Clone, PartialEq)]
-pub struct ImageEntry {
+pub struct MediaEntry {
     pub id: u64,
     pub name: String,
-    pub state: ImageState,
+    pub state: MediaState,
 }
 
 /// IDs never repeat, even after clearing. Late completions cannot resurrect a
 /// removed row. Results settle in selection order, so disk speed cannot decide
-/// which image gets the remaining byte budget.
+/// which attachment gets the remaining byte budget.
 #[derive(Default)]
-pub struct ImageDraft {
+pub struct MediaDraft {
     next: u64,
-    entries: Vec<ImageEntry>,
-    completed: BTreeMap<u64, Result<PromptImage, String>>,
+    entries: Vec<MediaEntry>,
+    completed: BTreeMap<u64, Result<PromptMedia, String>>,
 }
 
-impl ImageDraft {
-    pub fn entries(&self) -> &[ImageEntry] {
+impl MediaDraft {
+    pub fn entries(&self) -> &[MediaEntry] {
         &self.entries
     }
     pub fn bytes(&self) -> usize {
         self.entries
             .iter()
             .filter_map(|entry| match &entry.state {
-                ImageState::Ready(image) => Some(image.bytes),
+                MediaState::Ready(media) => Some(media.bytes),
                 _ => None,
             })
             .sum()
     }
     pub fn reserve(&mut self, name: String) -> Result<u64, String> {
-        if self.entries.len() == MAX_IMAGES {
+        if self.entries.len() == MAX_ATTACHMENTS {
             return Err(
-                "At most 8 image rows can be held. Remove or dismiss a row before adding more."
+                "At most 8 attachment rows can be held. Remove or dismiss a row before adding more."
                     .into(),
             );
         }
         let id = self.next;
         self.next += 1;
-        self.entries.push(ImageEntry {
+        self.entries.push(MediaEntry {
             id,
             name,
-            state: ImageState::Reading,
+            state: MediaState::Reading,
         });
         Ok(id)
     }
-    pub fn finish(&mut self, id: u64, result: Result<PromptImage, String>) {
+    pub fn finish(&mut self, id: u64, result: Result<PromptMedia, String>) {
         if !self
             .entries
             .iter()
-            .any(|entry| entry.id == id && matches!(entry.state, ImageState::Reading))
+            .any(|entry| entry.id == id && matches!(entry.state, MediaState::Reading))
         {
             return;
         }
@@ -83,14 +83,14 @@ impl ImageDraft {
     pub fn sendable(&self) -> bool {
         self.entries
             .iter()
-            .all(|entry| matches!(entry.state, ImageState::Ready(_)))
+            .all(|entry| matches!(entry.state, MediaState::Ready(_)))
     }
     pub fn content(&self) -> Option<Vec<v1::ContentBlock>> {
         self.sendable().then(|| {
             self.entries
                 .iter()
                 .filter_map(|entry| match &entry.state {
-                    ImageState::Ready(image) => Some(image.content()),
+                    MediaState::Ready(media) => Some(media.content()),
                     _ => None,
                 })
                 .collect()
@@ -100,23 +100,23 @@ impl ImageDraft {
         let mut bytes = 0;
         for entry in &mut self.entries {
             match &entry.state {
-                ImageState::Ready(image) => {
-                    bytes += image.bytes;
+                MediaState::Ready(media) => {
+                    bytes += media.bytes;
                     continue;
                 }
-                ImageState::Failed(_) => continue,
-                ImageState::Reading => {}
+                MediaState::Failed(_) => continue,
+                MediaState::Reading => {}
             }
             let Some(result) = self.completed.remove(&entry.id) else {
                 break;
             };
             entry.state = match result {
-                Ok(image) if bytes + image.bytes <= MAX_TOTAL_BYTES => {
-                    bytes += image.bytes;
-                    ImageState::Ready(image)
+                Ok(media) if bytes + media.bytes <= MAX_TOTAL_BYTES => {
+                    bytes += media.bytes;
+                    MediaState::Ready(media)
                 }
-                Ok(_) => ImageState::Failed("This image would exceed the 6 MiB total image budget. Dismiss it and select it again after freeing room.".into()),
-                Err(error) => ImageState::Failed(error),
+                Ok(_) => MediaState::Failed("This file would exceed the 6 MiB total attachment budget. Dismiss it and select it again after freeing room.".into()),
+                Err(error) => MediaState::Failed(error),
             };
         }
     }
@@ -125,24 +125,48 @@ impl ImageDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_image::PromptImage;
+    use crate::prompt_media::PromptMedia;
 
-    fn image(name: &str, size: usize) -> PromptImage {
+    #[test]
+    fn images_and_audio_share_order_and_the_same_byte_budget() {
+        let mut draft = MediaDraft::default();
+        let first = draft.reserve("picture.png".into()).unwrap();
+        let second = draft.reserve("sound.wav".into()).unwrap();
+        let third = draft.reserve("music.mp3".into()).unwrap();
+        draft.finish(
+            third,
+            Ok(PromptMedia::from_bytes("music.mp3".into(), b"\xff\xfb\x90\x64").unwrap()),
+        );
+        draft.finish(
+            second,
+            Ok(PromptMedia::from_bytes("sound.wav".into(), b"RIFF\x04\0\0\0WAVE").unwrap()),
+        );
+        draft.finish(first, Ok(image("picture.png", 8)));
+        let content = draft.content().unwrap();
+        assert!(
+            matches!(&content[..], [v1::ContentBlock::Image(_),v1::ContentBlock::Audio(wav),v1::ContentBlock::Audio(mp3)] if wav.mime_type=="audio/wav" && mp3.mime_type=="audio/mpeg")
+        );
+        assert_eq!(draft.bytes(), 24);
+        draft.remove(second);
+        assert_eq!(draft.bytes(), 12);
+    }
+
+    fn image(name: &str, size: usize) -> PromptMedia {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.resize(size.max(8), 0);
-        PromptImage::from_bytes(name.into(), &bytes).unwrap()
+        PromptMedia::from_bytes(name.into(), &bytes).unwrap()
     }
 
     #[test]
     fn completion_order_does_not_change_selection_order_or_budget_priority() {
-        let mut draft = ImageDraft::default();
+        let mut draft = MediaDraft::default();
         let first = draft.reserve("first.png".into()).unwrap();
         let second = draft.reserve("second.png".into()).unwrap();
         draft.finish(second, Ok(image("second.png", 3 * 1024 * 1024)));
         assert!(!draft.sendable());
         draft.finish(first, Ok(image("first.png", 4 * 1024 * 1024)));
-        assert!(matches!(draft.entries()[0].state, ImageState::Ready(_)));
-        assert!(matches!(draft.entries()[1].state, ImageState::Failed(_)));
+        assert!(matches!(draft.entries()[0].state, MediaState::Ready(_)));
+        assert!(matches!(draft.entries()[1].state, MediaState::Failed(_)));
         assert!(
             !draft.sendable(),
             "a failed file cannot be silently omitted"
@@ -154,7 +178,7 @@ mod tests {
 
     #[test]
     fn removal_and_clear_discard_late_reads_and_ids_never_repeat() {
-        let mut draft = ImageDraft::default();
+        let mut draft = MediaDraft::default();
         let removed = draft.reserve("same.png".into()).unwrap();
         draft.remove(removed);
         draft.finish(removed, Ok(image("same.png", 8)));
@@ -173,7 +197,7 @@ mod tests {
 
     #[test]
     fn eight_rows_bound_reads_and_duplicates_keep_their_places() {
-        let mut draft = ImageDraft::default();
+        let mut draft = MediaDraft::default();
         for _ in 0..8 {
             let id = draft.reserve("same.png".into()).unwrap();
             draft.finish(id, Ok(image("same.png", 8)));
@@ -188,7 +212,7 @@ mod tests {
 
     #[test]
     fn the_exact_total_budget_fits_and_one_more_byte_is_a_visible_failure() {
-        let mut draft = ImageDraft::default();
+        let mut draft = MediaDraft::default();
         let first = draft.reserve("five.png".into()).unwrap();
         draft.finish(first, Ok(image("five.png", 5 * 1024 * 1024)));
         let second = draft.reserve("one.png".into()).unwrap();
@@ -197,7 +221,7 @@ mod tests {
         assert!(draft.sendable());
         let third = draft.reserve("extra.png".into()).unwrap();
         draft.finish(third, Ok(image("extra.png", 8)));
-        assert!(matches!(draft.entries()[2].state, ImageState::Failed(_)));
+        assert!(matches!(draft.entries()[2].state, MediaState::Failed(_)));
         assert!(draft.content().is_none());
     }
 }

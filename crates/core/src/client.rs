@@ -1194,7 +1194,7 @@ impl Client {
         Ok(())
     }
 
-    /// `session/prompt`: ordered content blocks; image content is advertised.
+    /// `session/prompt`: ordered content blocks; each media kind is advertised.
     ///
     /// The turn is registered before the frame goes out, so the answer cannot
     /// arrive before the reader knows what it is an answer to.
@@ -1229,10 +1229,13 @@ impl Client {
         let has_image = content
             .iter()
             .any(|block| matches!(block, v1::ContentBlock::Image(_)));
+        let has_audio = content
+            .iter()
+            .any(|block| matches!(block, v1::ContentBlock::Audio(_)));
         if content.iter().any(|block| {
             !matches!(
                 block,
-                v1::ContentBlock::Text(_) | v1::ContentBlock::Image(_)
+                v1::ContentBlock::Text(_) | v1::ContentBlock::Image(_) | v1::ContentBlock::Audio(_)
             )
         }) {
             return Err(CallError::UnsupportedPromptContent);
@@ -1249,6 +1252,24 @@ impl Client {
             return Err(error);
         }
         let request = v1::PromptRequest::new(session, content);
+        if has_audio
+            && !self
+                .stores
+                .agent
+                .get()
+                .is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.audio)
+        {
+            let error = CallError::AudioNotAdvertised;
+            self.turn_failed(None, &error);
+            return Err(error);
+        }
+        let driven: Vec<_> = [
+            (has_image, AgentCapability::Image),
+            (has_audio, AgentCapability::Audio),
+        ]
+        .into_iter()
+        .filter_map(|(present, kind)| present.then_some(kind))
+        .collect();
 
         let call = self
             .rpc
@@ -1260,9 +1281,7 @@ impl Client {
             .inspect_err(|error| self.turn_failed(None, error))?;
         let id = call.id();
         *locked(&self.awaiting) = Some(id);
-        if has_image {
-            self.registers(id, &[AgentCapability::Image]);
-        }
+        self.registers(id, &driven);
         // Nothing has been asked to stop *this* turn, so nothing is watching
         // it. A cancel still armed here belongs to a turn the user prompted
         // over — and that turn draws no annotation, because the connection is
@@ -1279,28 +1298,24 @@ impl Client {
 
         self.rpc.enqueue(&call).inspect_err(|error| {
             self.turn_failed(Some(id), error);
-            if has_image {
-                self.drive_failed(Some(id), &[AgentCapability::Image], error);
-            }
+            self.drive_failed(Some(id), &driven, error);
         })?;
         let client = self.clone();
         Ok(tokio::spawn(async move {
-            client.finish_prompt(call, has_image).await
+            client.finish_prompt(call, driven).await
         }))
     }
 
     async fn finish_prompt(
         &self,
         call: crate::rpc::Call,
-        has_image: bool,
+        driven: Vec<AgentCapability>,
     ) -> Result<v1::StopReason, CallError> {
         let id = call.id();
         let outcome = match self.rpc.wait(call).await {
             Ok(result) => decode::<v1::PromptResponse>(result).map(|response| response.stop_reason),
             Err(error) => {
-                if has_image {
-                    self.drive_failed(Some(id), &[AgentCapability::Image], &error);
-                }
+                self.drive_failed(Some(id), &driven, &error);
                 Err(error)
             }
         };

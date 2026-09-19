@@ -4,10 +4,10 @@ use acp_inspector_core::{AgentCapability, CallError, Driven, Inspector, v1};
 use common::{sent, shell};
 
 #[tokio::test]
-async fn text_and_image_cross_in_order_with_original_data_and_mime() {
+async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
     let inspector = Inspector::new();
     inspector.start(&shell(concat!(
-        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"image\":true}}}}'; ",
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"image\":true,\"audio\":true}}}}'; ",
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s\"}}'; ",
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; cat >/dev/null"
     ))).await.unwrap();
@@ -15,6 +15,7 @@ async fn text_and_image_cross_in_order_with_original_data_and_mime() {
         .prompt_content(vec![
             v1::ContentBlock::from("Describe this"),
             v1::ContentBlock::Image(v1::ImageContent::new("iVBORw0KGgo=", "image/png")),
+            v1::ContentBlock::Audio(v1::AudioContent::new("UklGRgQAAABXQVZF", "audio/wav")),
             v1::ContentBlock::Image(v1::ImageContent::new("R0lGODlh", "image/gif")),
         ])
         .await
@@ -32,6 +33,7 @@ async fn text_and_image_cross_in_order_with_original_data_and_mime() {
         serde_json::json!([
             {"type":"text","text":"Describe this"},
             {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"},
+            {"type":"audio","data":"UklGRgQAAABXQVZF","mimeType":"audio/wav"},
             {"type":"image","data":"R0lGODlh","mimeType":"image/gif"}
         ])
     );
@@ -39,11 +41,15 @@ async fn text_and_image_cross_in_order_with_original_data_and_mime() {
         inspector.driven().of(AgentCapability::Image),
         Driven::Answered
     );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::Audio),
+        Driven::Answered
+    );
     inspector.disconnect();
 }
 
 #[tokio::test]
-async fn images_require_advertisement_and_oversized_prompts_send_no_frame() {
+async fn media_require_advertisement_and_oversized_prompts_send_no_frame() {
     let inspector = Inspector::new();
     inspector.start(&shell(concat!(
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'; ",
@@ -58,6 +64,15 @@ async fn images_require_advertisement_and_oversized_prompts_send_no_frame() {
             ))])
             .await,
         Err(CallError::ImageNotAdvertised)
+    );
+    assert_eq!(
+        inspector
+            .prompt_content(vec![v1::ContentBlock::Audio(v1::AudioContent::new(
+                "abc",
+                "audio/mpeg"
+            ))])
+            .await,
+        Err(CallError::AudioNotAdvertised)
     );
     // JSON escaping, not just raw text size, determines whether a Frame fits.
     assert_eq!(

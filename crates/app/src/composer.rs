@@ -9,8 +9,8 @@
 //! a request, and the turn is over when the agent says it is, with
 //! `stopReason: "cancelled"` if it behaves (§7.1).
 
-use crate::image_draft::{ImageDraft, ImageState};
-use crate::prompt_image::PromptImage;
+use crate::media_draft::{MediaDraft, MediaState};
+use crate::prompt_media::PromptMedia;
 use acp_inspector_core::{CallError, TurnState, v1};
 use dioxus::html::{FileData, HasFileData};
 
@@ -56,6 +56,27 @@ use dioxus_free_icons::{
     Icon,
     icons::hi_outline_icons::{HiPaperAirplane, HiStop},
 };
+
+/// Picker hints follow each advertisement; signature validation is independent.
+fn accepted_media(image: bool, audio: bool) -> &'static str {
+    match (image, audio) {
+        (true, true) => ".png,.jpg,.jpeg,.gif,.webp,.wav,.mp3",
+        (true, false) => ".png,.jpg,.jpeg,.gif,.webp",
+        (false, true) => ".wav,.mp3",
+        _ => "",
+    }
+}
+
+#[component]
+fn AudioPreview(media: PromptMedia) -> Element {
+    let mut unavailable = use_signal(|| false);
+    rsx! { div { class: "prompt-audio",
+        audio { controls: true, preload: "none", src: media.preview(), aria_label: "Preview audio: {media.name}",
+            onerror: move |_| unavailable.set(true),
+        }
+        if unavailable() { span { class: "hint", role: "status", "Playback is unavailable in this WebView. The original file can still be sent." } }
+    } }
+}
 
 /// The one composer Affordance as the Turn changes underneath it.
 #[derive(Clone, Copy)]
@@ -143,6 +164,7 @@ pub fn Composer(
     /// them, and the control is not drawn at all.
     mode: Option<Cycle>,
     #[props(default)] image_advertised: bool,
+    #[props(default)] audio_advertised: bool,
     on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
     /// A mode the reader cycled to, on its way to `session/set_mode` — the same
@@ -150,15 +172,15 @@ pub fn Composer(
     on_set_mode: EventHandler<v1::SessionModeId>,
 ) -> Element {
     let mut text = use_signal(String::new);
-    let mut images = use_signal(ImageDraft::default);
+    let mut media = use_signal(MediaDraft::default);
     let mut queued = use_signal(std::collections::VecDeque::<(u64, FileData)>::new);
     let mut reading = use_signal(|| false);
-    let mut image_problem = use_signal(|| None::<String>);
+    let mut media_problem = use_signal(|| None::<String>);
     let mut overflow = use_signal(|| None::<String>);
     let picker_id = use_hook(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         format!(
-            "prompt-image-{}",
+            "prompt-media-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
     });
@@ -169,21 +191,21 @@ pub fn Composer(
     let mut dismissed = use_signal(|| false);
     let running = turn.is_running();
     let ingest = use_callback(move |files: Vec<FileData>| {
-        if !image_advertised || !ready || running || files.is_empty() {
+        if !(image_advertised || audio_advertised) || !ready || running || files.is_empty() {
             return;
         }
         let mut rejected = Vec::new();
         for file in files {
             let name = file.name();
-            match images.write().reserve(name.clone()) {
+            match media.write().reserve(name.clone()) {
                 Ok(id) => queued.write().push_back((id, file)),
                 Err(_) => rejected.push(name),
             }
         }
         if !rejected.is_empty() {
-            overflow.set(Some(format!("Not added (8 image rows maximum): {}. Dismiss this notice to send the remaining images.", rejected.join(", "))));
+            overflow.set(Some(format!("Not added (8 attachment rows maximum): {}. Dismiss this notice to send the remaining files.", rejected.join(", "))));
         }
-        image_problem.set(None);
+        media_problem.set(None);
         if reading() {
             return;
         }
@@ -197,8 +219,17 @@ pub fn Composer(
                 let Some((id, file)) = next else {
                     break;
                 };
-                let result = PromptImage::from_file(file).await;
-                let Ok(mut draft) = images.try_write() else {
+                let result = PromptMedia::from_file(file).await.and_then(|media| {
+                    if media.advertised(image_advertised, audio_advertised) {
+                        Ok(media)
+                    } else {
+                        Err(format!(
+                            "The Agent did not advertise {} prompts.",
+                            if media.is_audio() { "audio" } else { "image" }
+                        ))
+                    }
+                });
+                let Ok(mut draft) = media.try_write() else {
                     return;
                 };
                 draft.finish(id, result);
@@ -210,9 +241,10 @@ pub fn Composer(
     // a time, and a second prompt is the stop button's job first.
     let sendable = ready
         && !running
-        && images.read().sendable()
+        && media.read().sendable()
         && overflow.read().is_none()
-        && (!text().trim().is_empty() || image_advertised && !images.read().entries().is_empty());
+        && (!text().trim().is_empty()
+            || (image_advertised || audio_advertised) && !media.read().entries().is_empty());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -229,26 +261,28 @@ pub fn Composer(
             if overflow.read().is_some() {
                 return;
             }
-            let Some(attachments) = images.read().content() else {
+            let Some(attachments) = media.read().content() else {
                 return;
             };
-            if prompt.trim().is_empty() && (!image_advertised || attachments.is_empty()) {
+            if prompt.trim().is_empty()
+                && (!(image_advertised || audio_advertised) || attachments.is_empty())
+            {
                 return;
             }
             let mut content = Vec::new();
             if !prompt.trim().is_empty() {
                 content.push(v1::ContentBlock::from(prompt));
             }
-            if image_advertised {
+            if image_advertised || audio_advertised {
                 content.extend(attachments);
             }
             if let Err(error) = on_prompt.call(content) {
-                image_problem.set(Some(error.to_string()));
+                media_problem.set(Some(error.to_string()));
                 return;
             }
             text.set(String::new());
-            image_problem.set(None);
-            images.write().clear();
+            media_problem.set(None);
+            media.write().clear();
             queued.write().clear();
         }
     };
@@ -324,16 +358,16 @@ pub fn Composer(
             }
 
             div { class: "prompt-box",
-                if image_advertised {
+                if image_advertised || audio_advertised {
                     div { class: "prompt-image-picker",
                         label { class: "hint",
-                            "Add or drop images · PNG, JPEG, GIF or WebP · 8 images · 5 MiB each · 6 MiB total"
-                            input { id: picker_id.clone(), name: "prompt-image", r#type: "file", accept: ".png,.jpg,.jpeg,.gif,.webp", multiple: true,
+                            "Add or drop media · 8 attachments · 5 MiB each · 6 MiB total"
+                            input { id: picker_id.clone(), name: "prompt-media", r#type: "file", accept: accepted_media(image_advertised, audio_advertised), multiple: true,
                                 onmounted: {
                                     let id = picker_id.clone();
                                     move |_| { let bridge = document::eval(IMAGE_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
                                 },
-                                aria_label: "Attach images", disabled: !ready || running,
+                                aria_label: "Attach media", disabled: !ready || running,
                                 onchange: move |event| {
                                     let files = event.files();
                                     let reset = document::eval("const id = await dioxus.recv(); const input = document.getElementById(id); if (input) input.value = ''; ");
@@ -342,31 +376,32 @@ pub fn Composer(
                                 },
                             }
                         }
-                        if !images.read().entries().is_empty() {
-                            span { class: "hint", "{images.read().entries().len()} image rows · {images.read().bytes()} / 6291456 bytes ready" }
+                        if !media.read().entries().is_empty() {
+                            span { class: "hint", "{media.read().entries().len()} attachment rows · {media.read().bytes()} / 6291456 bytes ready" }
                         }
                     }
                 }
-                if let Some(problem) = image_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
+                if let Some(problem) = media_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
                 if let Some(problem) = overflow() {
                     div { class: "detail detail-warn", role: "status", "{problem}"
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", onclick: move |_| overflow.set(None), "Dismiss image limit notice" }
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", onclick: move |_| overflow.set(None), "Dismiss attachment limit notice" }
                     }
                 }
                 div { class: "prompt-images",
-                for entry in images.read().entries().to_vec() {
+                for entry in media.read().entries().to_vec() {
                     div { key: "{entry.id}", class: "prompt-image", "data-slot": "image-attachment", "data-image-id": "{entry.id}",
                         match &entry.state {
-                            ImageState::Ready(held) => rsx! {
-                                img { src: held.preview(), alt: "Selected image: {held.name}" }
+                            MediaState::Ready(held) => rsx! {
+                                if held.is_audio() { AudioPreview { media: held.clone() } }
+                                else { img { src: held.preview(), alt: "Selected image: {held.name}" } }
                                 span { "{held.name} · {held.mime} · {held.bytes} bytes" }
                             },
-                            ImageState::Reading => rsx! { span { role: "status", "{entry.name} · Reading image…" } },
-                            ImageState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
+                            MediaState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
+                            MediaState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
                         }
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove image {entry.id}: {entry.name}",
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove attachment {entry.id}: {entry.name}",
                             onclick: move |_| {
-                                images.write().remove(entry.id);
+                                media.write().remove(entry.id);
                                 queued.write().retain(|(id, _)| *id != entry.id);
                             }, "Remove"
                         }
@@ -750,7 +785,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn advertised_image_picker_previews_removes_and_sends_an_image_only_prompt() {
+    async fn advertised_media_picker_and_drop_preserve_mixed_content_without_autoplay() {
         use dioxus::core::{Mutation, NoOpMutations};
         use dioxus::html::{
             PlatformEventData, SerializedFileData, SerializedFormData, SerializedFormObject,
@@ -760,19 +795,21 @@ mod tests {
         #[derive(Clone, Props)]
         struct HostProps {
             advertised: bool,
+            audio: bool,
             sent: Rc<RefCell<Vec<Vec<v1::ContentBlock>>>>,
             reject: Rc<std::cell::Cell<bool>>,
         }
         impl PartialEq for HostProps {
             fn eq(&self, other: &Self) -> bool {
                 self.advertised == other.advertised
+                    && self.audio == other.audio
                     && Rc::ptr_eq(&self.sent, &other.sent)
                     && Rc::ptr_eq(&self.reject, &other.reject)
             }
         }
         fn host(props: HostProps) -> Element {
             rsx! { Composer {turn:TurnState::Idle,ready:true,connected:true,blocked:false,problem:None,commands:vec![],mode:None,
-                image_advertised:props.advertised,on_prompt:move |content| {
+                image_advertised:props.advertised,audio_advertised:props.audio,on_prompt:move |content| {
                     if props.reject.get() { Err(CallError::PromptTooLarge) }
                     else { props.sent.borrow_mut().push(content); Ok(()) }
                 },on_stop: |_| {},on_set_mode: |_| {}}
@@ -784,17 +821,32 @@ mod tests {
             host,
             HostProps {
                 advertised: false,
+                audio: false,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
         );
         absent.rebuild_in_place();
-        assert!(!dioxus_ssr::render(&absent).contains("Attach image"));
+        assert!(!dioxus_ssr::render(&absent).contains("Attach media"));
+        let mut audio_only = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                advertised: false,
+                audio: true,
+                sent: sent.clone(),
+                reject: reject.clone(),
+            },
+        );
+        let audio_edits = audio_only.rebuild_to_vec().edits;
+        let html = dioxus_ssr::render(&audio_only);
+        assert!(html.contains("accept=\".wav,.mp3\""));
+        assert!(!html.contains(".png"));
         set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         let mut dom = VirtualDom::new_with_props(
             host,
             HostProps {
                 advertised: true,
+                audio: true,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
@@ -826,6 +878,21 @@ mod tests {
                 true,
             )
         };
+        let audio_picker = audio_edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "change" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        audio_only
+            .runtime()
+            .handle_event("change", select(), audio_picker);
+        audio_only.wait_for_work().await;
+        audio_only.render_immediate(&mut NoOpMutations);
+        assert!(
+            dioxus_ssr::render(&audio_only).contains("The Agent did not advertise image prompts.")
+        );
         dom.runtime().handle_event("change", select(), picker);
         let mut mutations = Vec::new();
         for _ in 0..5 {
@@ -904,11 +971,11 @@ mod tests {
             "drop",
             drop_files(vec![
                 SerializedFileData {
-                    path: "second.gif".into(),
-                    size: 6,
+                    path: "second.wav".into(),
+                    size: 12,
                     last_modified: 0,
                     content_type: None,
-                    contents: Some(b"GIF89a".to_vec().into()),
+                    contents: Some(b"RIFF\x04\0\0\0WAVE".to_vec().into()),
                 },
                 SerializedFileData {
                     path: "broken.png".into(),
@@ -939,6 +1006,43 @@ mod tests {
                 .count(),
             3
         );
+        let preview = dioxus_ssr::render(&dom);
+        assert!(
+            preview.contains("<audio")
+                && preview.contains("controls")
+                && preview.contains("preload=\"none\"")
+        );
+        assert!(!preview.contains("autoplay"));
+        let audio = added
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "error" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        struct PlaybackError;
+        impl dioxus::html::HasImageData for PlaybackError {
+            fn load_error(&self) -> bool {
+                true
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        dom.runtime().handle_event(
+            "error",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(
+                    dioxus::html::SerializedImageData::from(&dioxus::html::ImageData::new(
+                        PlaybackError,
+                    )),
+                ))) as Rc<dyn Any>,
+                false,
+            ),
+            audio,
+        );
+        dom.render_immediate(&mut NoOpMutations);
+        assert!(dioxus_ssr::render(&dom).contains("Playback is unavailable in this WebView"));
         dom.runtime().handle_event("click", click(), send);
         assert!(
             sent.borrow().is_empty(),
@@ -977,11 +1081,30 @@ mod tests {
             "local refusal preserves draft"
         );
         reject.set(false);
+        let textarea = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "input" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        dom.runtime().handle_event(
+            "input",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+                    "Describe these".into(),
+                    vec![],
+                )))) as Rc<dyn Any>,
+                true,
+            ),
+            textarea,
+        );
+        dom.render_immediate(&mut NoOpMutations);
         dom.runtime().handle_event("click", click(), send);
         dom.render_immediate(&mut NoOpMutations);
         assert_eq!(sent.borrow().len(), 1);
         assert!(
-            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Image(image),v1::ContentBlock::Image(second)] if image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="R0lGODlh" && second.mime_type=="image/gif")
+            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav")
         );
         assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
     }

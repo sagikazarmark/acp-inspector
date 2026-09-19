@@ -90,6 +90,31 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Mixed media and audio playback, 2026-09-19
+
+Linux WebKitGTK, Xvfb/Openbox, scripted Agent advertising images and audio:
+
+- Native GTK file drop appended PNG then PCM WAV, showing original MIME/byte
+  counts. The WAV was paused with controls and `preload="none"`, no autoplay.
+  Clicking Play advanced to its one-second end; mixed submission reached `end_turn`.
+- Another native drop appended MP3 then a signature-recognized but undecodable
+  WAV. MP3 playback reached its 0.9665-second end. Playing the broken WAV reported
+  “Playback is unavailable in this WebView. The original file can still be sent.”
+  Send remained available, submitted both files and cleared the draft.
+- This verifies player progress, not audible output: the headless environment
+  does not establish sound-device behavior. macOS/Windows native acceptance
+  remains in #9.
+- The initial shell lacked GStreamer plugin discovery, causing WebKit's process
+  to exit while constructing audio. The Linux development environment now exposes
+  matching core/base/good/ugly plugins. Successful walkthrough used GStreamer
+  1.26.11 from the repository's pinned nixpkgs; mixing newer plugins with that
+  runtime was rejected by the dynamic loader.
+
+Automated coverage includes signature-derived MIME and byte fidelity, tagged AAC
+rejection and free-format MP3 acceptance, mixed collection ordering/budgets,
+advertisement gates, rendered playback-error feedback followed by unchanged
+submission, text-first ordering and the exact outgoing mixed-content Frame.
+
 ### Multiple images and native drop, 2026-09-19
 
 Linux WebKitGTK/Xvfb/Openbox, with a GTK drag-source fixture supplying two native
