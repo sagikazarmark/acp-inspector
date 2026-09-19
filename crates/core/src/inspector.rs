@@ -99,7 +99,8 @@ impl Default for DiagnosticLog {
                         DiagnosticKind::SpawnFailed { command, error } => {
                             command.len() + error.to_string().len()
                         }
-                        DiagnosticKind::TransportFailed(error) => error.to_string().len(),
+                        DiagnosticKind::TransportFailed(error)
+                        | DiagnosticKind::WriteFailed(error) => error.to_string().len(),
                         _ => 0,
                     }
             }),
@@ -1152,8 +1153,8 @@ impl State {
             DiagnosticKind::AgentExited(_) | DiagnosticKind::TransportFailed(_) => {
                 Some(ConnectionStatus::Lost)
             }
-            // Everything the agent itself says, and the one hole the transport
-            // admits to. Neither is news about the connection.
+            // Stderr, record holes and a failed outgoing pipe do not end the
+            // incoming evidence. Only a terminal diagnostic releases it.
             _ => None,
         };
 
@@ -1248,6 +1249,21 @@ async fn read(
     mut diagnostics: DiagnosticStream,
     shutdown: CancellationToken,
 ) {
+    // Keep ordered Frame handling (including bounded automatic reply sends)
+    // concurrent with diagnostics. A stalled reply must not prevent observing
+    // a terminal read failure or draining stderr that the Agent is waiting on.
+    let receive = async {
+        while let Some(Some(frame)) = state.while_connected(&shutdown, incoming.recv()).await {
+            if state
+                .while_connected(&shutdown, client.receive(frame))
+                .await
+                .is_none()
+            {
+                return;
+            }
+        }
+    };
+    tokio::pin!(receive);
     let mut frames = true;
     let mut lines = true;
     let mut exit = None;
@@ -1255,24 +1271,7 @@ async fn read(
     while frames || lines {
         tokio::select! {
             () = shutdown.cancelled() => return,
-            frame = state.while_connected(&shutdown, incoming.recv()), if frames => match frame {
-                // Reading *is* the recording: a frame is in the trace by the
-                // time this has it (§6.2), so everything the typed layer does
-                // with it next is decoration over a record already made.
-                //
-                // Under the token as well, because answering a request means
-                // sending, and sending waits for room in a pipe an agent that
-                // has stopped reading its stdin will never make. A teardown
-                // that could not interrupt that would be a stop button that
-                // does not stop the one kind of agent worth stopping.
-                Some(Some(frame)) => tokio::select! {
-                    biased;
-                    () = shutdown.cancelled() => return,
-                    _ = state.while_connected(&shutdown, client.receive(frame)) => {}
-                },
-                Some(None) => frames = false,
-                None => return,
-            },
+            () = &mut receive, if frames => frames = false,
             diagnostic = diagnostics.recv(), if lines && exit.is_none() => match diagnostic {
                 Some(diagnostic) if matches!(diagnostic.kind, DiagnosticKind::AgentExited(_)) => {
                     // The transport finished producing Frames, but a separate

@@ -125,7 +125,7 @@ pub enum DiagnosticKind {
     /// The agent process ended, on its own or because the connection was
     /// dropped.
     ///
-    /// Stdio emits this after its stdout and stderr pumps finish. Frames may
+    /// Stdio emits this after all pipe pumps finish. Frames may
     /// still be queued: consumers must drain the incoming stream before using
     /// this diagnostic to tear down the Connection.
     AgentExited(ExitStatus),
@@ -139,7 +139,12 @@ pub enum DiagnosticKind {
     /// The same, for a stderr line. The console loses one line and keeps
     /// running.
     StderrLineDropped { limit: usize },
-    /// The pipe to a started agent broke.
+    /// The outgoing pipe broke. Further sends fail, but incoming evidence can
+    /// still arrive. This is not a terminal Connection diagnostic: consumers
+    /// keep draining until AgentExited or TransportFailed.
+    WriteFailed(Arc<io::Error>),
+    /// A terminal transport failure (including an unreadable incoming pipe).
+    /// Consumers interrupt the reader and fail pending calls immediately.
     TransportFailed(Arc<io::Error>),
 }
 
@@ -399,6 +404,7 @@ impl std::fmt::Display for DiagnosticKind {
                 write!(f, "dropped a stderr line longer than {limit} bytes")
             }
             Self::TransportFailed(error) => write!(f, "the connection broke: {error}"),
+            Self::WriteFailed(error) => write!(f, "could not write to the agent: {error}"),
         }
     }
 }

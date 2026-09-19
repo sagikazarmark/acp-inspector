@@ -5,6 +5,217 @@ mod common;
 use acp_inspector_core::{ConnectionStatus, DiagnosticKind, Inspector, StdioSpawn, TurnState, v1};
 use common::{PATIENCE, QUIET, received, until};
 
+#[tokio::test]
+async fn failed_automatic_replies_preserve_all_final_frames_and_prompt_answer() {
+    for _ in 0..8 {
+        let inspector = Inspector::new();
+        let mut status = inspector.status_changes();
+        inspector.connect(&StdioSpawn::new("python3").args(["-c", r#"
+import json, sys, os
+for result in [{'protocolVersion': 1, 'agentCapabilities': {}}, {'sessionId': 'final'}]:
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+request = json.loads(sys.stdin.readline())
+# Guarantee failed replies, independent of whether the reader beats process exit.
+os.close(0)
+frames = [json.dumps({'jsonrpc': '2.0', 'id': 'agent-'+str(i), 'method': 'unsupported'}) for i in range(80)]
+frames.append(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'stopReason': 'end_turn'}}))
+sys.stdout.write('\n'.join(frames)+'\n')
+sys.stdout.flush()
+os._exit(0)
+"#]));
+        tokio::time::timeout(PATIENCE, async {
+            inspector.initialize().await.unwrap();
+            inspector.new_session("/tmp", None).await.unwrap();
+        })
+        .await
+        .unwrap();
+        let prompt = inspector.submit_prompt(vec!["finish".into()]).unwrap();
+        until(&mut status, "exit despite failed automatic replies", || {
+            inspector.status() == ConnectionStatus::Lost
+        })
+        .await;
+        let frames = received(&inspector);
+        assert_eq!(frames.len(), 83, "all Agent Frames must drain");
+        assert_eq!(inspector.trace().dropped(), 0);
+        for (i, frame) in frames[2..82].iter().enumerate() {
+            let frame: serde_json::Value = serde_json::from_str(frame).unwrap();
+            assert_eq!(frame["id"], format!("agent-{i}"));
+        }
+        assert_eq!(prompt.await.unwrap().unwrap(), v1::StopReason::EndTurn);
+        assert!(matches!(
+            inspector.turn(),
+            TurnState::Ended(v1::StopReason::EndTurn)
+        ));
+        let diagnostics = inspector.diagnostics().entries();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_)))
+        );
+        assert!(
+            matches!(diagnostics.last().unwrap().kind, DiagnosticKind::AgentExited(status) if status.success())
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_automatic_replies_with_full_diagnostics_do_not_deadlock_exit() {
+    let inspector = Inspector::new();
+    let mut status = inspector.status_changes();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import os, sys, json, time, threading
+def noise():
+    time.sleep(0.1)
+    for i in range(2000):
+        print('stderr-'+str(i), file=sys.stderr, flush=True)
+threading.Thread(target=noise, daemon=True).start()
+threading.Timer(0.4, lambda: os._exit(0)).start()
+for i in range(10000):
+    print(json.dumps({'jsonrpc': '2.0', 'id': i, 'method': 'unsupported'}), flush=True)
+time.sleep(0.2)
+os._exit(0)
+"#,
+    ]));
+    let exited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        until(
+            &mut status,
+            "exit under reply and diagnostic backpressure",
+            || inspector.status() == ConnectionStatus::Lost,
+        )
+        .await;
+    })
+    .await;
+    assert!(
+        exited.is_ok(),
+        "exited Agent stayed {:?}: {} Frames, {} diagnostics",
+        inspector.status(),
+        inspector.trace().len(),
+        inspector.diagnostics().entries().len()
+    );
+    let diagnostics = inspector.diagnostics().entries();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::Stderr(_)))
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_)))
+    );
+    assert!(
+        matches!(diagnostics.last().unwrap().kind, DiagnosticKind::AgentExited(status) if status.success())
+    );
+}
+
+#[tokio::test]
+async fn failed_replies_drain_every_frame_and_stderr_line_after_backpressure() {
+    let inspector = Inspector::new();
+    let mut status = inspector.status_changes();
+    inspector.connect(&StdioSpawn::new("python3").args(["-c", r#"
+import json, os, sys, threading, time
+for result in [{'protocolVersion': 1, 'agentCapabilities': {}}, {'sessionId': 'final'}]:
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+request = json.loads(sys.stdin.readline())
+def noise():
+    time.sleep(0.1)
+    for i in range(1000):
+        print(str(i), file=sys.stderr, flush=True)
+noise_thread = threading.Thread(target=noise)
+noise_thread.start()
+# Unblock failed writes even if the main thread is stuck writing stdout. All
+# final evidence is then written before exit, so its exact count is assertable.
+threading.Timer(0.4, lambda: os.close(0)).start()
+for i in range(3000):
+    print(json.dumps({'jsonrpc': '2.0', 'id': 'agent-'+str(i), 'method': 'unsupported'}), flush=True)
+print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'stopReason': 'end_turn'}}), flush=True)
+noise_thread.join()
+"#]));
+    tokio::time::timeout(PATIENCE, async {
+        inspector.initialize().await.unwrap();
+        inspector.new_session("/tmp", None).await.unwrap();
+    })
+    .await
+    .unwrap();
+    let prompt = inspector.submit_prompt(vec!["finish".into()]).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        until(
+            &mut status,
+            "all final evidence after failed replies",
+            || inspector.status() == ConnectionStatus::Lost,
+        ),
+    )
+    .await
+    .unwrap();
+    let frames = received(&inspector);
+    assert_eq!(frames.len(), 3003);
+    assert_eq!(inspector.trace().dropped(), 0);
+    for (i, frame) in frames[2..3002].iter().enumerate() {
+        let frame: serde_json::Value = serde_json::from_str(frame).unwrap();
+        assert_eq!(frame["id"], format!("agent-{i}"));
+    }
+    assert_eq!(prompt.await.unwrap().unwrap(), v1::StopReason::EndTurn);
+    assert!(matches!(
+        inspector.turn(),
+        TurnState::Ended(v1::StopReason::EndTurn)
+    ));
+    let diagnostics = inspector.diagnostics().entries();
+    let stderr: Vec<_> = diagnostics
+        .iter()
+        .filter_map(|line| match &line.kind {
+            DiagnosticKind::Stderr(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stderr.len(), 1000);
+    for (i, text) in stderr.iter().enumerate() {
+        assert_eq!(**text, i.to_string());
+    }
+    assert_eq!(diagnostics.len(), 1002, "stderr, write failure, exit");
+    assert!(
+        matches!(diagnostics.last().unwrap().kind, DiagnosticKind::AgentExited(status) if status.success())
+    );
+}
+
+#[tokio::test]
+async fn read_failure_interrupts_a_backpressured_automatic_reply() {
+    let inspector = Inspector::new();
+    let mut status = inspector.status_changes();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import json, os, sys, time
+# Long ids fill the stdin pipe well before the bounded outgoing queue. The
+# remaining Frames fit in the incoming queue, letting its pump see the error.
+for i in range(400):
+    print(json.dumps({'jsonrpc': '2.0', 'id': str(i)+'x'*4096, 'method': 'unsupported'}))
+sys.stdout.flush()
+os.write(1, b'\xff\n')
+time.sleep(60)
+"#,
+    ]));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        until(&mut status, "read failure during a blocked reply", || {
+            inspector.status() == ConnectionStatus::Lost
+        }),
+    )
+    .await
+    .expect("a terminal read failure must interrupt a blocked automatic reply");
+    assert!(
+        inspector
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::TransportFailed(_)))
+    );
+}
+
 const FINAL_TURN: &str = r#"
 import json, sys
 def answer(result):

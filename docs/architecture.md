@@ -306,14 +306,20 @@ messages. The MVP ships exactly one factory:
   spawn fields are the MCP Inspector's, unchanged
   ([#49 §2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
 
-**Process exit is not the end of its evidence.** Stdio finishes reading stdout and stderr
+**Process exit is not the end of its evidence.** Stdio finishes its pipe pumps
 before publishing `AgentExited`; the Inspector then consumes the incoming Frame stream through
 its end before recording that diagnostic and reporting `Lost`. The final prompt response therefore
 settles the Turn before teardown fails any unanswered calls. Stderr stays in channel order, ahead
-of the exit diagnostic. Both channels are drained concurrently under backpressure; stdout EOF
-alone does not end a still-running Agent. Explicit disconnect and transport failures still interrupt
-the reader rather than waiting for a drain, and a cancelled reader cannot mutate the replacement
-Connection's stores or release it.
+of the exit diagnostic. Both channels are drained concurrently under backpressure, including
+while an automatic reply is waiting for outgoing capacity; stdout EOF alone does not end a
+still-running Agent. An outgoing pipe failure closes the outgoing queue **before** waiting for
+diagnostic capacity, unblocking sends, and records `WriteFailed`. It does not end incoming evidence
+or fail calls already awaiting answers: final Frames and the final prompt answer still drain.
+The process watcher stops the writer on exit and waits for its diagnostic before `AgentExited`.
+Queues remain bounded; automatic replies are processed in Frame order without a task per reply.
+Explicit disconnect and terminal transport failures (`TransportFailed`, including an unreadable
+incoming pipe) still interrupt the reader rather than waiting for a drain, even during a blocked
+automatic reply. A cancelled reader cannot mutate the replacement Connection's stores or release it.
 
 **Stdio owns the launched process tree.** Unix launches in a private process group;
 Windows assigns the suspended launcher to a private kill-on-close Job Object before

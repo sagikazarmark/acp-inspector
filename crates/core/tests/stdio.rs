@@ -13,7 +13,53 @@ use std::time::SystemTime;
 
 use acp_inspector_core::{ConnectionFactory, DiagnosticKind, Frame, StdioSpawn};
 
-use common::{frames_end, next_diagnostic, next_frame};
+use common::{QUIET, frames_end, next_diagnostic, next_frame};
+
+#[tokio::test]
+async fn failed_write_releases_senders_before_diagnostic_capacity_is_available() {
+    let mut connection = StdioSpawn::new("python3")
+        .args([
+            "-c",
+            r#"
+import os, sys, time
+os.close(0)
+# More lines than the diagnostic queue, fewer bytes than the OS pipe. The
+# consumer deliberately does not read diagnostics until sends have failed.
+sys.stderr.write('x\n'*1000)
+sys.stderr.flush()
+print('{"ready":true}', flush=True)
+time.sleep(60)
+"#,
+        ])
+        .connect();
+    assert_eq!(
+        next_frame(connection.incoming()).await.as_str(),
+        r#"{"ready":true}"#
+    );
+    tokio::time::sleep(QUIET).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        for _ in 0..1000 {
+            if let Err(error) = connection.outgoing().send(Frame::new("{}")).await {
+                assert_eq!(error, acp_inspector_core::SendError::Disconnected);
+                return;
+            }
+        }
+        panic!("a failed writer must close the outgoing queue");
+    })
+    .await
+    .expect("a full diagnostic channel must not keep failed sends blocked");
+    let mut stderr = 0;
+    let mut failed = false;
+    for _ in 0..1001 {
+        match next_diagnostic(connection.diagnostics()).await.kind {
+            DiagnosticKind::Stderr(_) => stderr += 1,
+            DiagnosticKind::WriteFailed(_) => failed = true,
+            other => panic!("unexpected diagnostic: {other:?}"),
+        }
+    }
+    assert_eq!(stderr, 1000);
+    assert!(failed);
+}
 
 /// An agent that writes back every line it is given, and ends on stdin EOF.
 fn echo_agent() -> StdioSpawn {

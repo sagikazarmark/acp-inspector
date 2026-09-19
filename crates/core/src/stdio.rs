@@ -187,14 +187,22 @@ fn pump(child: Spawned, ends: TransportEnds) {
     } = ends;
 
     let (stderr_drained, stderr_done) = oneshot::channel();
+    let stop_writing = CancellationToken::new();
 
-    tokio::spawn(write_frames(stdin, outgoing, diagnostics.clone()));
+    let stdin_done = tokio::spawn(write_frames(
+        stdin,
+        outgoing,
+        diagnostics.clone(),
+        stop_writing.clone(),
+    ));
     let stdout_done = tokio::spawn(read_frames(stdout, incoming, diagnostics.clone()));
     tokio::spawn(read_stderr(stderr, diagnostics.clone(), stderr_drained));
     tokio::spawn(watch(
         WatchOwner(process),
         diagnostics,
         shutdown,
+        stop_writing,
+        stdin_done,
         stdout_done,
         stderr_done,
     ));
@@ -209,14 +217,34 @@ async fn write_frames(
     stdin: ChildStdin,
     mut outgoing: mpsc::Receiver<Frame>,
     diagnostics: mpsc::Sender<Diagnostic>,
+    stop: CancellationToken,
 ) {
     // No cap on the encoder: what goes out was composed here, and refusing to
     // write a frame the client asked for would be the transport editing the
     // conversation.
     let mut lines = FramedWrite::new(stdin, LinesCodec::new());
-    while let Some(frame) = outgoing.recv().await {
+    loop {
+        let frame = tokio::select! {
+            biased;
+            () = stop.cancelled() => {
+                // No new sends after exit. A queued Frame still gets a write
+                // attempt so its failure is diagnosed before AgentExited.
+                outgoing.close();
+                outgoing.recv().await
+            },
+            frame = outgoing.recv() => frame,
+        };
+        let Some(frame) = frame else { return };
         if let Err(LinesCodecError::Io(error)) = lines.send(frame.as_str()).await {
-            let _ = diagnostics.send(broken_pipe(error)).await;
+            // Release blocked senders BEFORE waiting for diagnostic capacity.
+            // The Inspector may itself be awaiting an automatic reply send.
+            drop(outgoing);
+            drop(lines);
+            let _ = diagnostics
+                .send(Diagnostic::now(DiagnosticKind::WriteFailed(Arc::new(
+                    error,
+                ))))
+                .await;
             return;
         }
     }
@@ -299,6 +327,8 @@ async fn watch(
     child: WatchOwner,
     diagnostics: mpsc::Sender<Diagnostic>,
     shutdown: CancellationToken,
+    stop_writing: CancellationToken,
+    stdin_drained: tokio::task::JoinHandle<()>,
     stdout_drained: tokio::task::JoinHandle<()>,
     stderr_drained: oneshot::Receiver<()>,
 ) {
@@ -306,10 +336,14 @@ async fn watch(
         () = async {
             let exit = child.0.wait().await;
             child.0.terminate();
+            // Wake an idle writer too. An in-progress write finishes against
+            // the closed pipe and records its failure before the exit notice.
+            stop_writing.cancel();
             // Exit is not EOF: both pipes can still hold final evidence. The
             // Inspector must also consume the queued Frames before teardown.
             let _ = stdout_drained.await;
             let _ = stderr_drained.await;
+            let _ = stdin_drained.await;
             let diagnostic = match exit {
                 Ok(status) => Diagnostic::now(DiagnosticKind::AgentExited(status)),
                 Err(error) => broken_pipe(error),
@@ -319,6 +353,7 @@ async fn watch(
         () = shutdown.cancelled() => {
             // Nobody is left to tell, so this is teardown and not reporting.
             child.0.terminate();
+            stop_writing.cancel();
         }
     }
 }
@@ -350,8 +385,7 @@ fn resume<T>(lines: Framed<T, LinesCodec>) -> Framed<T, LinesCodec> {
     Framed::from_parts(lines.into_parts())
 }
 
-/// A write or read that failed for the pipe's own reasons. Nothing more will
-/// cross in that direction.
+/// A terminal read or process-wait failure. Write failure leaves evidence to drain.
 fn broken_pipe(error: io::Error) -> Diagnostic {
     Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(error)))
 }
