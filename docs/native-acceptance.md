@@ -294,6 +294,40 @@ the focus assertion on this WebKitGTK version. Recover with
 `node scripts/check-mcp-keyboard.mjs http Escape Tab`. The failed sequence is a
 driver mistake, not an application regression to "fix" by overriding native keys.
 
+## Focused navigation check — 2026-09-19
+
+On Linux/X11 under Xvfb with the devenv WebKitGTK, the phase4 working tree passed a focused
+navigation probe using `xdotool` input and read-only remote DOM inspection (the same mechanism as
+the MCP probe above). Actual content widths were **921px** and **1382px**. The portable acceptance
+Agent supplied a prompt and a received update.
+
+- Palette Capabilities and Session settings revealed Details and focused the selected rail tab.
+- Palette Diagnostics and native Ctrl+2 revealed Messages and focused the Diagnostics tab.
+- Toolbar JSON-RPC full selected Messages and retained focus on the layout control.
+- Mobile Session after full Wire selected Split, revealed Timeline and focused its region.
+- Trace `turn` from narrow/full Wire and wide/full Wire revealed and focused the marked entry.
+- Timeline evidence revealed Trace and focused the marked Frame row.
+- Native Ctrl+backquote from the composer moved focus only when hiding it; returning to Split
+  retained Console focus and preserved the typed draft.
+
+This establishes Linux WebView visibility and focus behavior only. It is not a screen-reader,
+macOS/Windows, exact-size or full acceptance walkthrough. The session's probe and launch helper
+are `/tmp/opencode/check-navigation.mjs` and `/tmp/opencode/launch-navigation.py`; the build is in
+`/tmp/opencode/inspector-final`. Those temporary files are local evidence, not portable test tooling.
+
+**Waiting-request regression, same environment:** launch `.testy/bin/testy`, send `callbacks`,
+and leave its request unanswered with Timeline visible. Before visiting that row from Trace, run:
+
+```sh
+DISPLAY=:94 node scripts/check-waiting-navigation.mjs
+```
+
+Use the actual X11 display and the remote-inspection setup above. The inspector window must have
+native keyboard focus. The probe Tabs to the real **go to it** control, activates it, and asserts
+that an unmarked request row receives focus. This failed when the shared focus helper required
+`.sought` (focus stayed on the button), then passed after readiness became row visibility alone.
+The bounded paint wait still covers cross-screen navigation into the always-mounted Timeline.
+
 ## Report remaining blockers
 
 Attach evidence to #9 or #10 using the IDs above and the matrix Elicitation step

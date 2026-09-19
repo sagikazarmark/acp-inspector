@@ -51,11 +51,11 @@ use crate::time::stamp;
 const FOCUS_FRAME: &str = r#"
 const ordinals = await dioxus.recv();
 let target;
-for (let attempt = 0; attempt < 3 && !target; attempt += 1) {
+for (let attempt = 0; attempt < 60 && !target; attempt += 1) {
   await new Promise((resolve) => requestAnimationFrame(resolve));
   target = ordinals
     .map((ordinal) => document.querySelector(`[data-frame="${ordinal}"] .frame-row`))
-    .find(Boolean);
+    .find((row) => row?.getClientRects().length && row.dataset.revealed === "true");
 }
 if (target) {
   target.scrollIntoView({ block: "center" });
@@ -372,6 +372,7 @@ fn frame_row(
                             "data-slot": "reach",
                             r#type: "button",
                             title: "Show what the timeline made of this frame",
+                            aria_label: "Show Timeline entry for Frame {ordinal}",
                             onclick: move |_| on_seek.call(ordinal),
                             "turn"
                         }

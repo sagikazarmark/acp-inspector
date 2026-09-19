@@ -1288,6 +1288,16 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
 >   segmented bar at its foot chooses between them (Details | Session | Messages). Nothing is lost
 >   at any width, and the chooser does not exist while all three are on screen.
 >
+> **Navigation coordinates those choices.** The toolbar, region bar, palette, native menu and
+> evidence links use the same window-session navigation boundary. A Timeline destination selects
+> Split and Session; a Console destination selects Messages and its tab; a rail destination selects
+> Details and its tab. JSON-RPC full selects Messages too, so narrowing the window cannot hide both
+> screens. Choosing Split alone preserves the selected narrow region. Explicit destinations receive
+> keyboard focus once visible; layout-only choices keep focus unless they hide its control. The
+> automatic Diagnostics status path retains its guarded focus handoff rather than acting as an
+> explicit destination. Screens keeps the Timeline mounted through all these changes so drafts
+> survive; Session changes still own their reset.
+>
 > Two controls the section below describes are drawn as the design draws them rather than as an
 > earlier ring argued: a **Mode** is a full-width row per mode in the rail *and* a cycling control in
 > the composer's footer — one setting, one call, offered where a reader stands when they want it

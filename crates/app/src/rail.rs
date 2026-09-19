@@ -42,7 +42,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    fn id(self) -> &'static str {
+    pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Session => "rail-tab-session",
             Self::Capabilities => "rail-tab-capabilities",

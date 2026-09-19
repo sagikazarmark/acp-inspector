@@ -42,12 +42,18 @@ use crate::time::stamp;
 use crate::update::{self, Voice};
 
 /// Put the Timeline entry named by another control under both the viewport and
-/// keyboard focus. The ordinal is numeric and sent over Dioxus's channel, so no
-/// Agent-controlled text becomes executable code.
+/// keyboard focus. Visibility is the readiness condition for both Trace navigation
+/// and the waiting-request shortcut: the latter does not mark an entry as sought.
+/// The ordinal is numeric and sent over Dioxus's channel, so no Agent-controlled
+/// text becomes executable code.
 const FOCUS_ENTRY: &str = r#"
 const ordinal = await dioxus.recv();
-await new Promise((resolve) => requestAnimationFrame(resolve));
-const target = document.querySelector(`[data-frames~="${ordinal}"]`);
+let target;
+for (let attempt = 0; attempt < 60 && !target; attempt += 1) {
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const entry = document.querySelector(`[data-frames~="${ordinal}"]`);
+  if (entry?.getClientRects().length) target = entry;
+}
 if (target) {
   target.scrollIntoView({ block: "center" });
   target.focus({ preventScroll: true });
@@ -157,6 +163,8 @@ pub fn Timeline(
 
     rsx! {
         main { class: "turns",
+            id: "timeline",
+            tabindex: "-1",
             header { class: "pane-head",
                 h2 { class: "pane-title", "Session" }
                 // Which call the rows under this belong to, in the protocol's

@@ -48,6 +48,7 @@ mod mark;
 mod mcp;
 #[cfg(test)]
 mod mock;
+mod navigation;
 mod palette;
 mod permission;
 mod rail;
@@ -434,26 +435,27 @@ fn App() -> Element {
     // the agent's diagnostics sit *beside* the turn instead of in a separate
     // terminal (§9), and a live view behind a click is a click away from being
     // the terminal it replaced.
-    let mut spine = use_signal(Spine::default);
+    let navigation = navigation::use_navigation();
+    let spine = navigation.spine;
     // And which of the Console's two surfaces is on screen. The window's rather
     // than the panel's, because the one thing that changes it without a click is
     // a connection status, and statuses arrive here. Not persisted, and the
     // default is stated by the type (`console::Tab`).
-    let mut tab = use_signal(Tab::default);
+    let mut tab = navigation.console;
     // Which lookup the rail is on. The window's, like the two above and for the
     // same reason: it is never written to `settings.json`, because what somebody
     // was reading yesterday is not what this window opens onto.
-    let mut rail_tab = use_signal(rail::Tab::default);
-    // And which region a window too narrow for all three is showing. Read only
-    // by the stylesheet's narrow rules and by the bar at the foot that sets it.
-    let mut focus = use_signal(Focus::default);
+    let rail_tab = navigation.rail;
+    // Which region a narrow window shows. Destination navigation coordinates
+    // it with the wide layout; CSS alone decides the breakpoint.
+    let mut focus = navigation.region;
     // What each screen has been asked to show of the other's (§9: the turn and
     // the wire, at once). Both are the window's rather than either screen's,
     // because pointing at the other screen is not a thing a screen can do to
     // itself — and reaching the trace also opens the panel it is in, which is
     // this window's state and nobody else's.
-    let mut revealed = use_signal(Vec::<u64>::new);
-    let mut sought = use_signal(|| None::<u64>);
+    let revealed = navigation.revealed;
+    let sought = navigation.sought;
     // The one thing that shuts the Sessions dialog which is not the reader: a
     // session that opened. That is what every control in it which opens one was
     // pressed for, and the screen it opened onto is behind the dialog. A session
@@ -759,8 +761,7 @@ fn App() -> Element {
                         .save()
                         .map_err(|error| error.to_string()),
                 ));
-                focus.set(Focus::Wire);
-                tab.set(Tab::Trace);
+                navigation.console(Tab::Trace);
             }
             shell::command::CLEAR_TRACE => menu_clear.trace().clear(),
             shell::command::STOP_AGENT => menu_stop.disconnect(),
@@ -787,15 +788,13 @@ fn App() -> Element {
                 });
             }
             shell::command::SHOW_TRACE => {
-                focus.set(Focus::Wire);
-                tab.set(Tab::Trace);
+                navigation.console(Tab::Trace);
             }
             shell::command::SHOW_DIAGNOSTICS => {
-                focus.set(Focus::Wire);
-                tab.set(Tab::Diagnostics);
+                navigation.console(Tab::Diagnostics);
             }
             // The item that was a collapse, answering the control that replaced it.
-            shell::command::TOGGLE_CONSOLE => spine.set(spine().other()),
+            shell::command::TOGGLE_CONSOLE => navigation.layout(spine().other()),
             _ => {}
         });
     }
@@ -974,7 +973,7 @@ fn App() -> Element {
             protocol: described.read().as_ref().map(|agent| agent.protocol_version.to_string()),
             session: session(),
             spine: spine(),
-            on_spine: move |chosen| spine.set(chosen),
+            on_spine: move |chosen| navigation.layout(chosen),
             // The choice applies now and is written now. A write that fails
             // is not reported: an appearance is one click to redo, and the
             // window is already in it either way.
@@ -1061,20 +1060,16 @@ fn App() -> Element {
             described: described.read().is_some(),
             traced: !frames().is_empty(),
             spine: spine(),
-            on_spine: EventHandler::new(move |chosen: Spine| spine.set(chosen)),
-            on_tab: EventHandler::new(move |chosen: Tab| {
-                focus.set(Focus::Wire);
-                tab.set(chosen);
-            }),
-            on_rail: EventHandler::new(move |chosen: rail::Tab| rail_tab.set(chosen)),
+            on_spine: EventHandler::new(move |chosen| navigation.layout(chosen)),
+            on_tab: EventHandler::new(move |chosen| navigation.console(chosen)),
+            on_rail: EventHandler::new(move |chosen| navigation.rail(chosen)),
             on_new_session: claims.on_new_session,
             on_stop: EventHandler::new(move |()| stopping_palette.disconnect()),
             on_export: EventHandler::new(move |()| {
                 exported.set(Some(
                     exporting_palette.trace().export().save().map_err(|error| error.to_string()),
                 ));
-                focus.set(Focus::Wire);
-                tab.set(Tab::Trace);
+                navigation.console(Tab::Trace);
             }),
             on_clear: EventHandler::new(move |()| clearing_palette.trace().clear()),
             on_indent: EventHandler::new(move |()| {
@@ -1101,7 +1096,7 @@ fn App() -> Element {
                 setting_option: settings_work().option,
                 commands: timeline::commands(&entries()).len(),
                 tab: rail_tab(),
-                on_tab: move |chosen| rail_tab.set(chosen),
+                on_tab: move |chosen| navigation.rail(chosen),
                 on_stop: move |()| stopping_rail.disconnect(),
                 // Nothing is waited for here: what the Agent answered — an
                 // acknowledgement it never restated, or a refusal — is written
@@ -1228,16 +1223,7 @@ fn App() -> Element {
                 // accounts it used to draw are the rail's now.
                 described: described.read().is_some(),
                 sought: sought(),
-                on_reveal: move |frames: Vec<u64>| {
-                    focus.set(Focus::Wire);
-                    tab.set(Tab::Trace);
-                    revealed.set(frames.clone());
-                    trace::focus_frames(frames);
-                    // What the Console last sent here is answered now, so a
-                    // second click on the same row is a second reveal rather
-                    // than a no-op against a signal that never changed.
-                    sought.set(None);
-                },
+                on_reveal: move |frames| navigation.reveal(frames),
             }
             },
 
@@ -1259,24 +1245,28 @@ fn App() -> Element {
                 lines,
                 dropped_lines: dropped_lines(),
                 tab: tab(),
-                on_select: move |chosen| tab.set(chosen),
+                on_select: move |chosen| navigation.console(chosen),
                 revealed,
                 decoded,
-                // A frame on its way back to the entry it became. It does not
-                // touch the Console: what the reader is looking at here is what
-                // they clicked in, and a panel that shut itself to show them the
-                // answer would have taken away the question.
-                on_seek: move |ordinal: u64| {
-                    sought.set(Some(ordinal));
-                    revealed.set(Vec::new());
-                    timeline::focus_entry(ordinal);
-                },
+                on_seek: move |ordinal| navigation.seek(ordinal),
             } }
             }
         }
 
         // The way between the three regions on a window too narrow for them,
         // drawn by the stylesheet only below the width where they stop fitting.
+        RegionBar { selected: focus(), on_select: move |chosen| navigation.region(chosen) }
+
+        ConsoleAnnouncement { status: status() }
+
+        // Feedback belongs to the window rather than any one region.
+        Toast { said: announcer.said() }
+    }
+}
+
+#[component]
+fn RegionBar(selected: Focus, on_select: EventHandler<Focus>) -> Element {
+    rsx! {
         div { class: "mobile-bar seg", role: "group", aria_label: "Which region is shown",
             for chosen in Focus::ALL {
                 button {
@@ -1284,21 +1274,13 @@ fn App() -> Element {
                     class: "seg-item",
                     "data-slot": "focus",
                     r#type: "button",
-                    aria_pressed: chosen == focus(),
-                    onclick: move |_| focus.set(chosen),
+                    aria_pressed: chosen == selected,
+                    aria_label: chosen.label(),
+                    onclick: move |_| on_select.call(chosen),
                     "{chosen.label()}"
                 }
             }
         }
-
-        ConsoleAnnouncement { status: status() }
-
-        // Over all three regions and belonging to none of them, which is what
-        // it is for: the copy control sits on every surface that draws bytes,
-        // and what it did is the same sentence wherever it was pressed. Last in
-        // the document because that is where a thing that overlaps everything
-        // else belongs.
-        Toast { said: announcer.said() }
     }
 }
 
@@ -1318,6 +1300,8 @@ fn Screens(spine: Spine, timeline: Element, console: Element) -> Element {
 
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod navigation_tests;
 
 /// What the palette needs of the window: the state that decides which commands
 /// there are, and the handlers they call.

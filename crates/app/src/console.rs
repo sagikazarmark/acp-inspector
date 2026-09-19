@@ -54,7 +54,7 @@ pub enum Tab {
 impl Tab {
     /// What the tab is called in the document, so the body on screen can name
     /// the tab that selected it.
-    fn id(self) -> &'static str {
+    pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Trace => "console-tab-trace",
             Self::Diagnostics => "console-tab-diagnostics",
