@@ -127,6 +127,37 @@ mod tests {
     use super::*;
     use crate::attachment::Attachment;
     #[test]
+    fn pdf_uses_original_byte_budget_and_keeps_its_place_among_text_and_images() {
+        let mut draft = AttachmentDraft::default();
+        let a = draft.reserve("a.png".into()).unwrap();
+        let b = draft.reserve("b.pdf".into()).unwrap();
+        let c = draft.reserve("c.txt".into()).unwrap();
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        bytes.resize(5 * 1024 * 1024, 0xff);
+        draft.finish(c, Ok(Attachment::from_bytes("c.txt".into(), b"x").unwrap()));
+        draft.finish(
+            b,
+            Ok(Attachment::from_bytes("b.pdf".into(), &bytes).unwrap()),
+        );
+        assert!(!draft.sendable());
+        draft.finish(a, Ok(image("a.png", 1024 * 1024)));
+        assert_eq!(draft.bytes(), MAX_TOTAL_BYTES);
+        assert!(matches!(
+            draft.entries()[2].state,
+            AttachmentState::Failed(_)
+        ));
+        draft.remove(c);
+        assert!(
+            matches!(&draft.content().unwrap()[..], [v1::ContentBlock::Image(_),v1::ContentBlock::Resource(resource)] if matches!(&resource.resource,v1::EmbeddedResourceResource::BlobResourceContents(blob) if blob.mime_type.as_deref()==Some("application/pdf")))
+        );
+        draft.remove(b);
+        draft.finish(
+            b,
+            Ok(Attachment::from_bytes("b.pdf".into(), b"%PDF-1.7\n").unwrap()),
+        );
+        assert_eq!(draft.entries().len(), 1);
+    }
+    #[test]
     fn text_and_media_share_original_byte_budget_in_reservation_order() {
         let mut draft = AttachmentDraft::default();
         let a = draft.reserve("a.png".into()).unwrap();

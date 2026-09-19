@@ -1,4 +1,4 @@
-//! One selected attachment, preserving its original media bytes or UTF-8 text.
+//! One selected attachment, preserving its original binary bytes or UTF-8 text.
 use acp_inspector_core::v1;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -16,6 +16,7 @@ enum AttachmentContent {
     Image { mime: &'static str, base64: String },
     Audio { mime: &'static str, base64: String },
     EmbeddedText { text: String, uri: String },
+    Pdf { base64: String, uri: String },
 }
 
 /// Presentation data, without exposing or reclassifying the stored payload.
@@ -23,6 +24,7 @@ pub enum AttachmentPreview {
     Image { src: String },
     Audio { src: String },
     Text { excerpt: String },
+    Pdf,
 }
 
 impl Attachment {
@@ -73,7 +75,8 @@ impl Attachment {
             file.read_bytes().await.map_err(|e| e.to_string())?.to_vec()
         };
         let mut media = Self::from_bytes(name, &bytes)?;
-        if let AttachmentContent::EmbeddedText { uri, .. } = &mut media.content
+        if let AttachmentContent::EmbeddedText { uri, .. } | AttachmentContent::Pdf { uri, .. } =
+            &mut media.content
             && path.is_absolute()
         {
             *uri = url::Url::from_file_path(path)
@@ -106,6 +109,11 @@ impl Attachment {
             audio("audio/wav")
         } else if is_mp3(bytes) {
             audio("audio/mpeg")
+        } else if is_pdf(bytes) {
+            AttachmentContent::Pdf {
+                base64: STANDARD.encode(bytes),
+                uri: attachment_uri("pdf", &name),
+            }
         } else {
             return Self::text(name, bytes);
         };
@@ -119,6 +127,7 @@ impl Attachment {
         match &self.content {
             AttachmentContent::Image { mime, .. } | AttachmentContent::Audio { mime, .. } => mime,
             AttachmentContent::EmbeddedText { .. } => "text/plain",
+            AttachmentContent::Pdf { .. } => "application/pdf",
         }
     }
     pub fn preview(&self) -> AttachmentPreview {
@@ -132,10 +141,17 @@ impl Attachment {
             AttachmentContent::EmbeddedText { text, .. } => AttachmentPreview::Text {
                 excerpt: text.chars().take(2000).collect(),
             },
+            AttachmentContent::Pdf { .. } => AttachmentPreview::Pdf,
         }
     }
     pub fn content(&self) -> v1::ContentBlock {
         match &self.content {
+            AttachmentContent::Pdf { base64, uri } => v1::ContentBlock::Resource(
+                v1::EmbeddedResource::new(v1::EmbeddedResourceResource::BlobResourceContents(
+                    v1::BlobResourceContents::new(base64.clone(), uri.clone())
+                        .mime_type(self.mime().to_owned()),
+                )),
+            ),
             AttachmentContent::EmbeddedText { text, uri } => v1::ContentBlock::Resource(
                 v1::EmbeddedResource::new(v1::EmbeddedResourceResource::TextResourceContents(
                     v1::TextResourceContents::new(text.clone(), uri.clone())
@@ -179,7 +195,7 @@ impl Attachment {
                 | "doc"
                 | "docx"
         );
-        let text = std::str::from_utf8(bytes).map_err(|_| "Choose a UTF-8 text file or supported image/audio (identified by its file signature).")?;
+        let text = std::str::from_utf8(bytes).map_err(|_| "Choose a UTF-8 text file or supported image/audio/PDF (identified by its file signature).")?;
         let binary_signature = [
             b"ID3".as_slice(),
             b"RIFF",
@@ -203,24 +219,15 @@ impl Attachment {
                 .chars()
                 .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
         {
-            return Err("Choose a UTF-8 text file or supported image/audio (identified by its file signature).".into());
+            return Err("Choose a UTF-8 text file or supported image/audio/PDF (identified by its file signature).".into());
         }
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let mut uri = url::Url::parse("attachment:///text/").expect("attachment URI");
-        uri.path_segments_mut()
-            .expect("hierarchical URI")
-            .push(
-                &NEXT
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    .to_string(),
-            )
-            .push(&name);
+        let uri = attachment_uri("text", &name);
         Ok(Self {
             name,
             bytes: bytes.len(),
             content: AttachmentContent::EmbeddedText {
                 text: text.to_owned(),
-                uri: uri.into(),
+                uri,
             },
         })
     }
@@ -233,7 +240,9 @@ impl Attachment {
         let (advertised, kind) = match &self.content {
             AttachmentContent::Image { .. } => (image, "image"),
             AttachmentContent::Audio { .. } => (audio, "audio"),
-            AttachmentContent::EmbeddedText { .. } => (embedded, "embedded context"),
+            AttachmentContent::EmbeddedText { .. } | AttachmentContent::Pdf { .. } => {
+                (embedded, "embedded context")
+            }
         };
         if advertised {
             Ok(())
@@ -241,6 +250,40 @@ impl Attachment {
             Err(format!("The Agent did not advertise {kind} prompts."))
         }
     }
+}
+
+fn attachment_uri(kind: &str, name: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut uri = url::Url::parse("attachment:///").expect("attachment URI");
+    uri.path_segments_mut()
+        .expect("hierarchical URI")
+        .pop_if_empty()
+        .push(kind)
+        .push(
+            &NEXT
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .to_string(),
+        )
+        .push(name);
+    uri.into()
+}
+
+fn is_pdf(bytes: &[u8]) -> bool {
+    // Header identification only, not a claim that the document is well-formed.
+    matches!(
+        bytes.get(..8),
+        Some(
+            b"%PDF-1.0"
+                | b"%PDF-1.1"
+                | b"%PDF-1.2"
+                | b"%PDF-1.3"
+                | b"%PDF-1.4"
+                | b"%PDF-1.5"
+                | b"%PDF-1.6"
+                | b"%PDF-1.7"
+                | b"%PDF-2.0"
+        )
+    ) && matches!(bytes.get(8), Some(b'\r' | b'\n'))
 }
 
 fn is_mp3(mut bytes: &[u8]) -> bool {
@@ -279,6 +322,40 @@ fn is_mp3(mut bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pdf_header_controls_blob_mime_and_preserves_all_bytes() {
+        for header in [b"%PDF-1.7\r\n".as_slice(), b"%PDF-2.0\n"] {
+            let mut bytes = header.to_vec();
+            bytes.extend(b"%\xff\0\x80binary\n%%EOF\n");
+            let pdf = Attachment::from_bytes("wrong.txt".into(), &bytes).unwrap();
+            assert_eq!(pdf.mime(), "application/pdf");
+            assert_eq!(pdf.bytes, bytes.len());
+            assert!(pdf.require_advertisement(false, false, true).is_ok());
+            assert!(pdf.require_advertisement(true, true, false).is_err());
+            assert!(!pdf.is_image());
+            let v1::ContentBlock::Resource(resource) = pdf.content() else {
+                panic!("resource")
+            };
+            let v1::EmbeddedResourceResource::BlobResourceContents(blob) = resource.resource else {
+                panic!("blob")
+            };
+            assert_eq!(STANDARD.decode(blob.blob).unwrap(), bytes);
+            assert_eq!(blob.mime_type.as_deref(), Some("application/pdf"));
+            assert!(blob.uri.starts_with("attachment:///pdf/"));
+        }
+        for bytes in [
+            b"%PDF-".as_slice(),
+            b"%PDF-1.7",
+            b"%PDF-9.9\n",
+            b"plain text",
+            b"%PDF-1.7oops",
+        ] {
+            assert!(Attachment::from_bytes("bad.pdf".into(), bytes).is_err());
+        }
+        let mut oversized = b"%PDF-1.7\n".to_vec();
+        oversized.resize(MAX_ATTACHMENT_BYTES + 1, 0);
+        assert!(Attachment::from_bytes("large.pdf".into(), &oversized).is_err());
+    }
     #[tokio::test]
     async fn native_text_file_metadata_keeps_escaped_absolute_uri() {
         let media = Attachment::from_file(dioxus::html::FileData::new(
@@ -294,6 +371,30 @@ mod tests {
         .unwrap();
         assert!(
             matches!(media.content(), v1::ContentBlock::Resource(resource) if matches!(&resource.resource, v1::EmbeddedResourceResource::TextResourceContents(text) if text.uri == "file:///tmp/a%20%23%3F.rs"))
+        );
+    }
+    #[tokio::test]
+    async fn native_pdf_uri_is_escaped_and_browser_pdf_uris_are_distinct() {
+        let pdf = Attachment::from_file(dioxus::html::FileData::new(
+            dioxus::html::SerializedFileData {
+                path: "/tmp/a #?.pdf".into(),
+                size: 9,
+                last_modified: 0,
+                content_type: None,
+                contents: Some(b"%PDF-1.7\n".to_vec().into()),
+            },
+        ))
+        .await
+        .unwrap();
+        assert!(matches!(pdf.preview(), AttachmentPreview::Pdf));
+        assert!(
+            matches!(pdf.content(),v1::ContentBlock::Resource(resource) if matches!(&resource.resource,v1::EmbeddedResourceResource::BlobResourceContents(blob) if blob.uri=="file:///tmp/a%20%23%3F.pdf"))
+        );
+        let a = Attachment::from_bytes("a #?.pdf".into(), b"%PDF-1.7\n").unwrap();
+        let b = Attachment::from_bytes("a #?.pdf".into(), b"%PDF-1.7\n").unwrap();
+        assert_ne!(a.content(), b.content());
+        assert!(
+            matches!(a.content(),v1::ContentBlock::Resource(resource) if matches!(&resource.resource,v1::EmbeddedResourceResource::BlobResourceContents(blob) if blob.uri.ends_with("a%20%23%3F.pdf")))
         );
     }
     #[test]

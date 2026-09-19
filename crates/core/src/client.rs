@@ -1239,7 +1239,11 @@ impl Client {
             !(matches!(
                 block,
                 v1::ContentBlock::Text(_) | v1::ContentBlock::Image(_) | v1::ContentBlock::Audio(_)
-            ) || matches!(block, v1::ContentBlock::Resource(resource) if matches!(resource.resource, v1::EmbeddedResourceResource::TextResourceContents(_))))
+            ) || matches!(block, v1::ContentBlock::Resource(resource) if match &resource.resource {
+                v1::EmbeddedResourceResource::TextResourceContents(_) => true,
+                v1::EmbeddedResourceResource::BlobResourceContents(blob) => blob.mime_type.as_deref() == Some("application/pdf"),
+                _ => false,
+            }))
         }) {
             return Err(CallError::UnsupportedPromptContent);
         }

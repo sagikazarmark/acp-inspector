@@ -448,7 +448,7 @@ pub fn Composer(
                     div { class: "prompt-attachment-picker",
                         label { class: "hint",
                             "Add or drop files · 8 attachments · 5 MiB each · 6 MiB total"
-                            if embedded_advertised { span { "UTF-8 text files are embedded as contents. Preview shows the first 2000 characters." } }
+                            if embedded_advertised { span { "UTF-8 text files and PDFs are embedded as contents. Text preview shows the first 2000 characters." } }
                             if image_advertised { span { "Images can also be pasted from the clipboard." } }
                             input { id: picker_id.clone(), name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
                                 onmounted: {
@@ -481,6 +481,7 @@ pub fn Composer(
                         match &entry.state {
                             AttachmentState::Ready(held) => rsx! {
                                 {match held.preview() {
+                                    AttachmentPreview::Pdf => rsx! { span { class: "hint", "PDF · original file embedded" } },
                                     AttachmentPreview::Text { excerpt } => rsx! { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{excerpt}" } } },
                                     AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
                                     AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
@@ -1159,6 +1160,13 @@ mod tests {
                     content_type: None,
                     contents: Some(b"<script>\r\ntext".to_vec().into()),
                 },
+                SerializedFileData {
+                    path: "/tmp/report #.pdf".into(),
+                    size: 9,
+                    last_modified: 0,
+                    content_type: None,
+                    contents: Some(b"%PDF-1.7\n".to_vec().into()),
+                },
             ]),
             drop_target,
         );
@@ -1171,7 +1179,7 @@ mod tests {
         for _ in 0..8 {
             dom.wait_for_work().await;
             added.extend(dom.render_immediate_to_vec().edits);
-            if dioxus_ssr::render(&dom).contains("Text preview") {
+            if dioxus_ssr::render(&dom).contains("PDF · original file embedded") {
                 break;
             }
         }
@@ -1179,9 +1187,15 @@ mod tests {
             dioxus_ssr::render(&dom)
                 .matches("data-slot=\"attachment\"")
                 .count(),
-            4
+            5
         );
         let preview = dioxus_ssr::render(&dom);
+        assert!(preview.contains("report #.pdf · application/pdf · 9 bytes"));
+        assert!(
+            !preview.contains("<iframe")
+                && !preview.contains("<object")
+                && !preview.contains("<embed")
+        );
         assert!(
             preview.contains("Text preview") && preview.contains("&#60;script&#62;"),
             "{preview}"
@@ -1248,7 +1262,7 @@ mod tests {
             dioxus_ssr::render(&dom)
                 .matches("data-slot=\"attachment\"")
                 .count(),
-            3,
+            4,
             "non-file drop adds nothing"
         );
         reject.set(true);
@@ -1283,7 +1297,10 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
         assert_eq!(sent.borrow().len(), 1);
         assert!(
-            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second),v1::ContentBlock::Resource(resource)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav" && matches!(&resource.resource,v1::EmbeddedResourceResource::TextResourceContents(file) if file.text=="<script>\r\ntext" && file.uri=="file:///tmp/context%20%23.rs"))
+            matches!(&sent.borrow()[0][..4],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second),v1::ContentBlock::Resource(resource)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav" && matches!(&resource.resource,v1::EmbeddedResourceResource::TextResourceContents(file) if file.text=="<script>\r\ntext" && file.uri=="file:///tmp/context%20%23.rs"))
+        );
+        assert!(
+            matches!(&sent.borrow()[0][4..],[v1::ContentBlock::Resource(resource)] if matches!(&resource.resource,v1::EmbeddedResourceResource::BlobResourceContents(blob) if blob.blob=="JVBERi0xLjcK" && blob.mime_type.as_deref()==Some("application/pdf") && blob.uri=="file:///tmp/report%20%23.pdf"))
         );
         assert!(!dioxus_ssr::render(&dom).contains("data-slot=\"attachment\""));
     }

@@ -17,6 +17,7 @@ async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
             v1::ContentBlock::Image(v1::ImageContent::new("iVBORw0KGgo=", "image/png")),
             v1::ContentBlock::Audio(v1::AudioContent::new("UklGRgQAAABXQVZF", "audio/wav")),
             text_resource(),
+            pdf_resource(),
             v1::ContentBlock::Image(v1::ImageContent::new("R0lGODlh", "image/gif")),
         ])
         .await
@@ -36,6 +37,7 @@ async fn text_image_and_audio_cross_in_order_with_original_data_and_mime() {
             {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"},
             {"type":"audio","data":"UklGRgQAAABXQVZF","mimeType":"audio/wav"},
             {"type":"resource","resource":{"uri":"file:///tmp/a%20%23.rs","mimeType":"text/plain","text":"\u{feff}<hello>é\r\n"}},
+            {"type":"resource","resource":{"uri":"file:///tmp/a%20%23.pdf","mimeType":"application/pdf","blob":"JVBERi0xLjcK"}},
             {"type":"image","data":"R0lGODlh","mimeType":"image/gif"}
         ])
     );
@@ -63,8 +65,17 @@ fn text_resource() -> v1::ContentBlock {
     ))
 }
 
+fn pdf_resource() -> v1::ContentBlock {
+    v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+        v1::EmbeddedResourceResource::BlobResourceContents(
+            v1::BlobResourceContents::new("JVBERi0xLjcK", "file:///tmp/a%20%23.pdf")
+                .mime_type("application/pdf".to_owned()),
+        ),
+    ))
+}
+
 #[tokio::test]
-async fn embedded_only_agent_accepts_text_resources_but_not_blobs_or_oversized_frames() {
+async fn embedded_only_agent_accepts_text_and_pdf_but_not_other_blobs_or_oversized_frames() {
     let inspector = Inspector::new();
     inspector.start(&shell(concat!(
         "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"promptCapabilities\":{\"embeddedContext\":true}}}}'; ",
@@ -91,13 +102,23 @@ async fn embedded_only_agent_accepts_text_resources_but_not_blobs_or_oversized_f
         inspector.prompt_content(vec![large]).await,
         Err(CallError::PromptTooLarge)
     );
+    let large_pdf = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+        v1::EmbeddedResourceResource::BlobResourceContents(
+            v1::BlobResourceContents::new("A".repeat(10 * 1024 * 1024), "file:///large.pdf")
+                .mime_type("application/pdf".to_owned()),
+        ),
+    ));
+    assert_eq!(
+        inspector.prompt_content(vec![large_pdf]).await,
+        Err(CallError::PromptTooLarge)
+    );
     assert!(
         !sent(&inspector)
             .iter()
             .any(|frame| frame.contains("session/prompt"))
     );
     inspector
-        .prompt_content(vec![text_resource()])
+        .prompt_content(vec![text_resource(), pdf_resource()])
         .await
         .unwrap();
     assert_eq!(
@@ -138,6 +159,10 @@ async fn media_require_advertisement_and_oversized_prompts_send_no_frame() {
         Err(CallError::AudioNotAdvertised)
     );
     // JSON escaping, not just raw text size, determines whether a Frame fits.
+    assert_eq!(
+        inspector.prompt_content(vec![pdf_resource()]).await,
+        Err(CallError::EmbeddedContextNotAdvertised)
+    );
     assert_eq!(
         inspector.prompt_content(vec![text_resource()]).await,
         Err(CallError::EmbeddedContextNotAdvertised)

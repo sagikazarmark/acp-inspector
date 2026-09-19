@@ -90,6 +90,18 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### PDF attachments, 2026-09-19
+
+Linux WebKitGTK, Xvfb/Openbox, scripted Agent advertising embedded context:
+native GTK drop of `report #.pdf` followed by `context #.rs` produced ordered PDF
+and text rows. The 335-byte PDF showed `application/pdf` and “original file
+embedded” without loading a viewer. Send reached `end_turn`, cleared the draft,
+and Trace included `file:///tmp/opencode/report%20%23.pdf` and the PDF blob.
+Automated tests verify base64 byte fidelity (including binary bytes), header-based
+identification, native/browser URIs, original-byte aggregate budgets, missing
+Advertisement, mixed-content order, non-PDF blob refusal and complete Frame size.
+Native macOS/Windows acceptance remains in #9.
+
 ### Embedded text files, 2026-09-19
 
 Linux WebKitGTK, Xvfb/Openbox, scripted Agent advertising embedded context:

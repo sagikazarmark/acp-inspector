@@ -46,6 +46,7 @@ mod tests {
     fn pasted_bytes_use_signature_and_never_become_audio_or_paths() {
         let media = image("wrong.jpg".into(), Some(STANDARD.encode(b"GIF89a")), None).unwrap();
         assert_eq!(media.mime(), "image/gif");
+        assert!(image("x.pdf".into(), Some(STANDARD.encode(b"%PDF-1.7\n")), None).is_err());
         assert!(
             image(
                 "x.png".into(),

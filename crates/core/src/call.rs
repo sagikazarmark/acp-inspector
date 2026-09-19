@@ -26,7 +26,7 @@ pub enum CallError {
     EmbeddedContextNotAdvertised,
     /// The complete outgoing prompt Frame exceeds the host's 10 MiB budget.
     PromptTooLarge,
-    /// This prompt entry point handles text, images, audio and embedded text only.
+    /// This prompt entry point handles text, images, audio, embedded text and PDFs only.
     UnsupportedPromptContent,
     /// The bounded outgoing queue cannot accept a prompt immediately.
     OutgoingBusy,
@@ -69,7 +69,7 @@ impl std::fmt::Display for CallError {
             }
             Self::PromptTooLarge => f.write_str("the complete prompt Frame exceeds 10 MiB"),
             Self::UnsupportedPromptContent => f.write_str(
-                "this composer sends only text, images, audio and embedded text resources",
+                "this composer sends only text, images, audio, embedded text and PDF resources",
             ),
             Self::NoWorkingDirectory => {
                 f.write_str("the session's working directory could not be named")
