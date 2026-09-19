@@ -117,7 +117,7 @@ mod inspector;
 mod kept;
 mod listing;
 mod mcp;
-pub use mcp::{McpDraft, McpEnv, McpFinding, StdioMcp};
+pub use mcp::{McpDraft, McpEnv, McpFinding, McpServerDraft, McpTransport};
 mod permission;
 mod recent;
 mod restore;

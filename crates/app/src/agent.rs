@@ -855,9 +855,6 @@ enum Unreached {
     /// affordances hang off a listing row, so there is no row to press them on
     /// — the consequence §7.5 records, made visible where it bites.
     NoListingRow,
-    /// The two MCP transports. Every session is opened with an empty
-    /// `mcpServers`; this ring's editor supplies only stdio definitions (§1.1).
-    NoMcpServers,
 }
 
 impl Unreached {
@@ -873,9 +870,6 @@ impl Unreached {
             Self::LoadPreferred => "it prefers session/load, which this agent advertised too",
             Self::NoListingRow => {
                 "it is pressed on a listing row, and this agent advertised no session/list"
-            }
-            Self::NoMcpServers => {
-                "the MCP editor supplies stdio definitions only; HTTP and SSE are deferred"
             }
         }
     }
@@ -1093,18 +1087,6 @@ impl Claim {
         self.fourth = self.advertised.then_some(fourth);
         self
     }
-
-    /// Why nothing in this tool reaches the claim on *any* agent (§7.7).
-    ///
-    /// **Said whether or not this agent advertised it**, which is where it
-    /// parts company with [`unreached`](Self::unreached): the sentence is about
-    /// this tool, and what the agent claimed does not change it. An agent
-    /// author who sees their `image` row blank wants to know it is blank here
-    /// for everyone.
-    fn undrivable(mut self, why: Unreached) -> Self {
-        self.fourth = Some(Fourth::Unreached(why));
-        self
-    }
 }
 
 /// The advertised capabilities, as rows: what the protocol calls it, the field
@@ -1261,8 +1243,8 @@ fn advertised(
                 shape: Shape::Flag,
                 at: "mcpCapabilities",
                 claims: vec![
-                    Claim::self_named("http", mcp.http).undrivable(Unreached::NoMcpServers),
-                    Claim::self_named("sse", mcp.sse).undrivable(Unreached::NoMcpServers),
+                    Claim::self_named("http", mcp.http).driven(record, AgentCapability::McpHttp),
+                    Claim::self_named("sse", mcp.sse).driven(record, AgentCapability::McpSse),
                 ],
             }],
         ),
@@ -3878,6 +3860,8 @@ mod tests {
         expected.push("image");
         expected.push("audio");
         expected.push("embeddedContext");
+        expected.push("http");
+        expected.push("sse");
         let panel = rendered_driven(record(Driven::Answered));
 
         let carrying = reporting(&panel);
@@ -3914,13 +3898,11 @@ mod tests {
             0,
             "none of them reports an outcome as well: {unreached:?}"
         );
-        for named in ["session/resume", "http", "sse"] {
-            assert!(
-                unreached.iter().any(|row| row.contains(named)),
-                "{named} says this tool cannot drive it: {unreached:?}"
-            );
-        }
-        assert_eq!(unreached.len(), 3, "and only those: {unreached:?}");
+        assert!(
+            unreached.iter().any(|row| row.contains("session/resume")),
+            "load-preferred resume is unreachable: {unreached:?}"
+        );
+        assert_eq!(unreached.len(), 1, "and only those: {unreached:?}");
     }
 
     #[test]
@@ -4054,7 +4036,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_content_and_mcp_runs_say_this_tool_cannot_drive_them_either_way() {
+    fn mcp_rows_offer_outcomes_only_for_advertised_transports() {
         // **Whether or not the agent advertised them** (§7.7), because the
         // sentence is about this tool: the composer sends one text block and
         // The MCP editor supplies stdio only, and an agent's silence does not change
@@ -4063,19 +4045,16 @@ mod tests {
         for agent in [everything(), nothing()] {
             let panel = shown(agent, true);
 
-            for (capability, because) in [
-                ("http", "stdio definitions only"),
-                ("sse", "stdio definitions only"),
-            ] {
+            for capability in ["http", "sse"] {
                 let run = run_for(&panel, capability);
                 assert!(
-                    (run.contains(CANNOT_ANY) || run.contains(CANNOT)) && run.contains(because),
-                    "the run {capability} is in says this tool cannot drive it, and why: {run}"
+                    !run.contains(CANNOT_ANY) && !run.contains(CANNOT),
+                    "the MCP run is reachable: {run}"
                 );
                 let row = row_for(&panel, capability);
                 assert!(
-                    !OUTCOMES.iter().any(|outcome| row.contains(outcome)),
-                    "and never an outcome: {row}"
+                    !row.contains("stdio definitions only"),
+                    "no deferred reason: {row}"
                 );
             }
         }

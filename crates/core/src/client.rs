@@ -489,7 +489,7 @@ impl Client {
         // for [`restore`](Self::restore)'s reason: this needs the id before the
         // frame goes out, because the settings the answer will publish are armed
         // under it (§7.6).
-        let driving = drives_roots(&params);
+        let driving = drives_setup(&params);
         let call = self
             .rpc
             .prepare(v1::AGENT_METHOD_NAMES.session_new, params)
@@ -633,7 +633,7 @@ impl Client {
         // The call's own Advertisement, and the field's where the frame carries
         // it: one call, two things driven, answered by the one frame (§7.7).
         let mut driving = vec![drives(how)];
-        driving.extend(drives_roots(&params));
+        driving.extend(drives_setup(&params));
 
         // Prepared first, because this is where a connection that has gone away
         // is found out — and a switch that could never be asked for must not
@@ -2452,6 +2452,24 @@ fn drives_roots(params: &Value) -> Vec<AgentCapability> {
         .map(|_| AgentCapability::AdditionalDirectories)
         .into_iter()
         .collect()
+}
+
+fn drives_setup(params: &Value) -> Vec<AgentCapability> {
+    let mut driving = drives_roots(params);
+    if let Some(servers) = params.get("mcpServers").and_then(Value::as_array) {
+        for (transport, capability) in [
+            ("http", AgentCapability::McpHttp),
+            ("sse", AgentCapability::McpSse),
+        ] {
+            if servers
+                .iter()
+                .any(|server| server.get("type").and_then(Value::as_str) == Some(transport))
+            {
+                driving.push(capability);
+            }
+        }
+    }
+    driving
 }
 
 /// A request's parameters as JSON.

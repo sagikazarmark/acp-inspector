@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+url = "2"
 # The typed layer's whole protocol dependency (docs/architecture.md §3): pure
 # types under a versioned namespace, so decoding is explicitly *as v1* and the
 # v2 seam is a second decoder rather than an excavation (§11 seam 1). The
