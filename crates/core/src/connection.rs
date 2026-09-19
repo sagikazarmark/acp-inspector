@@ -15,7 +15,7 @@
 
 use std::io;
 use std::process::ExitStatus;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use tokio::sync::mpsc;
@@ -179,7 +179,12 @@ pub struct TransportEnds {
 /// stream in one task and keeps the sink in another), so "the connection was
 /// dropped" is the drop of the last of them — an `Arc` counts that, and nothing
 /// else has to remember to hang up.
-struct Guard(CancellationToken);
+/// Explicit RPC close can also stop it while borrowed client ends still exist.
+/// Stdio installs a synchronous stop hook for shutdown without a running executor.
+struct Guard {
+    shutdown: CancellationToken,
+    stop: OnceLock<Box<dyn Fn() + Send + Sync>>,
+}
 
 /// Builds the two halves of a connection: the client's, and the transport's.
 pub fn connection() -> (Connection, TransportEnds) {
@@ -188,7 +193,10 @@ pub fn connection() -> (Connection, TransportEnds) {
     let (diagnostics_tx, diagnostics_rx) = mpsc::channel(DIAGNOSTIC_CAPACITY);
 
     let shutdown = CancellationToken::new();
-    let guard = Arc::new(Guard(shutdown.clone()));
+    let guard = Arc::new(Guard {
+        shutdown: shutdown.clone(),
+        stop: OnceLock::new(),
+    });
 
     let connection = Connection {
         outgoing: FrameSink {
@@ -218,6 +226,10 @@ pub fn connection() -> (Connection, TransportEnds) {
 }
 
 impl Connection {
+    pub(crate) fn on_shutdown(&mut self, stop: impl Fn() + Send + Sync + 'static) {
+        assert!(self.outgoing._guard.stop.set(Box::new(stop)).is_ok());
+    }
+
     pub fn outgoing(&self) -> &FrameSink {
         &self.outgoing
     }
@@ -247,6 +259,10 @@ impl Connection {
 }
 
 impl FrameSink {
+    pub(crate) fn shutdown(&self) {
+        self._guard.shutdown();
+    }
+
     pub(crate) fn try_send(
         &self,
         frame: Frame,
@@ -334,7 +350,16 @@ impl Diagnostic {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        self.0.cancel();
+        self.shutdown();
+    }
+}
+
+impl Guard {
+    fn shutdown(&self) {
+        if let Some(stop) = self.stop.get() {
+            stop();
+        }
+        self.shutdown.cancel();
     }
 }
 

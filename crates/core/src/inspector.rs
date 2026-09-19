@@ -95,7 +95,26 @@ pub struct DiagnosticLog {
 /// the shell hand it to every callback that needs it without threading a
 /// reference through the tree.
 #[derive(Clone, Default)]
-pub struct Inspector(Arc<State>);
+pub struct Inspector(Arc<Owner>);
+
+/// Only public handles keep the owner alive. The reader holds the stores, but
+/// must not keep its own Connection alive after the window lets go.
+#[derive(Default)]
+struct Owner(Arc<State>);
+
+impl std::ops::Deref for Owner {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        &self.0
+    }
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.0.release(ConnectionStatus::Disconnected);
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -215,7 +234,7 @@ impl Inspector {
         });
 
         tokio::spawn(read(
-            Arc::clone(&self.0),
+            Arc::clone(&self.0.0),
             client,
             incoming,
             diagnostics,

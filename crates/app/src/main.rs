@@ -280,6 +280,12 @@ fn App() -> Element {
     // core's rule (`CONTEXT.md`, *Connection*), so the window has nothing to
     // arbitrate.
     let inspector = use_hook(Inspector::new);
+    use_drop({
+        let inspector = inspector.clone();
+        move || inspector.disconnect()
+    });
+    #[cfg(feature = "desktop")]
+    shell::use_shutdown(inspector.clone());
     mcp::provide(inspector.clone());
 
     // What the spawn form remembers (§9). Read once, at the window's start,

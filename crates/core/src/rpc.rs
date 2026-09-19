@@ -228,6 +228,7 @@ impl Rpc {
     /// a process that no longer exists — the hang this whole design is against
     /// (§6.1).
     pub(crate) fn close(&self) {
+        self.outgoing.shutdown();
         let pending = {
             let mut calls = self.calls();
             calls.closed = true;

@@ -97,6 +97,20 @@ pub fn set_title(title: &str) {
     dioxus::desktop::window().set_title(title);
 }
 
+/// Tao may exit the process without dropping the runtime. Stop the owned
+/// Connection on the event-loop path itself, before that exit can happen.
+pub fn use_shutdown(inspector: acp_inspector_core::Inspector) {
+    use dioxus::desktop::tao::event::{Event, WindowEvent};
+    let window = dioxus::desktop::window().id();
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        if matches!(event, Event::LoopDestroyed)
+            || matches!(event, Event::WindowEvent { window_id, event: WindowEvent::CloseRequested | WindowEvent::Destroyed, .. } if *window_id == window)
+        {
+            inspector.disconnect();
+        }
+    });
+}
+
 /// Runs `answer` with the id of every menu item the reader picks, for as long as
 /// the calling component is mounted. The ids are the constants in [`command`].
 pub fn use_menu(mut answer: impl FnMut(&str) + 'static) {

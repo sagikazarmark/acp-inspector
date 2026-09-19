@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::codec::{Framed, FramedParts, FramedWrite, LinesCodec, LinesCodecError};
 use tokio_util::sync::CancellationToken;
@@ -22,6 +22,9 @@ use crate::connection::{
     Connection, ConnectionFactory, Diagnostic, DiagnosticKind, TransportEnds, connection,
 };
 use crate::frame::Frame;
+
+mod process;
+use process::{Process, Spawned, WatchOwner};
 
 /// The longest line the transport will read.
 ///
@@ -119,10 +122,7 @@ impl StdioSpawn {
             // Piped, unlike `app/bridge`, which inherits it: the bridge has
             // nothing to show stderr *to*, while for the inspector the agent's
             // diagnostics are a screen (§9) and the spawn-failure evidence.
-            .stderr(Stdio::piped())
-            // A backstop for a task that unwound before teardown ran; the
-            // ordinary path is the shutdown token below.
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
         for (key, value) in &self.env {
             command.env(key, value);
         }
@@ -141,10 +141,14 @@ impl ConnectionFactory for StdioSpawn {
     /// (§6.1). Callers therefore have one shape to handle, whether the agent
     /// died before the first frame or after the thousandth.
     fn connect(&self) -> Connection {
-        let (connection, ends) = connection();
+        let (mut connection, ends) = connection();
 
-        match self.command().spawn() {
-            Ok(child) => pump(child, ends),
+        match Process::spawn(self.command()) {
+            Ok(child) => {
+                let owner = child.process.clone();
+                connection.on_shutdown(move || owner.terminate());
+                pump(child, ends);
+            }
             Err(error) => {
                 // `try_send` on a channel nobody has had the chance to fill: the
                 // failure is in the buffer before this returns, so a caller that
@@ -167,10 +171,13 @@ impl ConnectionFactory for StdioSpawn {
 
 /// Wires a spawned child to the transport ends: one task per pipe, plus one
 /// waiting on the process itself.
-fn pump(mut child: Child, ends: TransportEnds) {
-    let stdin = child.stdin.take().expect("stdin is piped");
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let stderr = child.stderr.take().expect("stderr is piped");
+fn pump(child: Spawned, ends: TransportEnds) {
+    let Spawned {
+        process,
+        stdin,
+        stdout,
+        stderr,
+    } = child;
 
     let TransportEnds {
         outgoing,
@@ -185,7 +192,7 @@ fn pump(mut child: Child, ends: TransportEnds) {
     let stdout_done = tokio::spawn(read_frames(stdout, incoming, diagnostics.clone()));
     tokio::spawn(read_stderr(stderr, diagnostics.clone(), stderr_drained));
     tokio::spawn(watch(
-        child,
+        WatchOwner(process),
         diagnostics,
         shutdown,
         stdout_done,
@@ -289,7 +296,7 @@ async fn read_stderr(
 /// something to do with it. Without this, a dropped connection would leave the
 /// agent running with nobody reading it.
 async fn watch(
-    mut child: Child,
+    child: WatchOwner,
     diagnostics: mpsc::Sender<Diagnostic>,
     shutdown: CancellationToken,
     stdout_drained: tokio::task::JoinHandle<()>,
@@ -297,24 +304,21 @@ async fn watch(
 ) {
     tokio::select! {
         () = async {
-            let exit = child.wait().await;
+            let exit = child.0.wait().await;
+            child.0.terminate();
             // Exit is not EOF: both pipes can still hold final evidence. The
             // Inspector must also consume the queued Frames before teardown.
             let _ = stdout_drained.await;
             let _ = stderr_drained.await;
-            if let Ok(status) = exit {
-                let _ = diagnostics
-                    .send(Diagnostic::now(DiagnosticKind::AgentExited(status)))
-                    .await;
-            }
+            let diagnostic = match exit {
+                Ok(status) => Diagnostic::now(DiagnosticKind::AgentExited(status)),
+                Err(error) => broken_pipe(error),
+            };
+            let _ = diagnostics.send(diagnostic).await;
         } => {}
         () = shutdown.cancelled() => {
             // Nobody is left to tell, so this is teardown and not reporting.
-            // `kill` reaches the child alone; a launcher's grandchildren are the
-            // process-group problem `app/bridge` solved at length (§3.4 there),
-            // and lifting that solution waits for an inspector that outlives its
-            // connections — the desktop shell's ticket, not this one.
-            let _ = child.kill().await;
+            child.0.terminate();
         }
     }
 }

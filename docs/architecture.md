@@ -315,6 +315,19 @@ alone does not end a still-running Agent. Explicit disconnect and transport fail
 the reader rather than waiting for a drain, and a cancelled reader cannot mutate the replacement
 Connection's stores or release it.
 
+**Stdio owns the launched process tree.** Unix launches in a private process group;
+Windows assigns the suspended launcher to a private kill-on-close Job Object before
+letting it run. Disconnect, the last public Inspector owner going away, runtime drop,
+and native window/event-loop shutdown terminate that ownership boundary synchronously,
+without waiting for another async task to run. Unix observes launcher exit without
+reaping it, terminates the group while the leader still pins its id, then reaps; no
+later cleanup signals a potentially reused group id. On natural launcher exit the
+remaining descendants are terminated **before** the final stdout/stderr drain, so
+inherited pipe handles cannot keep the Connection open indefinitely. Already-written
+Frames and diagnostics still drain under backpressure as above. This is lifecycle
+ownership, not a sandbox: a Unix descendant deliberately creating another process
+group/session escapes that boundary.
+
 WebSocket later is a **second factory**, not a redesign: WS is natively message-framed, and the
 transport RFD's `/acp` upgrade (Active, explicitly additive to v1) slots behind the same
 contract ([#51 §3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)). The native
