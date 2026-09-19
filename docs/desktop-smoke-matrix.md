@@ -94,6 +94,24 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### HTTP/SSE MCP correction flow, 2026-09-19
+
+Linux WebKitGTK/Xvfb/Openbox at a 1440 × 855 content viewport: prepared an SSE
+definition before launching Testy (HTTP advertised, SSE not). Initialize answered,
+no `session/new` crossed, and the Sessions editor opened with the SSE finding and
+the original URL/header draft intact. Changing to HTTP and opening a Session sent
+the HTTP definition and header in Trace. A final repeat verified the stale launch
+failure was cleared from the composer after successful correction.
+
+This was a native-WebView integration walkthrough, not a full keyboard pass:
+transport changes used DOM `change` dispatch after the automation driver failed
+to reliably exit the native select popup. Other input and activation used keyboard
+events. Native select/reader acceptance remains in #9/#10. No URL was fetched by
+the inspector. Automated coverage includes mixed transport order on new/load/resume,
+duplicate/empty headers, independent gates, post-initialize rejection without a
+first Session, retained drafts, correction, refused setup outcomes, disconnected
+attempt outcomes, and reconnect validation against the new Agent's claims.
+
 ### Stdio MCP Session input, 2026-09-19
 
 Linux WebKitGTK/Xvfb/Openbox: before Launch, keyboard entry added `tools`, command

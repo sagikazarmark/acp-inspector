@@ -246,7 +246,8 @@ impl Inspector {
     pub async fn start(&self, command: &AgentCommand) -> Result<v1::SessionId, CallError> {
         // Snapshot before initialize: edits during the handshake belong to the
         // next opening, and an invalid draft must not replace a live Connection.
-        let mcp = self.mcp_draft().definitions()?;
+        let draft = self.mcp_draft();
+        draft.definitions()?;
         // Before the spawn, because it is the one step that can fail without
         // the agent having anything to do with it, and starting a process to
         // then tell the user we cannot name a directory for it would be a
@@ -254,7 +255,8 @@ impl Inspector {
         let cwd = command.session_cwd().ok_or(CallError::NoWorkingDirectory)?;
 
         self.connect(&command.factory());
-        self.initialize().await?;
+        let agent = self.initialize().await?;
+        let mcp = draft.definitions_for(&agent.agent_capabilities.mcp_capabilities)?;
         // **No roots**, because the form that launches an agent has no control
         // that supplies any (§7.7): the control sits beside the `session/new`
         // button, where there is an agent that has said whether it advertises
@@ -357,11 +359,17 @@ impl Inspector {
         roots: Option<Roots>,
     ) -> Result<v1::SessionId, CallError> {
         let cwd = cwd.into();
-        let mcp = self.mcp_draft().definitions()?;
+        let mcp = self.mcp_draft().definitions_for(
+            &self
+                .agent()
+                .map(|agent| agent.agent_capabilities.mcp_capabilities)
+                .unwrap_or_default(),
+        )?;
         match self.client() {
             Ok(client) => client.new_session(cwd, roots.as_ref(), mcp).await,
             Err(error) => {
                 self.roots_refused(&roots::creating(roots.as_ref(), &cwd), &error);
+                self.mcp_refused(&mcp, &error);
                 Err(error)
             }
         }
@@ -423,12 +431,18 @@ impl Inspector {
         how: Restore,
         roots: Option<Roots>,
     ) -> Result<v1::SessionId, CallError> {
-        let mcp = self.mcp_draft().definitions()?;
+        let mcp = self.mcp_draft().definitions_for(
+            &self
+                .agent()
+                .map(|agent| agent.agent_capabilities.mcp_capabilities)
+                .unwrap_or_default(),
+        )?;
         match self.client() {
             Ok(client) => client.restore(session, how, roots.as_ref(), mcp).await,
             Err(error) => {
                 self.drive_refused(drives(how), &error);
                 self.roots_refused(&roots::reopening(roots.as_ref(), session), &error);
+                self.mcp_refused(&mcp, &error);
                 Err(error)
             }
         }
@@ -452,6 +466,16 @@ impl Inspector {
             Err(error) => {
                 self.drive_refused(AgentCapability::Close, &error);
                 Err(error)
+            }
+        }
+    }
+
+    fn mcp_refused(&self, definitions: &[v1::McpServer], error: &CallError) {
+        for definition in definitions {
+            match definition {
+                v1::McpServer::Http(_) => self.drive_refused(AgentCapability::McpHttp, error),
+                v1::McpServer::Sse(_) => self.drive_refused(AgentCapability::McpSse, error),
+                _ => {}
             }
         }
     }

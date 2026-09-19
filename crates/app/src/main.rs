@@ -461,6 +461,7 @@ fn App() -> Element {
         let live = session();
         if live.is_some() && *opened_before.peek() != live {
             session::close();
+            problem.set(None);
         }
         opened_before.set(live);
     });
@@ -768,6 +769,10 @@ fn App() -> Element {
                 failed.set(None);
                 spawn(async move {
                     let outcome = inspector.open_session(&command, None).await;
+                    if outcome.is_ok() {
+                        problem.set(None);
+                        session::close();
+                    }
                     failed.set(
                         outcome
                             .err()
@@ -870,6 +875,10 @@ fn App() -> Element {
             failed.set(None);
             spawn(async move {
                 let outcome = inspector.open_session(&command, roots).await;
+                if outcome.is_ok() {
+                    problem.set(None);
+                    session::close();
+                }
                 failed.set(
                     outcome
                         .err()
@@ -909,6 +918,10 @@ fn App() -> Element {
                 let outcome = inspector
                     .restore_session(&opening.session, how, opening.roots)
                     .await;
+                if outcome.is_ok() {
+                    problem.set(None);
+                    session::close();
+                }
                 failed.set(outcome.err().map(Failed::of(how.method())));
             });
         }),
@@ -1024,7 +1037,10 @@ fn App() -> Element {
                                 // The one thing that shuts the dialog which is
                                 // not the reader: an agent answered, so the
                                 // task it was open for is done.
-                                connect::close();
+                                 if matches!(failure, Some(CallError::InvalidMcp(_))) {
+                                     connect::close();
+                                     mcp::correct_in_sessions();
+                                 } else { connect::close(); }
                             }
                             problem.set(failure);
                         });
@@ -1139,6 +1155,7 @@ fn App() -> Element {
                         failed.set(None);
                         spawn(async move {
                             let outcome = inspector.open_session(&command, None).await;
+                            if outcome.is_ok() { problem.set(None); session::close(); }
                             failed
                                 .set(
                                     outcome.err().map(Failed::of(v1::AGENT_METHOD_NAMES.session_new)),

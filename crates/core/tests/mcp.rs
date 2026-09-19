@@ -1,10 +1,151 @@
 mod common;
-use acp_inspector_core::{CallError, Inspector, McpDraft, McpEnv, Restore, StdioMcp, v1};
+use acp_inspector_core::{AgentCapability, Driven, McpTransport};
+use acp_inspector_core::{CallError, Inspector, McpDraft, McpEnv, McpServerDraft, Restore, v1};
 use common::{sent, shell};
+
+fn remote_draft() -> McpDraft {
+    let mut draft = draft();
+    for transport in [McpTransport::Http, McpTransport::Sse] {
+        draft.servers.push(McpServerDraft {
+            name: transport.token().into(),
+            transport,
+            url: format!("https://{}.invalid/MCP?x=%2F", transport.token()),
+            headers: vec![
+                McpEnv {
+                    name: "X-Token".into(),
+                    value: "".into(),
+                },
+                McpEnv {
+                    name: "X-Token".into(),
+                    value: "two".into(),
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    draft
+}
+
+#[tokio::test]
+async fn remote_refusal_records_both_transports_and_reconnect_rechecks_new_claims() {
+    let inspector = Inspector::new();
+    inspector.set_mcp_draft(remote_draft());
+    let refusing = shell(concat!(
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"mcpCapabilities\":{\"http\":true,\"sse\":true}}}}'; ",
+        "read _; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32602,\"message\":\"fixture refused setup\"}}'; cat >/dev/null"
+    ));
+    assert!(matches!(
+        inspector.start(&refusing).await,
+        Err(CallError::Rejected(_))
+    ));
+    for kind in [AgentCapability::McpHttp, AgentCapability::McpSse] {
+        assert!(matches!(
+            inspector.driven().of(kind),
+            Driven::Refused(CallError::Rejected(_))
+        ));
+    }
+    inspector.disconnect();
+    let before = sent(&inspector).len();
+    assert!(matches!(
+        inspector.start(&agent()).await,
+        Err(CallError::InvalidMcp(_))
+    ));
+    assert_eq!(
+        sent(&inspector).len(),
+        before + 1,
+        "new initialize but no setup"
+    );
+    assert_eq!(inspector.mcp_draft(), remote_draft());
+    inspector.disconnect();
+}
+
+#[tokio::test]
+async fn unadvertised_start_keeps_connection_and_draft_for_correction_without_opening() {
+    let inspector = Inspector::new();
+    inspector.set_mcp_draft(remote_draft());
+    let command = agent();
+    assert!(matches!(
+        inspector.start(&command).await,
+        Err(CallError::InvalidMcp(_))
+    ));
+    assert!(inspector.agent().is_some());
+    assert!(inspector.session().is_none());
+    assert_eq!(sent(&inspector).len(), 1);
+    assert_eq!(inspector.mcp_draft(), remote_draft());
+    inspector.set_mcp_draft(draft());
+    inspector.open_session(&command, None).await.unwrap();
+    let count = sent(&inspector).len();
+    let live = inspector.session();
+    inspector.set_mcp_draft(remote_draft());
+    for how in [Restore::Load, Restore::Resume] {
+        assert!(matches!(
+            inspector
+                .restore_session(&v1::SessionInfo::new("saved", "/tmp"), how, None)
+                .await,
+            Err(CallError::InvalidMcp(_))
+        ));
+    }
+    assert!(matches!(
+        inspector.open_session(&command, None).await,
+        Err(CallError::InvalidMcp(_))
+    ));
+    assert_eq!(sent(&inspector).len(), count);
+    assert_eq!(inspector.session(), live);
+    assert_eq!(
+        inspector.driven().of(AgentCapability::McpHttp),
+        Driven::Unasked
+    );
+    inspector.disconnect();
+}
+
+#[tokio::test]
+async fn mixed_transports_cross_each_opening_and_record_the_session_call_outcome() {
+    let inspector = Inspector::new();
+    let mut command = agent();
+    command.args = command.args.replace(
+        "\"loadSession\":true",
+        "\"loadSession\":true,\"mcpCapabilities\":{\"http\":true,\"sse\":true}",
+    );
+    inspector.set_mcp_draft(remote_draft());
+    inspector.start(&command).await.unwrap();
+    inspector.open_session(&command, None).await.unwrap();
+    for how in [Restore::Load, Restore::Resume] {
+        inspector
+            .restore_session(&v1::SessionInfo::new("saved", "/tmp"), how, None)
+            .await
+            .unwrap();
+    }
+    let expected = serde_json::to_value(remote_draft().definitions().unwrap()).unwrap();
+    for frame in sent(&inspector).iter().skip(1) {
+        let value: serde_json::Value = serde_json::from_str(frame).unwrap();
+        assert_eq!(value["params"]["mcpServers"], expected);
+    }
+    assert_eq!(
+        inspector.driven().of(AgentCapability::McpHttp),
+        Driven::Answered
+    );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::McpSse),
+        Driven::Answered
+    );
+    inspector.disconnect();
+    assert_eq!(
+        inspector.open_session(&command, None).await,
+        Err(CallError::Disconnected)
+    );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::McpHttp),
+        Driven::Refused(CallError::Disconnected)
+    );
+    assert_eq!(
+        inspector.driven().of(AgentCapability::McpSse),
+        Driven::Refused(CallError::Disconnected)
+    );
+}
 
 fn draft() -> McpDraft {
     McpDraft {
-        servers: vec![StdioMcp {
+        servers: vec![McpServerDraft {
             name: "tools".into(),
             command: "/not-installed/mcp".into(),
             args: vec!["".into(), "two words".into()],
@@ -18,6 +159,7 @@ fn draft() -> McpDraft {
                     value: " a=b ".into(),
                 },
             ],
+            ..Default::default()
         }],
     }
 }
@@ -80,7 +222,7 @@ async fn invalid_edits_do_not_switch_sessions_send_frames_or_replace_the_connect
     let session = inspector.session();
     let count = sent(&inspector).len();
     inspector.set_mcp_draft(McpDraft {
-        servers: vec![StdioMcp::default()],
+        servers: vec![McpServerDraft::default()],
     });
     assert!(matches!(
         inspector.open_session(&command, None).await,

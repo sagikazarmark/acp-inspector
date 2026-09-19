@@ -295,6 +295,8 @@ fn the_record_is_keyed_on_the_session_lifecycle_and_logout_and_nothing_else() {
             "image",
             "audio",
             "embeddedContext",
+            "http",
+            "sse",
         ],
         "a capability the record cannot be keyed on is one the panel cannot draw the fact for"
     );
@@ -353,7 +355,7 @@ fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_define
 }
 
 #[tokio::test]
-async fn testy_advertises_every_capability_the_record_is_keyed_on() {
+async fn testy_advertises_the_recorded_capabilities_except_sse() {
     // The fixture the display's rows are verified against (#77): an agent that
     // advertises all of them, in both shapes at once — the six the session
     // lifecycle is made of and the `logout` its auth block claims (§7.7).
@@ -371,9 +373,10 @@ async fn testy_advertises_every_capability_the_record_is_keyed_on() {
         .filter(|(_, advertised)| !advertised)
         .map(|(name, _)| name)
         .collect();
-    assert!(
-        missing.is_empty(),
-        "Testy advertises every one of them; it did not advertise {missing:?}"
+    assert_eq!(
+        missing,
+        vec!["sse"],
+        "Testy advertises HTTP but not SSE; scripted Agents cover SSE"
     );
     assert_eq!(
         inspector.agent().as_ref().map(advertisements),

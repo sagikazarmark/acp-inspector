@@ -227,12 +227,14 @@ host repository and depended on none of its crates: patterns were copied, never 
 
 ## Running it
 
-**Stdio MCP definitions** can be entered before Launch or in the Sessions dialog.
+**Stdio, HTTP and SSE MCP definitions** can be entered before Launch or in Sessions.
 One in-memory list is supplied on subsequent `session/new`, `session/load` and
-`session/resume` calls, including shortcuts. Give each server a nonblank name and
-an absolute executable path on the Agent's machine; the inspector does not check
-that it exists or run it. Arguments and environment name/value pairs are ordered
-rows: empty arguments/values and duplicate environment entries are preserved.
+`session/resume` calls, including shortcuts. Give each server a nonblank name.
+Stdio uses an absolute executable path on the Agent's machine; the inspector does
+not check that it exists or run it. HTTP/SSE use an absolute HTTP(S) URL with a host;
+the inspector does not fetch it. Arguments, environment pairs and headers are ordered
+rows: empty arguments/values and duplicate names are preserved. Switching transport
+retains the other fields for editing but sends only the selected transport's fields.
 Rows can be added, moved and removed. Invalid input blocks opening and identifies
 the field to correct.
 
@@ -242,8 +244,14 @@ The shared editor always states how many MCP definitions the next opening will
 carry; clear the list when it should not be reused. MCP input is inspector-supplied,
 not recovered from a listed Session. The Agent owns MCP execution, and an answered
 Session-opening call does not establish individual MCP connectivity. Definitions
-and environment values appear verbatim in Trace and exports. HTTP/SSE definitions
-remain deferred. New/load send an empty `mcpServers` array when the list is empty;
+and environment/header values appear verbatim in Trace and exports. HTTP and SSE
+are independently gated on `mcpCapabilities.http` and `.sse`. Launch allows drafting
+either transport before the next Agent is known, then validates its snapshot after
+initialize. Unsupported definitions keep the Connection open with no first Session
+and the Sessions editor available for correction; nothing is silently omitted.
+Later opens validate before switching Sessions. Their capability rows report the
+Session call's answer/refusal, not MCP connectivity. New/load send an empty
+`mcpServers` array when the list is empty;
 the pinned schema omits the empty field on resume.
 
 Where the Agent advertises `promptCapabilities.image`, the composer accepts PNG,
