@@ -46,6 +46,10 @@ pub fn launch(app: fn() -> Element) {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
+                // File drops outside the composer must never navigate the
+                // inspector window. Dioxus still hands http(s) links to the
+                // reader's external browser before this policy is consulted.
+                .with_navigation_handler(|url| !url.starts_with("file:"))
                 // This tool's own strip rather than the framework's, whose
                 // three submenus name none of this window's verbs and one of
                 // which offers to open a renderer inspector inside an inspector

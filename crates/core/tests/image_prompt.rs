@@ -15,6 +15,7 @@ async fn text_and_image_cross_in_order_with_original_data_and_mime() {
         .prompt_content(vec![
             v1::ContentBlock::from("Describe this"),
             v1::ContentBlock::Image(v1::ImageContent::new("iVBORw0KGgo=", "image/png")),
+            v1::ContentBlock::Image(v1::ImageContent::new("R0lGODlh", "image/gif")),
         ])
         .await
         .unwrap();
@@ -30,7 +31,8 @@ async fn text_and_image_cross_in_order_with_original_data_and_mime() {
         prompt["params"]["prompt"],
         serde_json::json!([
             {"type":"text","text":"Describe this"},
-            {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}
+            {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"},
+            {"type":"image","data":"R0lGODlh","mimeType":"image/gif"}
         ])
     );
     assert_eq!(

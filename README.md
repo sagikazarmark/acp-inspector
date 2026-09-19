@@ -227,10 +227,14 @@ host repository and depended on none of its crates: patterns were copied, never 
 
 ## Running it
 
-Where the Agent advertises `promptCapabilities.image`, the composer offers one
-image attachment per Turn: PNG, JPEG, GIF or WebP, up to 5 MiB. Select a file,
-inspect its preview/name/MIME/byte count, remove or replace it, then send it alone
-or after a text block. MIME comes from the signature; original bytes are base64
+Where the Agent advertises `promptCapabilities.image`, the composer accepts up to
+eight PNG, JPEG, GIF or WebP images: up to 5 MiB each, 6 MiB of image bytes in total.
+Select multiple files or drop them onto the composer. Batches append in arrival
+order; files keep the order the picker/drop source supplied. Each row has a name,
+loading/failure state or preview/MIME/byte count, and an individual Remove control.
+Repeated selections intentionally add duplicates. Send waits for reads to finish
+and failed rows or overflow notices to be dismissed, so a bad file is never
+silently omitted. Send images alone or after a text block. MIME comes from the signature; original bytes are base64
 encoded without resizing. A complete outgoing prompt over 10 MiB is refused before
 it crosses the wire. Attachment drafts reset on Session switches.
 Local refusal retains the draft for correction. Admission enqueues the Frame
@@ -238,8 +242,9 @@ synchronously for the selected Session before a later Stop or Session switch;
 the Agent's eventual answer is awaited separately.
 
 On Linux, native file selection needs a desktop file-picker portal or `zenity`
-(included in `devenv shell`). Audio, embedded context, clipboard and drag/drop
-prompt input remain deferred.
+(included in `devenv shell`). Audio, embedded context and clipboard prompt input
+remain deferred. Non-file text/URL drops are not attachments; file drops outside
+the composer do not navigate the inspector window.
 
 ```sh
 just run      # cargo run -p acp-inspector
