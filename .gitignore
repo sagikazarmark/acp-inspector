@@ -25,3 +25,6 @@ target/
 # reason `target/` is — the ignore travels with the project.
 .devenv/
 .devenv.flake.nix
+
+# Standard-library Python acceptance fixtures.
+__pycache__/

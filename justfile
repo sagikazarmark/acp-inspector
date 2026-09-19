@@ -52,6 +52,10 @@ testy:
 test:
     cargo test
 
+# Portable acceptance Agent's real stdio subprocess contract (Python 3.9+).
+test-acceptance-agent:
+    python3 -m unittest discover -s scripts -p test_acceptance_agent.py -v
+
 # Prove the app crate builds and tests from tracked sources without any
 # JavaScript dependency, network access, runtime stylesheet asset or `dx`.
 node-free:
