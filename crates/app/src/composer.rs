@@ -9,8 +9,48 @@
 //! a request, and the turn is over when the agent says it is, with
 //! `stopReason: "cancelled"` if it behaves (§7.1).
 
+use crate::image_draft::{ImageDraft, ImageState};
 use crate::prompt_image::PromptImage;
 use acp_inspector_core::{CallError, TurnState, v1};
+use dioxus::html::{FileData, HasFileData};
+
+/// Native file drops must be accepted synchronously, before IPC. Do not let a
+/// synthetic or same-document URI drag reuse Dioxus's last native file paths.
+const IMAGE_DROP_BRIDGE: &str = r#"
+const [id, windows] = await dioxus.recv();
+const root = document.getElementById(id)?.closest('[data-slot=composer]');
+if (root) {
+  let internal = false;
+  let nativeDispatch = false;
+  const interpreter = windows ? window.interpreter : null;
+  const originalDrop = interpreter?.handleWindowsDragDrop;
+  const nativeDrop = originalDrop && function(...args) {
+    nativeDispatch = true;
+    try { return originalDrop.apply(this, args); }
+    finally { nativeDispatch = false; }
+  };
+  if (nativeDrop) interpreter.handleWindowsDragDrop = nativeDrop;
+  const started = () => { internal = true; };
+  const ended = () => { internal = false; };
+  document.addEventListener('dragstart', started, true);
+  document.addEventListener('dragend', ended, true);
+  root.addEventListener('dragover', event => event.preventDefault());
+  root.addEventListener('drop', event => {
+    event.preventDefault();
+    if ((!event.isTrusted && !nativeDispatch) || internal) event.stopImmediatePropagation();
+    internal = false;
+  }, true);
+  const removed = new MutationObserver(() => {
+    if (!root.isConnected) {
+      document.removeEventListener('dragstart', started, true);
+      document.removeEventListener('dragend', ended, true);
+      if (nativeDrop && interpreter.handleWindowsDragDrop === nativeDrop) interpreter.handleWindowsDragDrop = originalDrop;
+      removed.disconnect();
+    }
+  });
+  removed.observe(document.body, {childList:true, subtree:true});
+}
+"#;
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
@@ -110,10 +150,11 @@ pub fn Composer(
     on_set_mode: EventHandler<v1::SessionModeId>,
 ) -> Element {
     let mut text = use_signal(String::new);
-    let mut image = use_signal(|| None::<PromptImage>);
-    let mut selecting = use_signal(|| false);
+    let mut images = use_signal(ImageDraft::default);
+    let mut queued = use_signal(std::collections::VecDeque::<(u64, FileData)>::new);
+    let mut reading = use_signal(|| false);
     let mut image_problem = use_signal(|| None::<String>);
-    let mut selection = use_signal(|| 0_u64);
+    let mut overflow = use_signal(|| None::<String>);
     let picker_id = use_hook(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         format!(
@@ -127,12 +168,51 @@ pub fn Composer(
     let mut highlighted = use_signal(|| 0usize);
     let mut dismissed = use_signal(|| false);
     let running = turn.is_running();
+    let ingest = use_callback(move |files: Vec<FileData>| {
+        if !image_advertised || !ready || running || files.is_empty() {
+            return;
+        }
+        let mut rejected = Vec::new();
+        for file in files {
+            let name = file.name();
+            match images.write().reserve(name.clone()) {
+                Ok(id) => queued.write().push_back((id, file)),
+                Err(_) => rejected.push(name),
+            }
+        }
+        if !rejected.is_empty() {
+            overflow.set(Some(format!("Not added (8 image rows maximum): {}. Dismiss this notice to send the remaining images.", rejected.join(", "))));
+        }
+        image_problem.set(None);
+        if reading() {
+            return;
+        }
+        reading.set(true);
+        // One worker per composer drains all batches in arrival order. Removing
+        // queued rows cancels their reads; removing the current row discards its
+        // completion. The scope cancels the worker on a Session switch.
+        spawn(async move {
+            loop {
+                let next = queued.write().pop_front();
+                let Some((id, file)) = next else {
+                    break;
+                };
+                let result = PromptImage::from_file(file).await;
+                let Ok(mut draft) = images.try_write() else {
+                    return;
+                };
+                draft.finish(id, result);
+            }
+            reading.set(false);
+        });
+    });
     // Nothing to send while a turn is running: ACP has one turn per session at
     // a time, and a second prompt is the stop button's job first.
     let sendable = ready
         && !running
-        && !selecting()
-        && (!text().trim().is_empty() || image_advertised && image.read().is_some());
+        && images.read().sendable()
+        && overflow.read().is_none()
+        && (!text().trim().is_empty() || image_advertised && !images.read().entries().is_empty());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -143,12 +223,24 @@ pub fn Composer(
     let mut send = move || {
         let prompt = text();
         if sendable {
+            // Input/drop and Send can arrive in the same renderer batch. The
+            // control's painted availability is not permission to omit a new
+            // Reading/Failed row or a count-overflow notice.
+            if overflow.read().is_some() {
+                return;
+            }
+            let Some(attachments) = images.read().content() else {
+                return;
+            };
+            if prompt.trim().is_empty() && (!image_advertised || attachments.is_empty()) {
+                return;
+            }
             let mut content = Vec::new();
             if !prompt.trim().is_empty() {
                 content.push(v1::ContentBlock::from(prompt));
             }
-            if image_advertised && let Some(image) = image.read().as_ref() {
-                content.push(image.content());
+            if image_advertised {
+                content.extend(attachments);
             }
             if let Err(error) = on_prompt.call(content) {
                 image_problem.set(Some(error.to_string()));
@@ -156,8 +248,8 @@ pub fn Composer(
             }
             text.set(String::new());
             image_problem.set(None);
-            image.set(None);
-            selection += 1;
+            images.write().clear();
+            queued.write().clear();
         }
     };
     // Putting one in the box is a *refill*, not a send: what a command takes
@@ -170,6 +262,20 @@ pub fn Composer(
 
     rsx! {
         div { class: "composer", "data-slot": "composer",
+            ondragover: move |event| { event.prevent_default(); },
+            ondrop: move |event| {
+                event.prevent_default();
+                event.stop_propagation();
+                // Desktop events retain native paths. Require a file-bearing
+                // transfer (or WebKit's opaque native URI list) and reject
+                // non-filesystem paths before entering the shared read queue.
+                let transfer = event.data_transfer();
+                // WebKit hides the URI payload for native file drops, while
+                // Dioxus supplies the paths captured by its native handler.
+                let native_files = transfer.get_data("text/uri-list").is_some_and(|uris| uris.is_empty() || uris.lines().any(|uri| uri.starts_with("file://")));
+                if !transfer.files().is_empty() { ingest.call(event.files()); }
+                else if native_files { ingest.call(event.files().into_iter().filter(|file| file.path().is_absolute()).collect()); }
+            },
             div { class: "composer-inner",
             {state(&presentation)}
             div {
@@ -221,39 +327,51 @@ pub fn Composer(
                 if image_advertised {
                     div { class: "prompt-image-picker",
                         label { class: "hint",
-                            "Attach image · PNG, JPEG, GIF or WebP · 5 MiB maximum"
-                            input { id: picker_id.clone(), name: "prompt-image", r#type: "file", accept: ".png,.jpg,.jpeg,.gif,.webp", multiple: false,
-                                aria_label: "Attach image", disabled: !ready || running,
+                            "Add or drop images · PNG, JPEG, GIF or WebP · 8 images · 5 MiB each · 6 MiB total"
+                            input { id: picker_id.clone(), name: "prompt-image", r#type: "file", accept: ".png,.jpg,.jpeg,.gif,.webp", multiple: true,
+                                onmounted: {
+                                    let id = picker_id.clone();
+                                    move |_| { let bridge = document::eval(IMAGE_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
+                                },
+                                aria_label: "Attach images", disabled: !ready || running,
                                 onchange: move |event| {
-                                    let Some(file) = event.files().into_iter().next() else { return; };
+                                    let files = event.files();
                                     let reset = document::eval("const id = await dioxus.recv(); const input = document.getElementById(id); if (input) input.value = ''; ");
                                     let _ = reset.send(picker_id.clone());
-                                    if !ready || running { return; }
-                                    selection += 1;
-                                    let current = selection();
-                                    selecting.set(true);
-                                    image_problem.set(None);
-                                    spawn(async move {
-                                        let result = PromptImage::from_file(file).await;
-                                        if selection.try_read().ok().is_none_or(|generation| *generation != current) { return; }
-                                        selecting.set(false);
-                                        match result { Ok(next) => image.set(Some(next)), Err(error) => image_problem.set(Some(error)) }
-                                    });
+                                    ingest.call(files);
                                 },
                             }
                         }
-                        if selecting() { span { role: "status", "Reading image…" } }
+                        if !images.read().entries().is_empty() {
+                            span { class: "hint", "{images.read().entries().len()} image rows · {images.read().bytes()} / 6291456 bytes ready" }
+                        }
                     }
                 }
                 if let Some(problem) = image_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
-                if let Some(held) = image() {
-                    div { class: "prompt-image", "data-slot": "image-attachment",
-                        img { src: held.preview(), alt: "Selected image: {held.name}" }
-                        span { "{held.name} · {held.mime} · {held.bytes} bytes" }
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove image",
-                            onclick: move |_| { selection += 1; image.set(None); selecting.set(false); image_problem.set(None); }, "Remove"
+                if let Some(problem) = overflow() {
+                    div { class: "detail detail-warn", role: "status", "{problem}"
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", onclick: move |_| overflow.set(None), "Dismiss image limit notice" }
+                    }
+                }
+                div { class: "prompt-images",
+                for entry in images.read().entries().to_vec() {
+                    div { key: "{entry.id}", class: "prompt-image", "data-slot": "image-attachment", "data-image-id": "{entry.id}",
+                        match &entry.state {
+                            ImageState::Ready(held) => rsx! {
+                                img { src: held.preview(), alt: "Selected image: {held.name}" }
+                                span { "{held.name} · {held.mime} · {held.bytes} bytes" }
+                            },
+                            ImageState::Reading => rsx! { span { role: "status", "{entry.name} · Reading image…" } },
+                            ImageState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
+                        }
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove image {entry.id}: {entry.name}",
+                            onclick: move |_| {
+                                images.write().remove(entry.id);
+                                queued.write().retain(|(id, _)| *id != entry.id);
+                            }, "Remove"
                         }
                     }
+                }
                 }
                 textarea {
                     rows: 3,
@@ -759,6 +877,97 @@ mod tests {
                 _ => None,
             })
             .unwrap();
+        let drop_target = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "drop" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let drop_files = |files| {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(
+                    dioxus::html::SerializedDragData {
+                        mouse: Default::default(),
+                        data_transfer: dioxus::html::SerializedDataTransfer {
+                            items: vec![],
+                            files,
+                            effect_allowed: "all".into(),
+                            drop_effect: "copy".into(),
+                        },
+                    },
+                ))) as Rc<dyn Any>,
+                true,
+            )
+        };
+        dom.runtime().handle_event(
+            "drop",
+            drop_files(vec![
+                SerializedFileData {
+                    path: "second.gif".into(),
+                    size: 6,
+                    last_modified: 0,
+                    content_type: None,
+                    contents: Some(b"GIF89a".to_vec().into()),
+                },
+                SerializedFileData {
+                    path: "broken.png".into(),
+                    size: 3,
+                    last_modified: 0,
+                    content_type: None,
+                    contents: Some(b"bad".to_vec().into()),
+                },
+            ]),
+            drop_target,
+        );
+        dom.runtime().handle_event("click", click(), send);
+        assert!(
+            sent.borrow().is_empty(),
+            "a newly queued drop blocks Send before rerender"
+        );
+        let mut added = Vec::new();
+        for _ in 0..8 {
+            dom.wait_for_work().await;
+            added.extend(dom.render_immediate_to_vec().edits);
+            if dioxus_ssr::render(&dom).contains("identified by its file signature") {
+                break;
+            }
+        }
+        assert_eq!(
+            dioxus_ssr::render(&dom)
+                .matches("data-slot=\"image-attachment\"")
+                .count(),
+            3
+        );
+        dom.runtime().handle_event("click", click(), send);
+        assert!(
+            sent.borrow().is_empty(),
+            "failed files block silent partial submission"
+        );
+        let dismiss = added
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: dioxus::core::AttributeValue::Text(value),
+                    id,
+                    ..
+                } if value.ends_with("broken.png") => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        dom.runtime().handle_event("click", click(), dismiss);
+        dom.render_immediate(&mut NoOpMutations);
+        dom.runtime()
+            .handle_event("drop", drop_files(vec![]), drop_target);
+        dom.render_immediate(&mut NoOpMutations);
+        assert_eq!(
+            dioxus_ssr::render(&dom)
+                .matches("data-slot=\"image-attachment\"")
+                .count(),
+            2,
+            "non-file drop adds nothing"
+        );
         reject.set(true);
         dom.runtime().handle_event("click", click(), send);
         dom.render_immediate(&mut NoOpMutations);
@@ -772,7 +981,7 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
         assert_eq!(sent.borrow().len(), 1);
         assert!(
-            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Image(image)] if image.data=="iVBORw0KGgo=" && image.mime_type=="image/png")
+            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Image(image),v1::ContentBlock::Image(second)] if image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="R0lGODlh" && second.mime_type=="image/gif")
         );
         assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
     }

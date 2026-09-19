@@ -2678,6 +2678,11 @@
 .prompt-image-picker {
   padding: 8px 12px;
 }
+.prompt-images {
+  max-height: 180px;
+  overflow-y: auto;
+  min-width: 0;
+}
 .prompt-image-picker label {
   display: grid;
   gap: 4px;

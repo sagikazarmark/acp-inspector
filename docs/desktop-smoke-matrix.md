@@ -90,6 +90,36 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Multiple images and native drop, 2026-09-19
+
+Linux WebKitGTK/Xvfb/Openbox, with a GTK drag-source fixture supplying two native
+file URIs: dropping onto the composer produced two previews in supplied order,
+and image-only Send reached `end_turn` with two image blocks echoed by the Agent.
+The Zenity multi-select picker also returned two files; its returned order was
+preserved (not assumed to match click order). Removing one row by its named control
+sent only the remaining image. A remote URL drop added no rows and the document
+remained `dioxus://index.html/`.
+
+Native WebView drag acceptance requires synchronous DOM `dragover` cancellation;
+the IPC callback alone is too late. WebKit exposes native file drops as opaque URI
+transfers while Dioxus carries the filesystem paths. The composer checks for a
+file-bearing transfer and absolute native paths before invoking the same queued
+reader used by the picker. File navigation is also refused by the desktop shell.
+The DOM bridge rejects synthetic and same-document drags before they reach cached
+native paths. After a successful native two-file drop, dispatching a synthetic
+file-URI drop left the attachment count at two; no stale paths were replayed.
+Windows is the explicit exception to `isTrusted`: Dioxus 0.7 synthesizes its
+native drop events. The bridge scopes permission to the synchronous
+`handleWindowsDragDrop` dispatch and restores the original handler on unmount.
+A Chromium bridge probe verified synthetic rejection, scoped native-dispatch
+acceptance and permission reset; it is not a native Windows walkthrough.
+
+Automated coverage includes picker/drop appending, mixed valid/failed rows blocking
+Send until dismissal, removed/stale completion suppression, selection order despite
+completion order, eight-row and 6 MiB aggregate budgets, duplicate selections, and
+ordered multi-image outgoing Frames. Native macOS/Windows remains #9; this Linux
+run is not a claim about their drag implementations.
+
 ### Image prompt file-picker check, 2026-09-18
 
 Linux WebKitGTK, Xvfb/Openbox: a scripted Agent advertised image prompts. Native
