@@ -39,9 +39,27 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
             "crates/app/src/elicitation_schema.rs",
             "serde_json::from_str(text).map_err(|error| error.to_string())?;",
         ),
+        // Cached JSON-RPC envelope labels only; payloads stay borrowed raw
+        // fragments and are not decoded as ACP protocol types here.
         (
             "crates/core/src/frame.rs",
-            "serde_json::from_str::<serde_json::Value>(&self.0)",
+            "use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};",
+        ),
+        (
+            "crates/core/src/frame.rs",
+            "fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {",
+        ),
+        (
+            "crates/core/src/frame.rs",
+            "serde_json::from_str(self.as_str()).unwrap_or_else(|_| FrameSummary::unreadable())",
+        ),
+        (
+            "crates/core/src/frame.rs",
+            "\"method\" => method = serde_json::from_str::<String>(raw.get()).ok(),",
+        ),
+        (
+            "crates/core/src/frame.rs",
+            "id = match serde_json::from_str::<serde_json::Value>(raw.get())",
         ),
         (
             "crates/core/src/indentation.rs",

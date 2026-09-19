@@ -874,14 +874,14 @@ mod retention_tests {
     fn merged_tool_evidence_leaves_whole_and_later_patch_starts_a_new_entry() {
         let timeline = Timeline::default();
         for i in 0..=Timeline::FRAME_CAPACITY {
-            let notification = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","title":"updated"}}"#).unwrap();
+            let notification = crate::decode::from_value(serde_json::json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","title":"updated"}})).unwrap();
             timeline.update(notification, recorded("raw patch", i as u64));
         }
         let (entries, _, holes) = timeline.snapshot();
         assert!(entries.is_empty());
         assert_eq!(holes.entries, 1);
         assert_eq!(holes.frames, Timeline::FRAME_CAPACITY + 1);
-        let notification = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","status":"completed"}}"#).unwrap();
+        let notification = crate::decode::from_value(serde_json::json!({"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t","status":"completed"}})).unwrap();
         timeline.update(notification, recorded("last patch", 3000));
         let entries = timeline.entries();
         assert_eq!(entries.len(), 1);
@@ -915,7 +915,7 @@ mod retention_tests {
     #[test]
     fn annotation_and_deciding_frames_age_out_together_and_commands_remain_advertised() {
         let timeline = Timeline::default();
-        let commands = serde_json::from_str(r#"{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","description":"Help"}]}}"#).unwrap();
+        let commands = crate::decode::from_value(serde_json::json!({"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","description":"Help"}]}})).unwrap();
         timeline.update(commands, recorded("commands", 0));
         timeline.annotate(
             Annotation::Replay(crate::conformance::Replay::Nothing),

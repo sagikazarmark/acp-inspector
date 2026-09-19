@@ -581,6 +581,9 @@
       }
     }
   }
+  .\!visible {
+    visibility: visible !important;
+  }
   .collapse {
     visibility: collapse;
   }

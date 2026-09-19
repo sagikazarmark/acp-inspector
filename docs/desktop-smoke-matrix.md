@@ -94,6 +94,93 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Consolidated final validation, 2026-09-19 — parent `7a7ce89`
+
+Validated on `main`, version **0.0.1**, parent **`7a7ce89`**, with the validation
+corrections included in this record's commit. Historical executions below remain separate evidence.
+Linux 6.1.167, X11 Xvfb 21.1.24/Openbox 3.6.1 at 96 DPI (DPR 1), WebKitGTK 2.52.4,
+Mesa software rendering, Node 24.16.0 and Python 3.12.3. A fresh native binary was
+built in `/tmp/opencode/inspector-final`; actual content sizes were **960 × 640**
+and **1440 × 880**, with 25px added to the outer height for the native menu.
+Agents: `.testy/bin/testy` (the checkout's built deterministic fixture; its
+`--version` produced no version text), portable acceptance Agent version 1, and
+`scripts/performance-agent.py`.
+
+#### Automated results
+
+All Cargo commands used `CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
+CARGO_TARGET_DIR=/tmp/opencode/inspector-final`.
+
+| Command | Final result |
+|---|---|
+| `cargo test --workspace --locked` | **651 passed, 0 failed, 3 ignored**: 303 app tests, 26 core unit tests, 321 integration tests, 1 doctest. Ignored: the three opt-in rendering/performance probes. |
+| `cargo fmt --check` | Pass |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo check -p acp-inspector --no-default-features --features web --locked` | Pass, native-target feature check |
+| `cargo clippy -p acp-inspector --all-targets --no-default-features --features web --locked -- -D warnings` | Pass |
+| `npm run test:clipboard` | **5 passed**, no failures/skips |
+| `npm run test:navigation` | **9 passed**, no failures/skips |
+| `python3 -B -m unittest discover -s scripts -p test_acceptance_agent.py` | **15 passed** |
+| `npm run css:check` | Pass after generated-output correction |
+| `git diff --check` | Pass |
+
+Two validation failures were corrected. The decoding-boundary source guard still
+expected the old Frame reader: its exact-line allowlist now accounts for the
+cached JSON-RPC envelope reader, and three retention-test fixtures now use the
+canonical decoder rather than introducing direct protocol deserialization. The
+guard still scans test-gated code, so production items after tests cannot escape
+it. The generated stylesheet lacked Tailwind's `!visible` utility detected in
+the newer navigation source; `sheet.css` now matches generator output. No runtime
+application failure was established. The full suite was rerun after the final
+stylesheet change; the first, aborted run is not counted as a complete pass.
+
+Reviewer reproducers in `/tmp/opencode/spec-review-probe` were run against this
+core. **10/10 exit-drain runs received 83/83 incoming Frames**, zero dropped,
+`Ended(EndTurn)` and `Ok(Ok(EndTurn))`, including runs whose automatic replies hit
+Broken pipe. The backpressure/deadlock probe reached **Lost**, with **3,668 captured
+Frames and 2,002 diagnostics** after two seconds. That probe exits its Agent on a
+timer, so its Frame count is an observation, not a fixed completeness assertion.
+The suite's ten `exit_drain` tests provide deterministic regression assertions.
+
+#### Current-layout Linux walkthrough
+
+This is native WebKit integration evidence, **not every row in every appearance**.
+`/tmp/opencode/check-navigation.mjs` and `scripts/check-waiting-navigation.mjs`
+used real xdotool keyboard/mouse input with read-only DOM inspection. The final
+walkthrough helper `/tmp/opencode/final-native.mjs` mixed native input with DOM
+click/input dispatch for fixture setup, lifecycle controls and Elicitation answers.
+The performance helper used DOM dispatch; its large Copy check intercepted the
+clipboard callback. Those checks do not establish a keyboard-only or reader pass.
+
+| Area | Executed result |
+|---|---|
+| Size and appearance | At **both exact sizes**, Light and Dark set their named themes; System left `data-theme` absent. Root/body scroll widths equaled the viewport. Live isolated XSettings light → dark → light changed System's background and media preference without restarting. System-dark was measured at both sizes; explicit Light overrode OS-dark. The narrow Testy form was also measured in Light/Dark/System-light with widths 960/960. |
+| Launch, recall and errors | Launched portable Agent and Testy; separate argument lines reached the fixture. `.` sent `/home/laborant/acp-inspector/.`; empty cwd sent `/home/laborant/acp-inspector/`. Missing executable displayed failed-to-start and Transport provenance in Diagnostics. Refused initialize displayed `fixture refused initialize (-32602)` with no live Session. Recall refilled without launching, displayed “Invocation refilled”, and cleared that confirmation on edit. Recall survived a real application restart. |
+| Session lifecycle and Settings | Testy new/list/load/close/delete completed, listing refreshed, and closing the live Session left none. Mode `plan` was correctly reported acknowledged but not restated; Verbosity became `brief`. Trace retained the lifecycle/setting calls. Resume-only, listing pagination and delayed/refused Settings were covered by automated tests, not repeated natively here. |
+| Streaming and cancellation | Native prompt submission ran `session_updates` to `end_turn`, rendering text/thought, resources, tool edits, plan, commands, usage and Session Settings updates. Native Stop ended `wait_for_cancel` as `cancelled`. |
+| Permission and Elicitation | Wide `callbacks` selected Allow once; narrow repeat selected Reject once. Each completed all **five** Elicitations: Accept, Decline, Cancel, Accept, Decline, then `end_turn`. Wide form Age `999` survived Form → Raw → Form and full-Wire → Split, was sent despite its maximum finding and missing-required findings, and remained readable after resolution. URL consent and Agent completion were distinct; external browser opening was not exercised. |
+| Navigation and draft retention | At 960px palette Capabilities/Session settings revealed Details and focused the requested rail tab; Diagnostics and Ctrl+2 revealed Messages and focused its tab. Full Wire/mobile Session, Trace → Timeline and Timeline → Trace exposed/focused destinations at narrow and wide sizes. Ctrl+backquote handed off hidden focus, and the prompt draft survived both layout changes. “go to it” focused a visible **unmarked** waiting request. Console Home/End moved selection and focus together. |
+| Export retrieval and ordinary Copy | Native Export wrote JSONL. Real Copy export path followed by Ctrl+V pasted the exact displayed path into the composer. The temporary-storage explanation and full path were present. `gio open /tmp` refused on this isolated desktop; visible failure preserved Copy. Repeated export preserved the earlier file. |
+| Retained pages and large traffic | `performance-agent.py` emitted **15,000 updates plus 15,000 stderr lines**, then eight approximately 9 MiB Frames. Trace rendered **200 rows** from 10,000 retained; successive older pages and Timeline evidence reveal reached older ordinals. Diagnostics rendered **200 rows** from 7,784 byte-budget-retained lines, and Older → Latest returned to the latest page. Retention holes were stated explicitly. |
+| Bounded rendering and complete bytes | Stream DOM measured **772,336 characters**; largest sampled 50ms timer interval was **235ms** (an observation, not a latency guarantee). After large traffic, DOM was **244,791 characters**, Trace retained **8 Frames**, and export reported **15,087 dropped** across this multi-Connection run. Intercepted full Copy returned **9,437,263 UTF-16 code units**, including the final `🦀END`; length/hash matched the exported raw Frame. Background export completed. |
+| Native process ownership | A portable Agent wrapper spawned a sleeping child. Disconnect removed both observed PIDs. After relaunch, real **Alt+F4** closed the window and removed the inspector, Agent and child PIDs within one second. The later Testy window was also closed normally; the isolated Xvfb/Openbox/XSettings processes were stopped. |
+
+Local evidence includes `/tmp/acp-trace-1789807195548.jsonl` (Testy lifecycle,
+Settings, callbacks and corrected launch), `/tmp/acp-trace-1789807229568.jsonl`
+(large-traffic snapshot), `/tmp/acp-trace-1789807281139.jsonl` (empty-cwd setup),
+and the temporary native helpers above. These files are temporary local evidence,
+not committed fixtures or durable artifacts. Automated final-suite output is
+`tool_0b8d56c200011K60YU2SDJQj29` in this session's tool-output directory.
+
+**Remaining acceptance:** no native macOS/Windows desktop or screen-reader
+listening pass was available; audible speech/audio, real GNOME/KDE integration,
+native folder-opening success and external URL browser behavior remain unverified.
+This run did not repeat attachment picker/drop/paste, attachment-draft layout
+retention, all keyboard form fields, IME, reduced motion, authentication, adversarial
+width fixtures, or every appearance restart. Their automated/historical evidence
+is retained below without being promoted to a fresh native pass. No screenshots
+or audible recordings were produced. The full cross-platform matrix remains open.
+
 ### Portable acceptance Agent, 2026-09-19
 
 The committed `scripts/acceptance-agent.py` replaces temporary attachment/MCP
