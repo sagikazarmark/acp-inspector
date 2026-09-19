@@ -50,6 +50,7 @@ schemaform-dioxus = "=0.5.0"
 # protocol: this is a format, and the frames stay strings all the way through
 # (`trace.rs`).
 serde_json.workspace = true
+serde.workspace = true
 # The existing runtime supplies toast timers and off-thread, bounded reads of
 # user-selected image files. No filesystem work runs on the UI executor.
 tokio = { workspace = true, features = ["time", "rt"] }

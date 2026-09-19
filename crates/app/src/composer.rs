@@ -177,6 +177,9 @@ pub fn Composer(
     let mut reading = use_signal(|| false);
     let mut media_problem = use_signal(|| None::<String>);
     let mut overflow = use_signal(|| None::<String>);
+    let mut clipboard_bridge = use_signal(|| None::<document::Eval>);
+    let mut paste_waiting = use_signal(|| 0usize);
+    let mut deferred_files = use_signal(Vec::<(usize, Vec<FileData>)>::new);
     let picker_id = use_hook(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         format!(
@@ -190,22 +193,38 @@ pub fn Composer(
     let mut highlighted = use_signal(|| 0usize);
     let mut dismissed = use_signal(|| false);
     let running = turn.is_running();
-    let ingest = use_callback(move |files: Vec<FileData>| {
-        if !(image_advertised || audio_advertised) || !ready || running || files.is_empty() {
-            return;
-        }
+    let reserve = use_callback(move |names: Vec<String>| {
         let mut rejected = Vec::new();
-        for file in files {
-            let name = file.name();
-            match media.write().reserve(name.clone()) {
-                Ok(id) => queued.write().push_back((id, file)),
-                Err(_) => rejected.push(name),
-            }
-        }
+        let ids = names
+            .into_iter()
+            .map(|name| match media.write().reserve(name.clone()) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    rejected.push(name);
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         if !rejected.is_empty() {
             overflow.set(Some(format!("Not added (8 attachment rows maximum): {}. Dismiss this notice to send the remaining files.", rejected.join(", "))));
         }
         media_problem.set(None);
+        ids
+    });
+    let ingest = use_callback(move |files: Vec<FileData>| {
+        if !(image_advertised || audio_advertised) || !ready || running || files.is_empty() {
+            return;
+        }
+        if paste_waiting() > 0 {
+            deferred_files.write().push((paste_waiting(), files));
+            return;
+        }
+        let ids = reserve.call(files.iter().map(|file| file.name()).collect());
+        for (id, file) in ids.into_iter().zip(files) {
+            if let Some(id) = id {
+                queued.write().push_back((id, file));
+            }
+        }
         if reading() {
             return;
         }
@@ -237,6 +256,51 @@ pub fn Composer(
             reading.set(false);
         });
     });
+    let clipboard_input = use_callback(move |input: crate::clipboard::ClipboardInput| {
+        use crate::clipboard::ClipboardInput;
+        match input {
+            ClipboardInput::Reserve { names } => {
+                let ids = if image_advertised && ready && !running {
+                    reserve.call(names)
+                } else {
+                    vec![None; names.len()]
+                };
+                let pending = paste_waiting().saturating_sub(1);
+                let mut ready_files = Vec::new();
+                deferred_files.write().retain_mut(|(waiting, files)| {
+                    *waiting = waiting.saturating_sub(1);
+                    if *waiting == 0 {
+                        ready_files.append(files);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                paste_waiting.set(0);
+                ingest.call(ready_files);
+                paste_waiting.set(pending);
+                Some(ids)
+            }
+            ClipboardInput::Finish { id, data, error } => {
+                let name = media
+                    .read()
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| entry.name.clone());
+                if let Some(name) = name {
+                    media
+                        .write()
+                        .finish(id, crate::clipboard::image(name, data, error));
+                }
+                None
+            }
+        }
+    });
+    #[cfg(test)]
+    use_hook(move || {
+        tests::CLIPBOARD_INPUT.with(|slot| *slot.borrow_mut() = Some(clipboard_input))
+    });
     // Nothing to send while a turn is running: ACP has one turn per session at
     // a time, and a second prompt is the stop button's job first.
     let sendable = ready
@@ -259,6 +323,9 @@ pub fn Composer(
             // control's painted availability is not permission to omit a new
             // Reading/Failed row or a count-overflow notice.
             if overflow.read().is_some() {
+                return;
+            }
+            if paste_waiting() > 0 {
                 return;
             }
             let Some(attachments) = media.read().content() else {
@@ -294,8 +361,25 @@ pub fn Composer(
         highlighted.set(0);
     };
 
+    let clipboard_id = format!("{picker_id}-clipboard");
     rsx! {
         div { class: "composer", "data-slot": "composer",
+            id: clipboard_id.clone(),
+            "data-image-paste": if image_advertised && ready && !running { "true" } else { "false" },
+            onpaste: move |_| { *paste_waiting.write() += 1; },
+            onmounted: {
+                let id = clipboard_id;
+                move |_| {
+                    let mut bridge = document::eval(crate::clipboard::BRIDGE);
+                    clipboard_bridge.set(Some(bridge));
+                    let _ = bridge.send((id.clone(), crate::prompt_media::MAX_MEDIA_BYTES));
+                    spawn(async move {
+                        while let Ok(input) = bridge.recv::<crate::clipboard::ClipboardInput>().await {
+                            if let Some(ids) = clipboard_input.call(input) { let _ = bridge.send(ids); }
+                        }
+                    });
+                }
+            },
             ondragover: move |event| { event.prevent_default(); },
             ondrop: move |event| {
                 event.prevent_default();
@@ -362,6 +446,7 @@ pub fn Composer(
                     div { class: "prompt-image-picker",
                         label { class: "hint",
                             "Add or drop media · 8 attachments · 5 MiB each · 6 MiB total"
+                            if image_advertised { span { "Images can also be pasted from the clipboard." } }
                             input { id: picker_id.clone(), name: "prompt-media", r#type: "file", accept: accepted_media(image_advertised, audio_advertised), multiple: true,
                                 onmounted: {
                                     let id = picker_id.clone();
@@ -402,6 +487,7 @@ pub fn Composer(
                         button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove attachment {entry.id}: {entry.name}",
                             onclick: move |_| {
                                 media.write().remove(entry.id);
+                                if let Some(bridge) = clipboard_bridge() { let _ = bridge.send(serde_json::json!({"cancel":entry.id})); }
                                 queued.write().retain(|(id, _)| *id != entry.id);
                             }, "Remove"
                         }
@@ -783,6 +869,10 @@ mod tests {
     use dioxus::core::{Mutation, ScopeId};
 
     use super::*;
+    type ClipboardCallback = Callback<crate::clipboard::ClipboardInput, Option<Vec<Option<u64>>>>;
+    thread_local! {
+        pub(super) static CLIPBOARD_INPUT: RefCell<Option<ClipboardCallback>> = const { RefCell::new(None) };
+    }
 
     #[tokio::test]
     async fn advertised_media_picker_and_drop_preserve_mixed_content_without_autoplay() {
@@ -924,6 +1014,57 @@ mod tests {
         dom.runtime().handle_event("click", click(), remove);
         dom.render_immediate(&mut NoOpMutations);
         assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
+        let paste_target = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "paste" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        dom.runtime().handle_event(
+            "paste",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(
+                    dioxus::html::SerializedClipboardData {},
+                ))) as Rc<dyn Any>,
+                true,
+            ),
+            paste_target,
+        );
+        dom.runtime().handle_event("change", select(), picker);
+        let input = CLIPBOARD_INPUT.with(|slot| slot.borrow().unwrap());
+        let ids = input
+            .call(crate::clipboard::ClipboardInput::Reserve {
+                names: vec!["clipboard.gif".into()],
+            })
+            .unwrap();
+        input.call(crate::clipboard::ClipboardInput::Finish {
+            id: ids[0].unwrap(),
+            data: Some("R0lGODlh".into()),
+            error: None,
+        });
+        dom.wait_for_work().await;
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.find("clipboard.gif").unwrap() < html.find("wrong.jpg").unwrap());
+        drop(dom);
+        let mut dom = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                advertised: true,
+                audio: true,
+                sent: sent.clone(),
+                reject: reject.clone(),
+            },
+        );
+        let edits = dom.rebuild_to_vec().edits;
+        let picker = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "change" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
         dom.runtime().handle_event("change", select(), picker);
         for _ in 0..5 {
             dom.wait_for_work().await;

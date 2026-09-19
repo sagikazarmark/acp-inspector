@@ -18,6 +18,7 @@ dependencies = [
  "png 0.18.1",
  "schemaform",
  "schemaform-dioxus",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -230,7 +230,10 @@ host repository and depended on none of its crates: patterns were copied, never 
 Where the Agent advertises `promptCapabilities.image`, the composer accepts PNG,
 JPEG, GIF and WebP; `promptCapabilities.audio` admits WAV and MP3. Mixed drafts
 share a limit of eight attachments, 5 MiB each and 6 MiB of original bytes total.
-Select multiple files or drop them onto the composer. Batches append in arrival
+Select multiple files, drop them onto the composer, or paste clipboard images
+where the Agent advertises images. Ordinary text paste is preserved, including
+text alongside an image. Clipboard bytes are those supplied by the platform;
+the inspector does not re-encode them. Batches append in arrival
 order; files keep the order the picker/drop source supplied. Each row has a name,
 loading/failure state or preview/MIME/byte count, and an individual Remove control.
 Repeated selections intentionally add duplicates. Send waits for reads to finish
@@ -247,7 +250,7 @@ the Agent's eventual answer is awaited separately.
 
 On Linux, native file selection needs a desktop file-picker portal or `zenity`
 (included in `devenv shell`). Audio playback needs GStreamer's base, good and ugly
-plugins, also exposed by the shell. Embedded context and clipboard prompt input
+plugins, also exposed by the shell. Embedded context and clipboard audio input
 remain deferred. Non-file text/URL drops are not attachments; file drops outside
 the composer do not navigate the inspector window.
 
