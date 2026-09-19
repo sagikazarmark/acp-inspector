@@ -1125,8 +1125,8 @@ fn App() -> Element {
                 },
             }
 
-            div { class: spine().class(),
-            if spine() == Spine::Split {
+            Screens { spine: spine(),
+            timeline: rsx! {
             Timeline {
                 prompt_epoch: prompt_epoch(),
                 image_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image),
@@ -1233,11 +1233,11 @@ fn App() -> Element {
                     sought.set(None);
                 },
             }
-            }
+            },
 
             // The wire and the agent's diagnostics, beside the turn: two tabs,
             // one at a time (§9, ADR 0009).
-            Console {
+            console: rsx! { Console {
                 frames,
                 dropped_frames: dropped(),
                 saved: exported(),
@@ -1265,7 +1265,7 @@ fn App() -> Element {
                     revealed.set(Vec::new());
                     timeline::focus_entry(ordinal);
                 },
-            }
+            } }
             }
         }
 
@@ -1295,6 +1295,23 @@ fn App() -> Element {
         Toast { said: announcer.said() }
     }
 }
+
+/// The two live screens and the layout that chooses which is visible.
+#[component]
+fn Screens(spine: Spine, timeline: Element, console: Element) -> Element {
+    rsx! {
+        div { class: spine.class(),
+            // Layout changes visibility, not the lifetime of draft-owning
+            // components. The existing spine-wire rule uses display: none,
+            // removing the Timeline from keyboard and accessibility navigation.
+            {timeline}
+            {console}
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests;
 
 /// What the palette needs of the window: the state that decides which commands
 /// there are, and the handlers they call.
