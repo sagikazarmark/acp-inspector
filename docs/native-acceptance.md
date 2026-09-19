@@ -147,6 +147,58 @@ Testy's all-advertised run alone cannot pass that row. Record the command and
 initialize Frame for each combination. In every sending row record the Agent's
 actual outcome; accepting the embedded shape is not proof of PDF interpretation.
 
+## MCP transport selector keyboard checks
+
+Prepare one named MCP row in Launch. With no next Agent Advertisement known, all
+three transports are selectable. Navigate using Tab/Shift+Tab, then verify:
+
+1. Select stdio, HTTP and SSE; Tab reaches Command for stdio and URL for HTTP/SSE.
+   Enter a URL and ordered headers by keyboard. Switch transports and back: values
+   survive, while only the selected transport's fields are sent.
+2. Launch Testy with SSE selected. Testy advertises HTTP but not SSE: initialize
+   answers, no Session-opening Frame crosses, and Sessions shows the retained SSE
+   row and finding. Use the keyboard to select HTTP and open a Session. The
+   finding and stale launch failure clear, Sessions closes, and Trace contains HTTP.
+3. Reconnect: the Launch selector allows SSE again despite the previous Agent's
+   claims. The next initialize determines whether that draft may open a Session.
+4. Repeat at 960 × 640 and 1440 × 880 content sizes. Verify field labels, header
+   controls, visible focus and local scrolling. Repeat with the platform reader;
+   DOM labels and keyboard reachability alone do not establish spoken acceptance.
+
+On Linux WebKitGTK 2.52.4, an arrow on a **closed** select commits immediately.
+Follow it with Tab, **not Enter then Tab**: that extra Enter opens the popup and
+Tab stays there. To choose within the popup, use Space → arrow → Enter → Tab.
+Escape closes an accidentally opened popup without changing the committed value.
+Record the native conventions on macOS/Windows rather than assuming this behavior.
+
+### Repeatable Linux probe
+
+Requirements: Node with global WebSocket (tested Node 24), `xdotool`, a focused
+Linux inspector window, and WebKit remote inspection enabled at launch with
+`WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9223`. Keep inspection local and stop it
+afterward. The script uses real X11 keyboard events and read-only DOM inspection;
+it never focuses controls or dispatches DOM input events itself. It exits after
+12 seconds if inspection cannot complete. It is an opt-in acceptance tool, not a
+portable CI test. `DISPLAY` must identify the inspector's X11 session; override
+`WEBKIT_DEBUG_SOCKET` if the WebKit page socket differs from the default.
+
+With the launch dialog open, one server row present, stdio selected, and focus on
+its Command field:
+
+```sh
+node scripts/check-mcp-keyboard.mjs http shift+Tab Down Tab
+node scripts/check-mcp-keyboard.mjs sse shift+Tab Down Tab
+node scripts/check-mcp-keyboard.mjs http shift+Tab space Up Return Tab
+node scripts/check-mcp-keyboard.mjs stdio shift+Tab Up Tab
+```
+
+Each command asserts the committed transport, visible field family and final
+focus. A deliberate reproduction from stdio's Command field is
+`node scripts/check-mcp-keyboard.mjs http shift+Tab Down Return Tab`: it must fail
+the focus assertion on this WebKitGTK version. Recover with
+`node scripts/check-mcp-keyboard.mjs http Escape Tab`. The failed sequence is a
+driver mistake, not an application regression to "fix" by overriding native keys.
+
 ## Report remaining blockers
 
 Attach evidence to #9 or #10 using the IDs above and the matrix Elicitation step

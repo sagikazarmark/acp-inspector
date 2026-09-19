@@ -94,6 +94,33 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### MCP native keyboard selector, 2026-09-19
+
+Fresh build of `8252239`, Linux WebKitGTK 2.52.4, Xvfb/Openbox at 96 DPI, Node 24
+and xdotool. This closes the Linux keyboard-selection gap in the HTTP/SSE entry
+below. All transport changes in this repeat used native keys, with DOM inspection
+read-only; no DOM focus or `change` dispatch was used.
+
+The old driver sequence reproduced deterministically: a closed select's Down
+committed HTTP, Enter opened the popup, then Tab remained on Transport. Escape
+followed by Tab reached URL. Both Down → Tab and Space → arrow → Enter → Tab
+passed. `scripts/check-mcp-keyboard.mjs` asserts committed transport, matching
+field family and final focus; the old sequence fails that assertion, while the
+correct sequences pass for stdio, HTTP and SSE. No application defect was found.
+
+Keyboard-only SSE drafting before Testy Launch produced the unsupported-SSE
+finding with no `session/new`. Up selected HTTP, Tab reached the retained URL,
+and opening a Session succeeded, cleared the stale failure and closed Sessions.
+Reconnect allowed SSE again despite Testy's previous claim. Header name/value
+fields were entered by keyboard; Trace contained HTTP and `X-Token: two words`.
+
+At 960 × 640, document scroll/client widths were 960/960 and the Connect box
+618/618. At 1440 × 880, document widths were 1440/1440; the Sessions selector also
+passed stdio/HTTP changes and field navigation. Accessible DOM names identified
+Transport, URL, Command and header pairs. No screen-reader listening pass was run;
+macOS/Windows and spoken acceptance remain #9/#10. See the native runbook for
+reproduction and platform-specific remaining checks.
+
 ### HTTP/SSE MCP correction flow, 2026-09-19
 
 Linux WebKitGTK/Xvfb/Openbox at a 1440 × 855 content viewport: prepared an SSE
