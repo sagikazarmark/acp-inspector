@@ -55,6 +55,10 @@ Dark**, and **System** with the operating system in both light and dark mode. Sy
 
 ## Desktop walkthrough
 
+The [native acceptance runbook](native-acceptance.md) supplies remaining Linux
+Orca/live-theme steps and a repeatable macOS/Windows attachment checklist, fixture
+preparation and evidence template for #9/#10.
+
 Use Testy from `just testy`, then launch the inspector with `just run`. Repeat the walkthrough at
 both window sizes and each Appearance combination above. At every step, `document.documentElement`
 and `body` must have `scrollWidth <= clientWidth`; the rail, the Timeline and the Console may scroll
@@ -89,6 +93,41 @@ only on their documented inner axis.
 | Adversarial width | Use unbroken 2,000-character Agent/client names, versions, protocol ids, capability labels, auth methods, paths, values and refusals | Every value wraps or scrolls locally; no document or rail horizontal scrollbar and no inaccessible clipping at either size |
 
 ## Recorded execution
+
+### Live Linux XSettings and Orca speech generation, 2026-09-19
+
+Build from the PDF work merged as `2b984e6`; Linux WebKitGTK 2.52.4,
+Xvfb/Openbox at 96 DPI, xsettingsd 1.0.2, Orca 50.2. No `GTK_THEME` override.
+Changing the isolated XSettings owner from `Net/ThemeName "Adwaita"` /
+`Gtk/ApplicationPreferDarkTheme 0` to `"Adwaita-dark"` / `1`, then back, updated
+the **same running WebView**. Reload was xsettingsd SIGHUP, not an inspector restart.
+
+| Observation | Result |
+|---|---|
+| System light → dark → light | `data-theme` stayed absent; `matchMedia` change notifications included `true,false`; body background changed `rgb(244, 246, 248)` → `rgb(10, 12, 15)` → light |
+| Explicit Light while native preference became dark | `inspector-light`, dark media query true, body remained light |
+| Explicit Dark with native preference light | `inspector-dark`, dark media query false, body remained dark |
+| Narrow live transition | 960 × 640 actual content viewport, root scroll/client widths both 960; System returned from dark to light |
+
+The initial content viewport was 1440 × 855 (1440 × 880 outer window with native
+menu). This focused run does not claim the full 1440 × 880 content matrix.
+Native GTK/WebKit live propagation is now observed, beyond the earlier startup-only
+evidence. GNOME/KDE preference integration remains a desktop acceptance step.
+
+Orca discovered the inspector through AT-SPI and selected its WebKitGTK script.
+With Testy's `elicitations`, generated `SPEECH OUTPUT` included **“Format email:
+not checked here.”** and **“Above the maximum of 120.”** Keyboard Age summary
+activation focused the `999` field. Correction to `20` removed the DOM description
+and maximum finding. Restoring `999` and accepting kept focus on the now-unavailable
+Accept control; the resolved Age summary focused its read-only `999` input.
+
+**Spoken acceptance remains blocked:** Orca reported failure to connect to Speech
+Dispatcher, and later output explicitly reported `client not available`. This is
+Orca-generated speech evidence, not audible output, timing/interruptibility, or a
+verified cleared spoken announcement. The remaining Elicitation requests and full
+matrix were not completed in this focused run. No application defect requiring a
+code change was established. #10 stays open for a listening pass and real-desktop
+integration; #9 stays open for native macOS/Windows. See the runbook linked above.
 
 ### PDF attachments, 2026-09-19
 
