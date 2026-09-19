@@ -100,6 +100,7 @@ pub fn Sessions(claims: Claims) -> Element {
                         claims.on_new_session,
                     )
                 }
+                crate::mcp::McpEditor { prefix:"sessions" }
             }
 
             // The click outside, which `showModal` does not give (`connect.rs`).

@@ -94,6 +94,28 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Stdio MCP Session input, 2026-09-19
+
+Linux WebKitGTK/Xvfb/Openbox: before Launch, keyboard entry added `tools`, command
+`/not-installed/mcp`, one empty argument and `TOKEN` with an empty value. A scripted
+Agent answered initialize/new; Trace carried exactly that ordered definition.
+The nonexistent executable was not checked or run by the inspector. A subsequent
+rail `session/new` and explicit reconnect/Launch retained and supplied the list.
+
+Changing the command to `relative` in Sessions exposed the command finding in the
+launch dialog too. Correcting it retained the editor's expansion. With three server
+rows, two consecutive keyboard Down activations moved the same definition from
+first to last, focus following it; removing that last row focused its nearest
+survivor. At a 960 × 640 content viewport the document measured 960/960 scroll/client
+width and the Sessions box 678/678. Initial viewport was 1440 × 855.
+
+Automated core tests cover new/load/resume/reconnect, exact empty arguments and
+duplicate environment values, invalid drafts sending no Frames or switching the
+Session/Connection, and edits during initialize applying only to the next opening.
+Rendered editor tests exercise validation, argument/server reordering, environment
+editing and removal through callbacks. This run establishes Session request input,
+not MCP connectivity; native macOS/Windows remains acceptance work.
+
 ### Live Linux XSettings and Orca speech generation, 2026-09-19
 
 Build from the PDF work merged as `2b984e6`; Linux WebKitGTK 2.52.4,

@@ -37,6 +37,8 @@ pub enum CallError {
     /// underneath it cannot say. Naming a plausible directory instead is the
     /// one thing this tool may not do.
     NoWorkingDirectory,
+    /// Inspector-supplied MCP input is incomplete; no Session call was made.
+    InvalidMcp(String),
     /// The blocking request was not waiting for this answer, so it was not
     /// sent: it has one already, or the turn it blocked ended without it. The
     /// agent asked once and is told once — a second response to an id already
@@ -74,6 +76,7 @@ impl std::fmt::Display for CallError {
             Self::NoWorkingDirectory => {
                 f.write_str("the session's working directory could not be named")
             }
+            Self::InvalidMcp(problem) => f.write_str(problem),
             Self::NotWaiting => {
                 f.write_str("the agent is no longer waiting for an answer to that request")
             }

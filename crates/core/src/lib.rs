@@ -116,6 +116,8 @@ mod indentation;
 mod inspector;
 mod kept;
 mod listing;
+mod mcp;
+pub use mcp::{McpDraft, McpEnv, McpFinding, StdioMcp};
 mod permission;
 mod recent;
 mod restore;

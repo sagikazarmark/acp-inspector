@@ -856,7 +856,7 @@ enum Unreached {
     /// — the consequence §7.5 records, made visible where it bites.
     NoListingRow,
     /// The two MCP transports. Every session is opened with an empty
-    /// `mcpServers`, and that too is deferred with a ring owed (§1.1).
+    /// `mcpServers`; this ring's editor supplies only stdio definitions (§1.1).
     NoMcpServers,
 }
 
@@ -874,7 +874,9 @@ impl Unreached {
             Self::NoListingRow => {
                 "it is pressed on a listing row, and this agent advertised no session/list"
             }
-            Self::NoMcpServers => "a session is opened with an empty mcpServers",
+            Self::NoMcpServers => {
+                "the MCP editor supplies stdio definitions only; HTTP and SSE are deferred"
+            }
         }
     }
 
@@ -4055,14 +4057,16 @@ mod tests {
     fn the_prompt_content_and_mcp_runs_say_this_tool_cannot_drive_them_either_way() {
         // **Whether or not the agent advertised them** (§7.7), because the
         // sentence is about this tool: the composer sends one text block and
-        // `mcpServers` is always empty, and an agent's silence does not change
+        // The MCP editor supplies stdio only, and an agent's silence does not change
         // either. Both fixtures, because a run that said it whatever it was
         // handed would pass a test that only ever asked one of them.
         for agent in [everything(), nothing()] {
             let panel = shown(agent, true);
 
-            for (capability, because) in [("http", "empty mcpServers"), ("sse", "empty mcpServers")]
-            {
+            for (capability, because) in [
+                ("http", "stdio definitions only"),
+                ("sse", "stdio definitions only"),
+            ] {
                 let run = run_for(&panel, capability);
                 assert!(
                     (run.contains(CANNOT_ANY) || run.contains(CANNOT)) && run.contains(because),

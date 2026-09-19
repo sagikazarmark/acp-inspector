@@ -99,6 +99,7 @@ pub struct Inspector(Arc<State>);
 
 #[derive(Default)]
 struct State {
+    mcp: Mutex<crate::McpDraft>,
     trace: Trace,
     diagnostics: DiagnosticLog,
     status: Field<ConnectionStatus>,
@@ -119,6 +120,15 @@ struct Live {
 }
 
 impl Inspector {
+    /// In-memory input only. Editing affects later opens, never the live Session.
+    /// Kept over disconnect/reconnect, never included in recent commands.
+    pub fn set_mcp_draft(&self, draft: crate::McpDraft) {
+        *self.0.mcp.lock().unwrap_or_else(|e| e.into_inner()) = draft;
+    }
+
+    pub fn mcp_draft(&self) -> crate::McpDraft {
+        self.0.mcp.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -234,6 +244,9 @@ impl Inspector {
     /// a handshake that failed is when the trace and the console are worth the
     /// most.
     pub async fn start(&self, command: &AgentCommand) -> Result<v1::SessionId, CallError> {
+        // Snapshot before initialize: edits during the handshake belong to the
+        // next opening, and an invalid draft must not replace a live Connection.
+        let mcp = self.mcp_draft().definitions()?;
         // Before the spawn, because it is the one step that can fail without
         // the agent having anything to do with it, and starting a process to
         // then tell the user we cannot name a directory for it would be a
@@ -247,7 +260,7 @@ impl Inspector {
         // button, where there is an agent that has said whether it advertises
         // `additionalDirectories`, and a launch is the one session opened before
         // anything is known about that.
-        self.new_session(cwd, None).await
+        self.client()?.new_session(cwd, None, mcp).await
     }
 
     /// Opens another session on the agent this command launched, without
@@ -293,7 +306,7 @@ impl Inspector {
     }
 
     /// Creates the session every turn happens in: `session/new` with this cwd
-    /// and no MCP servers (§7.1).
+    /// and the current inspector-supplied MCP definitions (§7.1).
     ///
     /// The cwd is the spawn form's — [`AgentCommand::session_cwd`] turns what
     /// was typed into the absolute path ACP requires.
@@ -344,8 +357,9 @@ impl Inspector {
         roots: Option<Roots>,
     ) -> Result<v1::SessionId, CallError> {
         let cwd = cwd.into();
+        let mcp = self.mcp_draft().definitions()?;
         match self.client() {
-            Ok(client) => client.new_session(cwd, roots.as_ref()).await,
+            Ok(client) => client.new_session(cwd, roots.as_ref(), mcp).await,
             Err(error) => {
                 self.roots_refused(&roots::creating(roots.as_ref(), &cwd), &error);
                 Err(error)
@@ -358,7 +372,7 @@ impl Inspector {
     ///
     /// **One operation with a property**, which is what
     /// [`Restore::replays`](crate::Restore::replays) is: the two calls are
-    /// field-for-field identical and differ only in an ordering the
+    /// carry the same inputs (resume omits an empty MCP list) and differ in an ordering the
     /// specification states — load replays the conversation as `session/update`
     /// notifications before it answers, resume does not replay it at all. Which
     /// one this agent offers is [`advertised_restore`](Self::advertised_restore),
@@ -371,7 +385,8 @@ impl Inspector {
     /// directory the session was opened in, and the roots it reported — so
     /// opening one is handing back what the agent said about it.
     ///
-    /// **`roots` is the one part of that the user may change** (§7.5, §7.7).
+    /// **`roots` is the reported part the user may change** (§7.5, §7.7).
+    /// MCP definitions come from the inspector's current draft, never the listing.
     /// `None` asks for the roots the listing reported, which is what a reopen
     /// does by default and what it does whatever the agent advertised: handing
     /// an agent its own words back is fidelity to the session being reopened
@@ -408,8 +423,9 @@ impl Inspector {
         how: Restore,
         roots: Option<Roots>,
     ) -> Result<v1::SessionId, CallError> {
+        let mcp = self.mcp_draft().definitions()?;
         match self.client() {
-            Ok(client) => client.restore(session, how, roots.as_ref()).await,
+            Ok(client) => client.restore(session, how, roots.as_ref(), mcp).await,
             Err(error) => {
                 self.drive_refused(drives(how), &error);
                 self.roots_refused(&roots::reopening(roots.as_ref(), session), &error);

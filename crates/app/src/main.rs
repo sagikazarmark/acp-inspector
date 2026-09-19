@@ -45,6 +45,7 @@ mod json;
 mod attachment;
 #[cfg(feature = "desktop")]
 mod mark;
+mod mcp;
 #[cfg(test)]
 mod mock;
 mod palette;
@@ -279,6 +280,7 @@ fn App() -> Element {
     // core's rule (`CONTEXT.md`, *Connection*), so the window has nothing to
     // arbitrate.
     let inspector = use_hook(Inspector::new);
+    mcp::provide(inspector.clone());
 
     // What the spawn form remembers (§9). Read once, at the window's start,
     // because that is what "across restarts" means: nothing else writes the
@@ -756,6 +758,9 @@ fn App() -> Element {
             shell::command::CLEAR_TRACE => menu_clear.trace().clear(),
             shell::command::STOP_AGENT => menu_stop.disconnect(),
             shell::command::NEW_SESSION => {
+                if !mcp::ready_to_open() {
+                    return;
+                }
                 let Some(command) = launched() else {
                     return;
                 };
@@ -848,6 +853,9 @@ fn App() -> Element {
         // holds is what this session is opened with, and `None` is
         // an agent that advertised no control at all (§7.7).
         on_new_session: EventHandler::new(move |roots: Option<Roots>| {
+            if !mcp::ready_to_open() {
+                return;
+            }
             let inspector = opening.clone();
             // The invocation, not a directory: which command is
             // running is this window's to remember, and what
@@ -889,6 +897,9 @@ fn App() -> Element {
         // the one call (§5). What comes back is why there is no new
         // live session, if there is none.
         on_open: EventHandler::new(move |opening: Opening| {
+            if !mcp::ready_to_open() {
+                return;
+            }
             let inspector = restoring_session.clone();
             let Some(how) = restores() else {
                 return;
@@ -979,6 +990,7 @@ fn App() -> Element {
                     // (§5). What comes back is the first thing that went wrong, if
                     // anything did; everything else is already in a store.
                     on_launch: move |agent: AgentCommand| {
+                         if !mcp::valid() { return; }
                         let inspector = starting.clone();
                         let recent = recording.clone();
                         launching.set(true);
@@ -1121,6 +1133,7 @@ fn App() -> Element {
                 on_new_session: live().map(|command| {
                     let inspector = opening_from_timeline.clone();
                     EventHandler::new(move |()| {
+                        if !mcp::ready_to_open() { return; }
                         let inspector = inspector.clone();
                         let command = command.clone();
                         failed.set(None);
