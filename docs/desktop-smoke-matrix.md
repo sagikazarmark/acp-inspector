@@ -94,6 +94,24 @@ only on their documented inner axis.
 
 ## Recorded execution
 
+### Portable acceptance Agent, 2026-09-19
+
+The committed `scripts/acceptance-agent.py` replaces temporary attachment/MCP
+fixtures for the native runbook. Python 3.9+ and the standard library are its only
+runtime requirements. Linux WebKitGTK/Xvfb/Openbox launched it through the native
+Connection form, dropped the 335-byte PDF and 63-byte UTF-8 source fixtures, and
+sent an attachment-only prompt. The Timeline showed ordered receipt hashes and
+`acceptance-1`; the Turn reached `end_turn`.
+
+Fifteen real-pipe subprocess tests cover independent Advertisements, binary/UTF-8
+receipt hashes and URIs, load replay ordering, resume without replay, multiple
+Session histories, MCP replacement/counts, delayed setup responsiveness, held and
+delayed/refused Turn cancellation, close/delete cancellation, malformed input,
+CLI bounds and clean EOF shutdown with pending work. They use the current Python
+interpreter and no shell-specific Agent commands. These tests were executed on
+Linux; the code and invocation are portable, but native macOS/Windows execution
+and screen-reader acceptance remain unrun. Testy remains the Elicitation fixture.
+
 ### MCP native keyboard selector, 2026-09-19
 
 Fresh build of `8252239`, Linux WebKitGTK 2.52.4, Xvfb/Openbox at 96 DPI, Node 24

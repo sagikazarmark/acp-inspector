@@ -34,6 +34,99 @@ absolute working directory. Record the native executable path rather than copyin
 Linux paths onto macOS/Windows. Check its `initialize` result in Trace: the current
 fixture advertises image, audio and embedded context.
 
+For attachment and MCP scenarios, use the portable Agent below instead. Testy
+remains the fixture for Elicitation, permission, Session Settings and other matrix
+rows; the portable Agent implements none of those callbacks.
+
+## Portable attachment/MCP acceptance Agent
+
+`scripts/acceptance-agent.py` needs **Python 3.9+**, with no packages, Testy build,
+shell scripts or network access. Find the interpreter's absolute path by running
+`python3 -c "import sys; print(sys.executable)"` on Linux/macOS or
+`py -3 -c "import sys; print(sys.executable)"` in Windows PowerShell. Check its
+version. Enter that printed path as the inspector's **Command**.
+
+Set **Arguments**, one argument per line, to:
+
+```text
+-u
+/absolute/checkout/scripts/acceptance-agent.py
+--prompt-capabilities
+all
+--mcp-capabilities
+all
+```
+
+On Windows the script line is an absolute Windows path, for example
+`C:\work\acp-inspector\scripts\acceptance-agent.py`; on macOS it might be
+`/Users/reader/acp-inspector/scripts/acceptance-agent.py`. Each path is a single
+argument line even when it contains spaces: do not add shell quotation marks in
+the inspector's Arguments field. Set **Working directory** to the absolute fixture
+folder, and leave **Environment** empty. The Agent communicates on stdin/stdout
+as UTF-8 JSONL; do not launch it by opening the `.py` file in an editor.
+
+| Scenario | Argument lines to change/add | Drive and expected evidence |
+|---|---|---|
+| All attachment kinds | `--prompt-capabilities` then `all` | A1–A13: ordinary prompts return an ordered receipt and `end_turn` |
+| No attachments | `--prompt-capabilities` then `none` | A14: attachment input absent; text prompts still work |
+| Independent attachment gates | Value `image`, `audio`, or `embeddedContext` | A14: each claim independently controls admission; PDF belongs to embedded context |
+| Mixed subset | Value `image,embeddedContext` | Images/text/PDF offered without audio |
+| MCP gates | `--mcp-capabilities` then `none`, `http`, `sse`, or `all` | Stdio is baseline in all cases; unsupported HTTP/SSE drafts block first Session in inspector |
+| Load replay | `--restore` then `load` | Send a prompt, open a second Session, list and reopen the first; saved receipt updates replay before load answer |
+| Resume only | `--restore` then `resume` | List/reopen without replay; MCP definitions supplied by this request replace the fixture's receipt summary |
+| No restore | `--restore` then `none` | Listing is available, neither restore method advertised |
+| Delayed initialize | `--delay` then `initialize=2` | Edit MCP draft during handshake; first setup uses captured input, next opening uses edited input |
+| Delayed setup | `--delay` then `session/new=2` (or load/resume) | Observe pending setup; response and Session mutation happen after delay |
+| Delayed Turn | `--delay` then `session/prompt=2` | Stop before completion; exactly one `cancelled` answer, no later receipt/end_turn |
+| Held Turn | `--hold-prompts` | Prompt waits until Stop, Session switch cancellation or close/delete; listing/new requests stay responsive |
+| Refusal | `--refuse` then `session/new`, `session/load`, `session/resume` or `session/prompt` | Deterministic error with no requested operation applied; combine with delay for a slow refusal |
+
+Capability values can also be comma-separated subsets. Defaults are `all` for
+both capability groups and `both` for restore (the inspector prefers load).
+`--delay` and `--refuse` may repeat for different methods; a repeated delay for the
+same method uses the last value. Delays accept 0–30 finite seconds. A refusal uses
+`-32602` by default; `--error-code` accepts a signed 32-bit code. Refusal takes
+precedence over hold behavior, so `--hold-prompts --refuse session/prompt` refuses
+rather than holding. A delayed prompt refusal still represents a pending Turn:
+Stop cancels it and suppresses the scheduled error. Refusal remains active for that process; reconnect with it
+removed to test recovery. Run `python scripts/acceptance-agent.py --help` for all
+supported methods, or `--version` to record the fixture version.
+
+The fixture never starts MCP subprocesses, opens URLs, or persists Sessions.
+Reconnect starts again at `acceptance-1`; restoration is within one process only.
+Close cancels any pending Turn but keeps the Session in the fixture's listing;
+delete also removes it. Empty/missing MCP lists mean no definitions here, not a
+claim about other Agents' inheritance semantics. EOF stops immediately, abandoning
+pending delayed replies; diagnostic/CLI errors use stderr, never protocol stdout.
+Incoming Frames above 12 MiB are refused and the process exits (the inspector's
+outgoing prompt limit is 10 MiB). This fixture's choices are test behavior, not ACP
+conformance assertions about other Agents.
+
+### Reading receipts
+
+The reply is a text update containing JSON: Session ID, ordered `blocks`, and an
+ordered MCP summary. Each content block has decoded UTF-8/binary `bytes` and
+`sha256`, plus MIME/URI where supplied. Compare those hashes with the fixture
+folder's hashes. The Agent does not decode media or infer its MIME; it reports
+what it received. A valid base64 payload is not proof of a valid PDF/image/audio.
+
+MCP summaries include name, transport and argument/environment/header **counts**.
+Use the outgoing setup Frame to verify exact URLs, commands, empty arguments,
+duplicate names and header values. The receipt deliberately avoids echoing full
+attachments or credential values; Trace still contains the original request.
+Load replays saved receipt updates before answering; resume emits none. Cancelled
+or refused Turns add no receipt to replay.
+
+Run the real-pipe tests from the checkout root:
+
+```sh
+python3 -m unittest discover -s scripts -p test_acceptance_agent.py -v
+```
+
+Use `py -3` instead of `python3` on Windows, or `just test-acceptance-agent` where
+`python3` is available. These checks exercise the portable protocol process, not
+native screen readers or platform WebViews.
+
 ## Linux remaining acceptance (#10)
 
 Run on a desktop with working speech output. Confirm Orca can audibly announce an
@@ -142,7 +235,7 @@ needed and record that preference.
 | A14 | Repeat with Agents advertising none, only image, only audio, only embedded context | Offered controls/hints follow each Advertisement. Wrong-kind drops become failed rows where attachment input is available; none advertised offers no attachment input. PDF uses embedded context, not the image claim. Save each initialize Frame. |
 | A15 | Traverse draft, previews, Remove and Send using the native reader at both sizes/themes | Names/descriptions, visible focus, local scrolling and failure feedback remain usable; document has no horizontal scrollbar. |
 
-Use a controlled Agent whose initialize Advertisements can be changed for A14;
+Use the portable Agent's `--prompt-capabilities` combinations for A14;
 Testy's all-advertised run alone cannot pass that row. Record the command and
 initialize Frame for each combination. In every sending row record the Agent's
 actual outcome; accepting the embedded shape is not proof of PDF interpretation.
@@ -159,6 +252,8 @@ three transports are selectable. Navigate using Tab/Shift+Tab, then verify:
    answers, no Session-opening Frame crosses, and Sessions shows the retained SSE
    row and finding. Use the keyboard to select HTTP and open a Session. The
    finding and stale launch failure clear, Sessions closes, and Trace contains HTTP.
+   Alternatively use the portable Agent with `--mcp-capabilities` / `http` for the
+   same gate. Use `sse` to test the inverse or `none` to correct to stdio.
 3. Reconnect: the Launch selector allows SSE again despite the previous Agent's
    claims. The next initialize determines whether that draft may open a Session.
 4. Repeat at 960 × 640 and 1440 × 880 content sizes. Verify field labels, header

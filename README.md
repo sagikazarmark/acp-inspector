@@ -227,6 +227,13 @@ host repository and depended on none of its crates: patterns were copied, never 
 
 ## Running it
 
+For reproducible attachment/MCP acceptance scenarios without building Testy,
+launch the Python 3.9+ standard-library fixture `scripts/acceptance-agent.py` as
+the Agent. It offers selectable Advertisements, delayed/refused responses and
+ordered attachment hash receipts. See the [native acceptance runbook](docs/native-acceptance.md#portable-attachmentmcp-acceptance-agent)
+for exact launch fields and scenarios; `just test-acceptance-agent` verifies its
+stdio protocol. Testy remains the fixture for Elicitations and permission requests.
+
 **Stdio, HTTP and SSE MCP definitions** can be entered before Launch or in Sessions.
 One in-memory list is supplied on subsequent `session/new`, `session/load` and
 `session/resume` calls, including shortcuts. Give each server a nonblank name.
