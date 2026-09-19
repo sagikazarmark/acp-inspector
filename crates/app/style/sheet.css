@@ -2713,6 +2713,19 @@
 .prompt-image:has(audio) {
   flex-wrap: wrap;
 }
+.prompt-image:has(details) {
+  flex-wrap: wrap;
+}
+.prompt-image details {
+  min-width: 0;
+  max-width: 100%;
+}
+.prompt-text-preview {
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .prompt-image span {
   overflow-wrap: anywhere;
   min-width: 0;

@@ -32,6 +32,7 @@ web = ["dioxus/web"]
 [dependencies]
 acp-inspector-core.workspace = true
 base64 = "0.22"
+url = "2"
 
 dioxus.workspace = true
 dioxus-field = { version = "0.7.0", default-features = false }

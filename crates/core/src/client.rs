@@ -1232,11 +1232,14 @@ impl Client {
         let has_audio = content
             .iter()
             .any(|block| matches!(block, v1::ContentBlock::Audio(_)));
+        let has_embedded = content
+            .iter()
+            .any(|block| matches!(block, v1::ContentBlock::Resource(_)));
         if content.iter().any(|block| {
-            !matches!(
+            !(matches!(
                 block,
                 v1::ContentBlock::Text(_) | v1::ContentBlock::Image(_) | v1::ContentBlock::Audio(_)
-            )
+            ) || matches!(block, v1::ContentBlock::Resource(resource) if matches!(resource.resource, v1::EmbeddedResourceResource::TextResourceContents(_))))
         }) {
             return Err(CallError::UnsupportedPromptContent);
         }
@@ -1266,10 +1269,24 @@ impl Client {
         let driven: Vec<_> = [
             (has_image, AgentCapability::Image),
             (has_audio, AgentCapability::Audio),
+            (has_embedded, AgentCapability::EmbeddedContext),
         ]
         .into_iter()
         .filter_map(|(present, kind)| present.then_some(kind))
         .collect();
+
+        if has_embedded
+            && !self.stores.agent.get().is_some_and(|agent| {
+                agent
+                    .agent_capabilities
+                    .prompt_capabilities
+                    .embedded_context
+            })
+        {
+            let error = CallError::EmbeddedContextNotAdvertised;
+            self.turn_failed(None, &error);
+            return Err(error);
+        }
 
         let call = self
             .rpc

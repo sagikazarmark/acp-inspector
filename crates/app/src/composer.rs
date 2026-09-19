@@ -58,7 +58,11 @@ use dioxus_free_icons::{
 };
 
 /// Picker hints follow each advertisement; signature validation is independent.
-fn accepted_media(image: bool, audio: bool) -> &'static str {
+fn accepted_media(image: bool, audio: bool, embedded: bool) -> &'static str {
+    // Text/source filenames are open-ended. Validate contents after selection.
+    if embedded {
+        return "";
+    }
     match (image, audio) {
         (true, true) => ".png,.jpg,.jpeg,.gif,.webp,.wav,.mp3",
         (true, false) => ".png,.jpg,.jpeg,.gif,.webp",
@@ -165,6 +169,7 @@ pub fn Composer(
     mode: Option<Cycle>,
     #[props(default)] image_advertised: bool,
     #[props(default)] audio_advertised: bool,
+    #[props(default)] embedded_advertised: bool,
     on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
     /// A mode the reader cycled to, on its way to `session/set_mode` — the same
@@ -193,6 +198,7 @@ pub fn Composer(
     let mut highlighted = use_signal(|| 0usize);
     let mut dismissed = use_signal(|| false);
     let running = turn.is_running();
+    let attachments_advertised = image_advertised || audio_advertised || embedded_advertised;
     let reserve = use_callback(move |names: Vec<String>| {
         let mut rejected = Vec::new();
         let ids = names
@@ -212,7 +218,7 @@ pub fn Composer(
         ids
     });
     let ingest = use_callback(move |files: Vec<FileData>| {
-        if !(image_advertised || audio_advertised) || !ready || running || files.is_empty() {
+        if !attachments_advertised || !ready || running || files.is_empty() {
             return;
         }
         if paste_waiting() > 0 {
@@ -239,12 +245,18 @@ pub fn Composer(
                     break;
                 };
                 let result = PromptMedia::from_file(file).await.and_then(|media| {
-                    if media.advertised(image_advertised, audio_advertised) {
+                    if media.advertised(image_advertised, audio_advertised, embedded_advertised) {
                         Ok(media)
                     } else {
                         Err(format!(
                             "The Agent did not advertise {} prompts.",
-                            if media.is_audio() { "audio" } else { "image" }
+                            if media.is_text() {
+                                "embedded context"
+                            } else if media.is_audio() {
+                                "audio"
+                            } else {
+                                "image"
+                            }
                         ))
                     }
                 });
@@ -308,7 +320,7 @@ pub fn Composer(
         && media.read().sendable()
         && overflow.read().is_none()
         && (!text().trim().is_empty()
-            || (image_advertised || audio_advertised) && !media.read().entries().is_empty());
+            || attachments_advertised && !media.read().entries().is_empty());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -331,16 +343,14 @@ pub fn Composer(
             let Some(attachments) = media.read().content() else {
                 return;
             };
-            if prompt.trim().is_empty()
-                && (!(image_advertised || audio_advertised) || attachments.is_empty())
-            {
+            if prompt.trim().is_empty() && (!attachments_advertised || attachments.is_empty()) {
                 return;
             }
             let mut content = Vec::new();
             if !prompt.trim().is_empty() {
                 content.push(v1::ContentBlock::from(prompt));
             }
-            if image_advertised || audio_advertised {
+            if attachments_advertised {
                 content.extend(attachments);
             }
             if let Err(error) = on_prompt.call(content) {
@@ -442,12 +452,13 @@ pub fn Composer(
             }
 
             div { class: "prompt-box",
-                if image_advertised || audio_advertised {
+                if attachments_advertised {
                     div { class: "prompt-image-picker",
                         label { class: "hint",
-                            "Add or drop media · 8 attachments · 5 MiB each · 6 MiB total"
+                            "Add or drop files · 8 attachments · 5 MiB each · 6 MiB total"
+                            if embedded_advertised { span { "UTF-8 text files are embedded as contents. Preview shows the first 2000 characters." } }
                             if image_advertised { span { "Images can also be pasted from the clipboard." } }
-                            input { id: picker_id.clone(), name: "prompt-media", r#type: "file", accept: accepted_media(image_advertised, audio_advertised), multiple: true,
+                            input { id: picker_id.clone(), name: "prompt-media", r#type: "file", accept: accepted_media(image_advertised, audio_advertised, embedded_advertised), multiple: true,
                                 onmounted: {
                                     let id = picker_id.clone();
                                     move |_| { let bridge = document::eval(IMAGE_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
@@ -477,7 +488,8 @@ pub fn Composer(
                     div { key: "{entry.id}", class: "prompt-image", "data-slot": "image-attachment", "data-image-id": "{entry.id}",
                         match &entry.state {
                             MediaState::Ready(held) => rsx! {
-                                if held.is_audio() { AudioPreview { media: held.clone() } }
+                                if held.is_text() { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{held.text_preview()}" } } }
+                                else if held.is_audio() { AudioPreview { media: held.clone() } }
                                 else { img { src: held.preview(), alt: "Selected image: {held.name}" } }
                                 span { "{held.name} · {held.mime} · {held.bytes} bytes" }
                             },
@@ -886,6 +898,8 @@ mod tests {
         struct HostProps {
             advertised: bool,
             audio: bool,
+            #[props(default)]
+            embedded: bool,
             sent: Rc<RefCell<Vec<Vec<v1::ContentBlock>>>>,
             reject: Rc<std::cell::Cell<bool>>,
         }
@@ -893,13 +907,14 @@ mod tests {
             fn eq(&self, other: &Self) -> bool {
                 self.advertised == other.advertised
                     && self.audio == other.audio
+                    && self.embedded == other.embedded
                     && Rc::ptr_eq(&self.sent, &other.sent)
                     && Rc::ptr_eq(&self.reject, &other.reject)
             }
         }
         fn host(props: HostProps) -> Element {
             rsx! { Composer {turn:TurnState::Idle,ready:true,connected:true,blocked:false,problem:None,commands:vec![],mode:None,
-                image_advertised:props.advertised,audio_advertised:props.audio,on_prompt:move |content| {
+                image_advertised:props.advertised,audio_advertised:props.audio,embedded_advertised:props.embedded,on_prompt:move |content| {
                     if props.reject.get() { Err(CallError::PromptTooLarge) }
                     else { props.sent.borrow_mut().push(content); Ok(()) }
                 },on_stop: |_| {},on_set_mode: |_| {}}
@@ -912,6 +927,7 @@ mod tests {
             HostProps {
                 advertised: false,
                 audio: false,
+                embedded: false,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
@@ -923,6 +939,7 @@ mod tests {
             HostProps {
                 advertised: false,
                 audio: true,
+                embedded: false,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
@@ -931,12 +948,27 @@ mod tests {
         let html = dioxus_ssr::render(&audio_only);
         assert!(html.contains("accept=\".wav,.mp3\""));
         assert!(!html.contains(".png"));
+        let mut embedded_only = VirtualDom::new_with_props(
+            host,
+            HostProps {
+                advertised: false,
+                audio: false,
+                embedded: true,
+                sent: sent.clone(),
+                reject: reject.clone(),
+            },
+        );
+        embedded_only.rebuild_in_place();
+        let html = dioxus_ssr::render(&embedded_only);
+        assert!(html.contains("Attach media") && html.contains("UTF-8 text files"));
+        assert!(!html.contains("Images can also be pasted"));
         set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         let mut dom = VirtualDom::new_with_props(
             host,
             HostProps {
                 advertised: true,
                 audio: true,
+                embedded: true,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
@@ -1053,6 +1085,7 @@ mod tests {
             HostProps {
                 advertised: true,
                 audio: true,
+                embedded: true,
                 sent: sent.clone(),
                 reject: reject.clone(),
             },
@@ -1125,6 +1158,13 @@ mod tests {
                     content_type: None,
                     contents: Some(b"bad".to_vec().into()),
                 },
+                SerializedFileData {
+                    path: "/tmp/context #.rs".into(),
+                    size: 15,
+                    last_modified: 0,
+                    content_type: None,
+                    contents: Some(b"<script>\r\ntext".to_vec().into()),
+                },
             ]),
             drop_target,
         );
@@ -1137,7 +1177,7 @@ mod tests {
         for _ in 0..8 {
             dom.wait_for_work().await;
             added.extend(dom.render_immediate_to_vec().edits);
-            if dioxus_ssr::render(&dom).contains("identified by its file signature") {
+            if dioxus_ssr::render(&dom).contains("Text preview") {
                 break;
             }
         }
@@ -1145,9 +1185,13 @@ mod tests {
             dioxus_ssr::render(&dom)
                 .matches("data-slot=\"image-attachment\"")
                 .count(),
-            3
+            4
         );
         let preview = dioxus_ssr::render(&dom);
+        assert!(
+            preview.contains("Text preview") && preview.contains("&#60;script&#62;"),
+            "{preview}"
+        );
         assert!(
             preview.contains("<audio")
                 && preview.contains("controls")
@@ -1210,7 +1254,7 @@ mod tests {
             dioxus_ssr::render(&dom)
                 .matches("data-slot=\"image-attachment\"")
                 .count(),
-            2,
+            3,
             "non-file drop adds nothing"
         );
         reject.set(true);
@@ -1245,7 +1289,7 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
         assert_eq!(sent.borrow().len(), 1);
         assert!(
-            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav")
+            matches!(&sent.borrow()[0][..],[v1::ContentBlock::Text(text),v1::ContentBlock::Image(image),v1::ContentBlock::Audio(second),v1::ContentBlock::Resource(resource)] if text.text=="Describe these" && image.data=="iVBORw0KGgo=" && image.mime_type=="image/png" && second.data=="UklGRgQAAABXQVZF" && second.mime_type=="audio/wav" && matches!(&resource.resource,v1::EmbeddedResourceResource::TextResourceContents(file) if file.text=="<script>\r\ntext" && file.uri=="file:///tmp/context%20%23.rs"))
         );
         assert!(!dioxus_ssr::render(&dom).contains("image-attachment"));
     }
