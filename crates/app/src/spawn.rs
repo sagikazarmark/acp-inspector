@@ -71,10 +71,11 @@ pub fn SpawnForm(
         )));
     };
 
-    let launch_available = !launching && !running && agent().is_runnable();
+    let launch_available = !launching && !running && agent().is_runnable() && crate::mcp::valid();
 
     rsx! {
         div { class: "dialog-body", "data-slot": "spawn",
+            crate::mcp::McpEditor { prefix:"launch" }
             // The four fields the transport takes, each named by the key it
             // goes out under and what it is for — which is how the drawing lays
             // a form out, and what makes a field legible to somebody reading

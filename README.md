@@ -227,6 +227,25 @@ host repository and depended on none of its crates: patterns were copied, never 
 
 ## Running it
 
+**Stdio MCP definitions** can be entered before Launch or in the Sessions dialog.
+One in-memory list is supplied on subsequent `session/new`, `session/load` and
+`session/resume` calls, including shortcuts. Give each server a nonblank name and
+an absolute executable path on the Agent's machine; the inspector does not check
+that it exists or run it. Arguments and environment name/value pairs are ordered
+rows: empty arguments/values and duplicate environment entries are preserved.
+Rows can be added, moved and removed. Invalid input blocks opening and identifies
+the field to correct.
+
+Editing does not reconfigure the live Session. Explicit reconnect retains the
+list; it is not stored in recent commands or saved across application restarts.
+The shared editor always states how many MCP definitions the next opening will
+carry; clear the list when it should not be reused. MCP input is inspector-supplied,
+not recovered from a listed Session. The Agent owns MCP execution, and an answered
+Session-opening call does not establish individual MCP connectivity. Definitions
+and environment values appear verbatim in Trace and exports. HTTP/SSE definitions
+remain deferred. New/load send an empty `mcpServers` array when the list is empty;
+the pinned schema omits the empty field on resume.
+
 Where the Agent advertises `promptCapabilities.image`, the composer accepts PNG,
 JPEG, GIF and WebP; `promptCapabilities.audio` admits WAV and MP3;
 `promptCapabilities.embeddedContext` admits UTF-8 text/source files and PDFs. Mixed drafts

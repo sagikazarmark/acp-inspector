@@ -2,7 +2,7 @@
 //! `session/load` and `session/resume`, which are **one operation with a
 //! property** rather than two.
 //!
-//! Their requests and their responses are field-for-field identical, and the
+//! Their requests carry the same inputs (resume omits an empty MCP list), and the
 //! sole observable difference between them is an ordering the specification
 //! states twice: load MUST replay the entire conversation as `session/update`
 //! notifications and MUST NOT answer until every entry has been streamed, while

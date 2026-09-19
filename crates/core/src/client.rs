@@ -446,7 +446,7 @@ impl Client {
         Ok(response)
     }
 
-    /// `session/new`: the spawn form's working directory, and no MCP servers
+    /// `session/new`: the spawn form's working directory and supplied MCP definitions
     /// (§7.1).
     ///
     /// **Creating a session while one is live is a switch** (§7.5), and the
@@ -471,6 +471,7 @@ impl Client {
         &self,
         cwd: PathBuf,
         roots: Option<&Roots>,
+        mcp: Vec<v1::McpServer>,
     ) -> Result<v1::SessionId, CallError> {
         let switching = self.stores.session.get().is_some();
         if switching {
@@ -478,7 +479,7 @@ impl Client {
         }
 
         let request = v1::NewSessionRequest::new(cwd.clone())
-            .mcp_servers(vec![])
+            .mcp_servers(mcp)
             .additional_directories(roots::creating(roots, &cwd));
         let params = encode(&request);
         // `session/new` is the one lifecycle call no capability gates (§7.5), so
@@ -536,7 +537,7 @@ impl Client {
     /// and makes it the live one (§7.5).
     ///
     /// **One operation with a property, not two calls.** The two requests are
-    /// field-for-field identical and the sole difference is
+    /// carry the same inputs (resume omits an empty MCP list); their behavioral difference is
     /// [`Restore::replays`] — the ordering the specification states, and the
     /// thing that decides whether the timeline can be rebuilt at all. Which one
     /// is sent is the caller's to say, from what the agent advertised
@@ -607,6 +608,7 @@ impl Client {
         session: &v1::SessionInfo,
         how: Restore,
         roots: Option<&Roots>,
+        mcp: Vec<v1::McpServer>,
     ) -> Result<v1::SessionId, CallError> {
         let id = session.session_id.clone();
         let asked = roots::reopening(roots, session);
@@ -618,12 +620,12 @@ impl Client {
         let params = match how {
             Restore::Load => encode(
                 &v1::LoadSessionRequest::new(id.clone(), session.cwd.clone())
-                    .mcp_servers(vec![])
+                    .mcp_servers(mcp)
                     .additional_directories(asked.clone()),
             ),
             Restore::Resume => encode(
                 &v1::ResumeSessionRequest::new(id.clone(), session.cwd.clone())
-                    .mcp_servers(vec![])
+                    .mcp_servers(mcp)
                     .additional_directories(asked),
             ),
         };

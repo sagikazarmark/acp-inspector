@@ -227,8 +227,8 @@ fn connection(
                             class: "btn btn-xs btn-quiet btn-go",
                             "data-slot": "reconnect",
                             r#type: "button",
-                            title: "Open the launch fields to run it again",
-                            onclick: move |_| crate::connect::open(),
+                            title: "Disconnect and open the launch fields to run it again",
+                            onclick: move |_| { on_stop.call(()); crate::connect::open(); },
                             "reconnect"
                         }
                     }

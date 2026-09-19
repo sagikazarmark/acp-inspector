@@ -2733,6 +2733,32 @@
 .prompt-attachment button {
   flex: none;
 }
+.mcp-editor {
+  min-width: 0;
+  margin-block: 12px;
+}
+.mcp-server {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin-block: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+}
+.mcp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.mcp-row .input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.mcp-actions {
+  display: flex;
+  gap: 4px;
+}
 .elicitation-fields .schemaform {
   display: grid;
   gap: 12px;
