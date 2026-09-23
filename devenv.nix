@@ -4,16 +4,24 @@
   dotenv.enable = true;
 
   dagger.enable = true;
-  env.DAGGER_X_RELEASE = "v1.0.0-beta.11";
+  env = {
+    DAGGER_X_RELEASE = "v1.0.0-beta.11";
+  }
   # WebKitGTK discovers these at runtime, including when constructing <audio>.
-  env.GST_PLUGIN_SYSTEM_PATH_1_0 = lib.mkIf pkgs.stdenv.hostPlatform.isLinux (
-    lib.makeSearchPath "lib/gstreamer-1.0" (with pkgs.gst_all_1; [
-      (lib.getLib gstreamer)
-      gst-plugins-base
-      gst-plugins-good
-      gst-plugins-ugly
-    ])
-  );
+  # `optionalAttrs` rather than `mkIf`: devenv reads every `env` key, and a
+  # `mkIf false` leaves the key declared with no value, which fails evaluation
+  # on macOS.
+  // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPath "lib/gstreamer-1.0" (
+      with pkgs.gst_all_1;
+      [
+        (lib.getLib gstreamer)
+        gst-plugins-base
+        gst-plugins-good
+        gst-plugins-ugly
+      ]
+    );
+  };
 
   packages =
     with pkgs;
