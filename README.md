@@ -1,20 +1,93 @@
 # ACP Inspector
 
-Elicitation forms use schemaform 0.5.0 with the registry's daisyUI renderer:
-field-local findings and named summary links remain advisory, and Raw can send
-values the schema forbids. [Adoption decision](docs/adr/0013-schemaform-draws-the-elicitation-form.md).
+A desktop tool for driving and observing one [Agent Client Protocol](https://agentclientprotocol.com)
+agent over stdio. Point it at an agent command and it spawns the agent, speaks ACP v1 to it as a
+well-formed client, and shows both conversations at once: the turn as a timeline (messages, tool
+calls, permission requests, elicitations) and the wire as a trace of every JSON-RPC frame exactly
+as it crossed, with the agent's stderr beside it. It records traffic it does not understand instead
+of dropping it, annotates the specification's MUSTs where the captured traffic decides them, and
+exports the whole trace as JSONL evidence.
 
-A desktop tool for driving and observing one ACP agent over stdio: point it at an agent command
-and it spawns the agent, speaks ACP to it as a well-formed client, and shows you both
-conversations at once — the turn and the wire.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="design/redesign/populated-1440-dark.png">
+  <img alt="The inspector with Testy connected: the connection and session settings on the left, the turn timeline in the middle, and the JSON-RPC trace with the selected frame on the right." src="design/redesign/populated-1440-light.png">
+</picture>
 
-The architecture spec is [`docs/architecture.md`](docs/architecture.md); it is where every
-decision below is argued. The words it argues in are [`CONTEXT.md`](CONTEXT.md), this project's own
-glossary — the inspector was a context of its own inside the repository it began in, and kept it
-on the way out ([ADR 0001](docs/adr/0001-the-inspector-keeps-its-own-context.md)). The crate names,
-the application bundle's name and its identifier are fixed
-([ADR 0010](docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md),
-[ADR 0011](docs/adr/0011-one-ui-crate-a-feature-per-renderer.md)).
+## Quick start
+
+You need:
+
+- **Rust.** Install [rustup](https://rustup.rs); it picks up the pinned toolchain from
+  `rust-toolchain.toml` on the first build. The oldest Rust the code builds on is 1.92.
+- **[just](https://just.systems)**, which runs every task here.
+- **Python 3**, only for the test suite's scripted agents.
+- **On Linux**, WebKitGTK and the libraries the desktop shell links. On Ubuntu:
+  `sudo apt-get install libwebkit2gtk-4.1-dev libxdo-dev libssl-dev`.
+  On macOS there is nothing to install beyond Xcode's Command Line Tools.
+
+Or run `devenv shell` at the repository root, which provides all of it
+([devenv](https://devenv.sh)).
+
+Then:
+
+```sh
+just run      # cargo run -p acp-inspector
+```
+
+The **Connect** dialog asks for an agent. Command is an **executable only**, and each line of
+Arguments is one argument, with no shell quoting or expansion. To try it against Claude Code
+through its ACP adapter:
+
+| Field             | Value                                   |
+| ----------------- | --------------------------------------- |
+| Command           | `npx`                                   |
+| Arguments         | `@agentclientprotocol/claude-agent-acp` |
+| Working directory | the project the agent should work in    |
+
+The adapter uses the same authentication Claude Code does. Launch, and the handshake runs to an
+open session; type a prompt and press Enter to watch the turn stream in.
+
+For a deterministic agent that exercises every screen, see [Pointing it at Testy](#pointing-it-at-testy).
+
+## Supported platforms
+
+| Platform | Status |
+| --- | --- |
+| **macOS 11 or later** | Supported. Released as a disk image per architecture (Apple Silicon and Intel). |
+| **Linux** | Build from source. CI builds and tests it on Ubuntu; there is no package. |
+| **Windows** | Build from source, untested. CI only checks that it compiles; there is no package. |
+
+**Opening the disk image.** A signed and notarized release opens normally: drag
+**ACP Inspector** onto Applications. If macOS says the app "cannot be opened" or "is damaged"
+(an unsigned build), open **System Settings → Privacy & Security** and choose **Open Anyway**
+for ACP Inspector, or clear the quarantine flag yourself:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/ACP Inspector.app"
+```
+
+The image also holds `THIRD_PARTY_LICENSES.html`, the notices for every dependency compiled in
+(it is in the app's `Contents/Resources` too).
+
+## Known limitations
+
+- **The inspector does not mediate files or terminals.** It advertises no `fs` or `terminal`
+  capability and answers those requests method-not-found, so a real agent reads and writes files
+  and runs commands **itself, directly, in its working directory, with your privileges**. Nothing
+  is sandboxed or confirmed except what the agent chooses to ask permission for. Point it at a
+  directory you are prepared to have changed.
+- **Disconnect ends the agent's process group, not every descendant.** A process the agent starts
+  that leaves the group (a daemon, a `setsid` child) keeps running after disconnect.
+- **Remembered invocations include their environment.** The spawn form's recent commands are saved
+  with the environment you entered, API keys included, in plaintext in `recent.json` under the
+  platform's state directory (`0600` on Unix). See [where it is kept](#remembered-commands).
+- **ACP v1 as of `agent-client-protocol-schema` 1.7.** Messages added to the stable schema later
+  are shown raw, as unrecognized traffic, rather than decoded.
+- **One agent and one live session at a time**, over stdio only.
+
+## Security
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 ## Where it is
 
@@ -24,10 +97,12 @@ permission requests, the capability/auth display, and the JSONL trace export
 factory that spawns an agent over stdio, whole JSON-RPC frames in both directions, a trace that
 records every one of them below any typed layer, the agent's stderr in a line-timestamped
 diagnostic channel — and above that, a client that drives the spec's cut of v1 (`initialize`,
-`session/new`, `session/prompt`, `session/cancel`, `session/list`, `session/load`,
-`session/resume`, `session/close`, `session/delete`, `authenticate`, `logout`), decodes what comes back
-**as v1**, and keeps a timeline whose entries are id-keyed and a turn state the update stream
-drives.
+`authenticate`, `logout`, `session/new`, `session/load`, `session/resume`, `session/list`,
+`session/close`, `session/delete`, `session/prompt`, `session/cancel`, `session/set_mode`,
+`session/set_config_option`), decodes what comes back **as v1**, and keeps a timeline whose
+entries are id-keyed and a turn state the update stream drives. The architecture spec is
+[`docs/architecture.md`](docs/architecture.md), where every decision below is argued, in the words
+of [`CONTEXT.md`](CONTEXT.md), the project's glossary.
 
 The typed layer decorates the trace; it never replaces it
 ([§8](docs/architecture.md#8-unknown-traffic-the-raw-first-rule)). Traffic it does not recognize
@@ -52,89 +127,31 @@ stream rather than from the prompt call returning.
 
 What the agent claimed in its `initialize` result is a tab of the rail: its name and version,
 every v1 capability it did and did not advertise, and the auth methods it offers. Beside it, the
-client identity and every Client Capability sent in the request remain equally explicit. The session
-lifecycle is shown whole — `session/load`, `list`, `resume`, `close`, `delete` and
-`additionalDirectories`, six capabilities agents disagree sharply about, each saying whether this
-agent advertised it and none of them left out when it did not. The two shapes an agent makes those
-claims in are shown as they are rather than flattened into one notion of support: `session/load` is
-a boolean on `agentCapabilities`, the other five are objects under `sessionCapabilities` whose
-*presence* is the claim, and each row names the field it was read from. **Affordances
-are gated on the advertisement, not on content** — the `session/list` button exists because the
-agent said it lists sessions, not because there is anything to list, and the listing it returns
-is shown as the agent gave it. A `nextCursor` (no surveyed agent sends one) is carried back
-opaquely, never parsed. Authentication is display-only: `authenticate` can be sent with any
-advertised method and its outcome is shown, and a `-32000 auth_required` from anywhere becomes a
-login-needed state that names the advertised methods and says where to go — the agent's own
-login, in the user's own terminal, because the inspector embeds no terminal and never will.
+client identity and every Client Capability sent in the request remain equally explicit. The
+session lifecycle capabilities (`session/load`, `list`, `resume`, `close`, `delete` and
+`additionalDirectories`) are each shown with the field they were read from, whether or not the
+agent advertised them. **Affordances are gated on the advertisement, not on content.**
+Authentication is display-only: `authenticate` can be sent with any advertised method, and a
+`-32000 auth_required` becomes a login-needed state that names the advertised methods and points
+to the agent's own login, because the inspector embeds no terminal.
 
-A session can be opened **without relaunching the agent**. `session/new` is the one lifecycle
-method the protocol does not gate — every v1 agent opens sessions — so the button sits beside the
-capability-gated listing whenever an agent has described itself, and the session it opens becomes
-the live one, with the composer ready to prompt into what was just created. Creating one while a
-session is already live **is a switch**, and the switch is stated where the button is: a turn still
-running is cancelled first, every waiting permission request is answered `cancelled` — the sequence
-the stop button already owes them — and the timeline is discarded and rebuilt, because the
-inspector holds one live session and the timeline is the view of it. It does not wait for the
-cancelled turn to end, since an agent that never ends one is the sort this tool is pointed at; what
-answers that turn afterwards answers the call and nothing on screen. **The trace is untouched
-by the switch**: retained Frames stay subject to its independent, counted retention budgets.
+**Sessions** can be created, listed, loaded or resumed, closed and deleted without relaunching the
+agent, each where the agent advertised it
+([§7.5](docs/architecture.md#75-the-second-ring-the-session-lifecycle)). Opening a session while
+another is live is a switch: a running turn is cancelled, waiting requests are answered
+`cancelled`, and the timeline is rebuilt, while the trace is untouched. Where both load and resume
+are advertised, load is used because it replays the conversation; where only resume is, the screen
+says this agent does not support viewing previous messages. The roots a session opens with are
+yours to supply where the agent advertised `sessionCapabilities.additionalDirectories`. Corners
+the specification leaves undefined (closing the live session, deleting one never opened) are
+offered deliberately, and the inspector reports what came back without judging it. The live
+session's modes and config options are in the rail, sent with `session/set_mode` and
+`session/set_config_option` ([§7.6](docs/architecture.md#76-the-third-ring-session-settings)).
 
-**The roots a session opens with are yours to supply**, where the agent advertised
-`sessionCapabilities.additionalDirectories`: a list beside the create button and on every row that
-reopens a session, one absolute path per line. A reopen's is prefilled with what the listing
-reported for that session, so reopening stays a reopen until you change it — and changing it is
-allowed, because the schema says a reopen's list may differ from any previously reported one as long
-as the `cwd` matches. A relative path is resolved against the *session's* `cwd` before anything is
-sent, since a request the schema calls malformed would put this client's own violation into every
-annotation drawn against that agent. An empty list puts no field on the wire at all.
-
-And a session the agent listed can be **opened**. A listed session stops being text you can read and
-becomes a way into that session: the row carries one button, labelled with the method it will send,
-and the session it opens becomes the live one. `session/load` and `session/resume` restore the same
-thing — their requests and responses are field-for-field identical — and the one observable
-difference is an ordering the specification states: load **must** replay the whole conversation as
-Session Updates *before* it answers, and resume **must not** replay it at all. So replay is a
-property of the call rather than two buttons: where an agent advertises both, load, because it is the
-one that can rebuild the conversation; where it advertises only resume, the screen says plainly that
-**this agent does not support viewing previous messages**, because a resumed session's empty timeline
-is correct and nobody should have to work that out from an empty screen. Opening one is the same
-switch creating one is, and costs the same: the running turn cancelled, the waiting requests answered
-`cancelled`, the timeline discarded and rebuilt, the trace untouched. It is discarded *before* the
-ask rather than after it, because the replay arrives ahead of the answer.
-
-And a listed session can be **closed** and **deleted**, each where the agent advertised that call
-and nowhere else. The two are not one operation with a property the way load and resume are: close
-frees a session the agent still holds and delete takes it away, so they are two buttons gated on two
-claims. **The listing is asked for again afterwards**, which is the point of pressing either — whether
-a closed session is still in a listing is exactly the kind of thing agents differ on and no document
-will settle, so what the agent now claims to hold is fetched rather than assumed. Testy's answer:
-a closed session leaves its listing, and so does a deleted one.
-
-**The corners the specification leaves undefined are offered, deliberately.** Closing the live
-session, closing one that is closed already, deleting one that was never opened — the specification
-defines none of them and calls some implementation-defined outright. The inspector sends what it was
-asked to send and reports what came back, without saying what should have happened; withholding the
-button would be the tool deciding what may be observed. Ending the live session leaves the inspector
-with **no live session**, and the screen says so as itself — the timeline goes with the session it
-was a view of, the composer says nothing is open to prompt into and names the two ways to open one,
-and retained Frames stay in the Trace under its retention budgets. A close or a delete the agent *refused* ended nothing: the
-session stays live and the failure is named by the method that failed.
-
-**What a `session/close` does to an in-flight prompt was settled by driving it, not by reading**
-([§15 q5](docs/architecture.md#15-open-questions--validation-gaps)). Nothing is asked to stop first
-— a `session/cancel` sent ahead of the close would answer the question on the agent's behalf — and
-what Testy does is answer the close *first*, then resolve the prompt with `stopReason: "cancelled"`.
-That is recorded and not graded: the specification states no MUST about the ordering, so none of it
-is annotated.
-
-**The second conformance annotation lands here.** A `session/load` that answers having replayed
-nothing — into a session this connection has already heard the agent talk in — is annotated where the
-traffic is, with the message it did not replay, the load, and the answer open beneath the claim. It
-is one shape and deliberately only one: the trace cannot tell an empty session from a withheld
-conversation, a refused load restored nothing to replay, and behaviour the specification leaves
-undecidable draws no complaint. **Testy is the first real subject** — it answers a load without
-replaying, which was confirmed by driving it rather than by reading it
-([§15 q5](docs/architecture.md#15-open-questions--validation-gaps)).
+**Conformance annotations** are drawn where the captured traffic decides a MUST and nowhere else:
+for example, a `session/load` that answers having replayed nothing, into a session this
+connection has already heard the agent talk in. Behaviour the specification leaves open is
+recorded, not graded.
 
 Permission requests are answered where the turn stops for them. A `session/request_permission`
 becomes a panel **inline in the timeline**, at the point the turn blocked: the tool call under
@@ -150,9 +167,8 @@ a self-describing header that warns nothing is redacted. The shell shows the tem
 full path with **Copy export path** and desktop **Open containing folder**, reporting pending
 operations and failures beside it. Copy or move the file elsewhere to keep it: system temporary
 storage is not a durable archive. Each export creates a new file, never overwriting earlier evidence.
-The schema is pinned in [`docs/trace-export.md`](docs/trace-export.md), because ACP Wiretap and
-replay tooling are meant to read it: it aligns with the bridge's `--trace-frames` records field
-for field and adds what the inspector knows and the bridge did not record.
+The schema is pinned in [`docs/trace-export.md`](docs/trace-export.md), because replay and
+analysis tooling are meant to read it.
 
 **Retention is bounded and loss is explicit.** Trace keeps the newest **10,000 Frames within
 64 MiB of raw UTF-8**, dropping whole oldest Frames until both budgets fit. Its missing-Frame
@@ -174,6 +190,8 @@ byte windows in the selected-frame pane, rather than laying out the entire paylo
 being read. Export takes the complete retained Trace snapshot on activation and writes it in the
 background, showing pending status and then the path or failure.
 
+### Remembered commands
+
 The spawn form remembers what answered. An invocation whose agent described itself — a session
 opened, or an agent that wants a login before it will open one — joins a short list under the
 form: newest first, ten of them, one click to put one back in the four fields, and the Launch
@@ -186,6 +204,8 @@ Linux, `~/Library/Application Support/acp-inspector/` on macOS, `%APPDATA%\acp-i
 Windows, `0600` on Unix because a remembered invocation carries its environment. What it holds and
 why is [§15 q6](docs/architecture.md#15-open-questions--validation-gaps).
 
+### Appearance
+
 The window has a light theme and a dark one. A **System / Light / Dark** switch in the top bar
 chooses between them; System is the default and follows the operating system, and the choice is
 remembered across restarts in `settings.json` beside the recent commands — its own file, ordinary
@@ -195,8 +215,7 @@ Light maps to the purpose-built `inspector-light` daisyUI theme and Dark maps to
 between them.
 The five colours that mean something — what we sent, what the agent said, trouble, live, and
 traffic nobody has a name for — mean the same thing in both schemes, so a screenshot stays readable
-evidence whichever one it was taken in. Both palettes hold every text colour to 4.5:1 against its
-ground and every control boundary, dot and stripe to 3:1. Whether System tracks the operating system is
+evidence whichever one it was taken in. Whether System tracks the operating system is
 unverified on a real desktop, along with one known Linux limitation:
 [§15 q9](docs/architecture.md#15-open-questions--validation-gaps).
 
@@ -204,52 +223,47 @@ An **Indent** switch sits beside it, off by default and remembered in the same f
 that is JSON is drawn with whitespace between its tokens wherever this window draws bytes to be
 read — the frames under an entry this window has no rendering for, a tool call's raw input and
 output — and **only where somebody is looking**, so a trace of ten thousand frames lays out the one
-being read rather than all of them. The Console's own pane is the exception and needs no switch: it holds the
-one frame a reader selected, on the surface whose whole subject that frame is. Frames up to
-16 KiB are laid out and coloured by what they are made of; larger raw Frames use the literal,
-unformatted byte windows described above, including in Timeline raw evidence. Indentation
-**adds whitespace and changes nothing else** — the text is validated as JSON and then
-re-spaced rather than decoded and printed back, so an object's keys keep the agent's order, two
-fields that share a name both survive, and numbers and escapes stay spelled the way they arrived. A
-frame that is not JSON is drawn exactly as it arrived, because a frame can be anything and that is
-what this tool is for. And it stops at the reader's eyes: the trace records, the export writes and
-every copy takes the bytes that crossed, whatever the switch says.
+being read rather than all of them. Frames up to 16 KiB are laid out and coloured by what they are
+made of; larger raw Frames use the literal, unformatted byte windows described above. Indentation
+**adds whitespace and changes nothing else** — the text is validated as JSON and then re-spaced
+rather than decoded and printed back, so an object's keys keep the agent's order, two fields that
+share a name both survive, and numbers and escapes stay spelled the way they arrived. And it stops
+at the reader's eyes: the trace records, the export writes and every copy takes the bytes that
+crossed, whatever the switch says.
 
 **Clear** drops the frames captured so far and nothing else — an export already written is
 untouched, an export taken afterwards carries only what followed and says in its header how many
-frames it never had. The trace keeps its newest 10 000 frames and counts the rest as dropped,
-shown beside the frame count; it is never cleared by a disconnect, because an agent that just
+frames it never had. The trace is never cleared by a disconnect, because an agent that just
 died is when its frames are worth the most. Which is why **every row says which connection it
 crossed** — `#1`, `#2`, the ordinal the export writes for that same frame — and the row where one
 agent gave way to the next draws the boundary: one trace can hold two agents' traffic, and both
 agents' JSON-RPC ids start again at 1.
 
-## Layout
+## Elicitation forms
 
-```
-crates/core/ acp-inspector-core — headless: the connection contract, stdio, the trace,
-             the typed ACP v1 client, the JSONL export, the spawn form's recent
-             commands, the window's preferences, and the stores they fill
-crates/app/  acp-inspector — the screens and the one binary, strictly presentational,
-             over those stores; a Cargo feature per renderer (`desktop`, the default;
-             `web`, declared and checked, runnable once core builds for wasm32)
-             style/  theme.css, retained inspector aliases; input.css, daisyUI
-                     production input plus layout and behaviour rules; sheet.css,
-                     the generated output, committed and compiled in
-CONTEXT.md   the glossary: this project's terms, and nothing else
-docs/        architecture.md, the spec; trace-export.md, the export's pinned
-             schema; adr/, the decisions that are the inspector's own
-scripts/     build-testy.sh, the integration tests' agent; check-node-free.sh
-package.json the Tailwind CLI and daisyUI development inputs for the production
-             stylesheet — nothing else here is a Node project
-```
-
-Two crates, split by layer and not by renderer
-([ADR 0011](docs/adr/0011-one-ui-crate-a-feature-per-renderer.md)). The project began inside a
-host repository and depended on none of its crates: patterns were copied, never linked
-([§13](docs/architecture.md#13-relationship-to-the-host-repos-assets)).
+An agent's `elicitation/create` in form mode is drawn as a form built from the JSON Schema it sent,
+with schemaform 0.5.0 and the registry's daisyUI renderer. Field-local findings and named summary
+links are advisory, and the **Raw** tab holds the exact object the answer will send, so it can send
+values the schema forbids. A URL elicitation shows the full URL and its host and opens in your own
+browser only when you click it. The adoption decision is
+[ADR 0013](docs/adr/0013-schemaform-draws-the-elicitation-form.md), and where the form components
+come from is [`crates/app/src/components/PROVENANCE.md`](crates/app/src/components/PROVENANCE.md).
 
 ## Running it
+
+```sh
+just run      # cargo run -p acp-inspector
+```
+
+Fill the spawn form with an **executable only** in Command (for example `npx`), and the package
+on its own line in Arguments. Each nonblank argument line is one argument: a flag and its value go
+on separate lines, while a path containing spaces stays on one line **without shell quotes**. No
+shell expansion is performed; surrounding whitespace is trimmed. Environment takes one
+`KEY=VALUE` per line. An empty working directory uses the inspector's own; a relative directory
+resolves against it. The Agent starts there and `session/new` receives an absolute path. Launch,
+and the console fills as frames cross; its other tab carries the agent's stderr, and the console
+expands onto it if the agent never starts. Once the session is open, type a prompt and press enter
+(shift-enter for a newline) to watch the turn stream in.
 
 For reproducible attachment/MCP acceptance scenarios without building Testy,
 launch the Python 3.9+ standard-library fixture `scripts/acceptance-agent.py` as
@@ -321,20 +335,6 @@ On Linux, native file selection needs a desktop file-picker portal or `zenity`
 plugins, also exposed by the shell. Non-PDF binary resource attachments and clipboard audio input
 remain deferred. Non-file text/URL drops are not attachments; file drops outside
 the composer do not navigate the inspector window.
-
-```sh
-just run      # cargo run -p acp-inspector
-```
-
-Fill the spawn form with an **executable only** in Command (for example `npx`), and
-`@zed-industries/claude-code-acp` on its own line in Arguments. Each nonblank argument line is
-one argument: a flag and its value go on separate lines, while a path containing spaces stays
-on one line **without shell quotes**. No shell expansion is performed; surrounding whitespace
-is trimmed. Environment takes one `KEY=VALUE` per line. An empty working directory uses the
-inspector's own; a relative directory resolves against it. The Agent starts there and
-`session/new` receives an absolute path. Launch, and the console fills as frames cross; its
-other tab carries the agent's stderr, and the console expands onto it if the agent never starts. Once the session is
-open, type a prompt and press enter (shift-enter for a newline) to watch the turn stream in.
 
 The desktop build is a WebView app, so building it needs the platform's browser engine: on Linux
 that is **WebKitGTK** and its GTK/GLib/libsoup stack, plus **libxdo** and **OpenSSL** for
@@ -411,14 +411,57 @@ them are **declined by capability** — this client mediates no filesystem and e
 ([§7.3](docs/architecture.md#73-decline-by-capability)) — so each is answered method-not-found and
 recorded as a first-class unrecognized entry, which is
 [§8](docs/architecture.md#8-unknown-traffic-the-raw-first-rule) doing its job rather than a
-failure.
+failure. Answer them and the scenario runs to `end_turn`
+([§7.8](docs/architecture.md#78-the-fifth-ring-elicitation)); leave one unanswered and the turn
+stays stopped, and the line above the composer says the agent is waiting on you.
 
-Answer them and **the scenario runs to `end_turn`**, which it could not before the fifth ring
-([§7.8](docs/architecture.md#78-the-fifth-ring-elicitation)): a client that had not claimed the URL
-elicitation mode made Testy fail the whole prompt with `-32602 client does not support URL
-elicitation`, and the turn ended with no stop reason at all. Leave one unanswered and the turn stays
-stopped, which is the same thing the permission request has always done and the reason the line
-above the composer says the agent is waiting on you.
+## Layout
+
+```
+crates/core/   acp-inspector-core — headless: the connection contract, stdio, the trace,
+               the typed ACP v1 client, the JSONL export, the spawn form's recent
+               commands, the window's preferences, and the stores they fill
+crates/app/    acp-inspector — the screens and the one binary, strictly presentational,
+               over those stores; a Cargo feature per renderer (`desktop`, the default;
+               `web`, declared and checked, runnable once core builds for wasm32)
+               src/components/  form components installed from the daisyUI registry
+                                (PROVENANCE.md)
+               style/   theme.css, retained inspector aliases; input.css, daisyUI
+                        production input plus layout and behaviour rules; sheet.css,
+                        the generated output, committed and compiled in
+               src/*.test.mjs   Node tests of the window's clipboard and navigation scripts
+               examples/  bundle-icon.rs, which renders the icon (`just icon`)
+               bundle/  icon.icns, the macOS bundle's icon
+               Dioxus.toml  what the macOS bundle says about itself
+CONTEXT.md     the glossary: this project's terms, and nothing else
+docs/          architecture.md, the spec; trace-export.md, the export's pinned schema;
+               adr/, the decisions that are the inspector's own; release-plan.md;
+               desktop-smoke-matrix.md and native-acceptance.md, the manual release
+               checks; performance-hardening.md; schemaform-spike.md
+design/        screenshots of the window and the visual audit
+scripts/       build-testy.sh, the integration tests' agent; check-node-free.sh;
+               check-number-features.sh; check-macos-bundle.sh, the bundle guard;
+               acceptance-agent.py and its test; performance-agent.py;
+               spike-testy-literals.py; check-*.mjs, Node checks of window behaviour
+.github/       CI (workflows/ci.yaml)
+justfile       every task (`just --list`)
+rust-toolchain.toml  the pinned toolchain
+deny.toml      cargo-deny: advisories, licences, sources
+about.toml     cargo-about: the third-party notices the bundle ships (about.hbs)
+devenv.*       the development shell (`devenv shell`)
+dagger.*       a Dagger module that builds Testy in a container
+package.json   the Tailwind CLI and daisyUI development inputs for the production
+               stylesheet — nothing else here is a Node project
+CHANGELOG.md, CONTRIBUTING.md, SECURITY.md
+```
+
+Two crates, split by layer and not by renderer
+([ADR 0011](docs/adr/0011-one-ui-crate-a-feature-per-renderer.md)). The project began inside
+another repository and depended on none of its crates: patterns were copied, never linked
+([§13](docs/architecture.md#13-relationship-to-the-host-repos-assets)). The crate names, the
+application bundle's name and its identifier are fixed
+([ADR 0010](docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md),
+[ADR 0011](docs/adr/0011-one-ui-crate-a-feature-per-renderer.md)).
 
 ## Working on it
 
@@ -429,21 +472,26 @@ The integration tests drive the same Testy the section above points the shell at
 just testy    # clone/update the checkout under .testy/ and build the binary
 just test     # cargo test
 just          # both
-just check    # fmt, clippy, and that the committed stylesheet is its source's output
+just check    # fmt, clippy (both renderers), number features, the committed stylesheet
+just deny     # cargo deny: advisories, licences, sources
 just css      # regenerate that stylesheet — the one recipe that needs Node
 just node-free # build and test the desktop package offline with Node and dx blocked
 just icon     # regenerate the bundle's icon from the window's own mark, on a Mac
+just licenses # render THIRD_PARTY_LICENSES.html with cargo-about
 just bundle-macos # the .app and its disk image, on a Mac — the one recipe that runs dx
 ```
 
-`bundle-macos` has `dx bundle` assemble `ACP Inspector.app` from `crates/app/Dioxus.toml` and
-Apple's own tools sign, notarize and image it when passed an identity and a `notarytool` profile;
-it is made from the build and is no part of it, which is the whole of
-[ADR 0010](docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). It needs the icon at
-`crates/app/bundle/icon.icns` and refuses to run without it. That icon is a tracked packaging asset,
-like the stylesheet: `crates/app/src/mark.rs` is the drawing — the same one the window puts in its
-own icon — and `just icon` renders it at the ten sizes an `.icns` holds and folds them with
-`iconutil`. Change the mark, run `just icon`, commit what it wrote.
+CI ([`.github/workflows/ci.yaml`](.github/workflows/ci.yaml)) runs fmt, clippy for both
+renderers, the number-feature matrix, Testy at its pinned rev, `cargo test`, the stylesheet check,
+the Node tests and the Node-free build on macOS and Ubuntu, `cargo deny check`, and a
+`cargo check` on Windows. The toolchain is pinned in `rust-toolchain.toml`; `rust-version` in
+`Cargo.toml` is the oldest one the code builds on. See also [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Testy is built from rust-sdk v3.3.0, pinned by commit in `scripts/build-testy.sh` (and the Dagger
+module), because the suite asserts on its exact behaviour
+([§12](docs/architecture.md#12-dummy-agent-and-test-strategy)). `ACP_RUST_SDK_REV` builds another
+revision (`ACP_RUST_SDK_REV=main just testy` for the moving one), and `TESTY_BIN` points the tests
+at a binary built elsewhere. The suite's scripted agents need `python3` on `PATH`.
 
 Changing the look means editing `crates/app/style/input.css` — or `crates/app/style/theme.css`, which
 holds the design vocabulary and the colour tokens it imports — running `just css`, and committing
@@ -462,24 +510,34 @@ semantic, contrast, evidence and motion constraints without imposing the former 
 scales. The original comparison and measurements remain in
 [ADR 0003](docs/adr/0003-the-stylesheet-is-generated-and-committed.md#the-daisyui-verdict).
 
-The retained cross-surface scale is approximately 14px for what the agent and the reader said to
-each other, 13px for ordinary content, 12px for dense evidence, 11px for metadata and 10px for the
-one register set in tracked capitals — the name of a rail section, the kind of a timeline entry, the
-word over a group of capability rows. The shell uses a 44px toolbar, a rail that ranges from 248px
-to 296px, approximately 28px ordinary controls and 12px panel gutters. Heroicons Outline is used
-sparingly for the agreed toolbar, composer and disclosure controls; its 14px icons sit in standard
-compact targets, and every icon-only control has a tooltip and accessible name. Rail, Timeline and
-Console yielding, wrapping and internal scrolling are contracted in the stylesheet tests; the smoke
-matrix defines manual acceptance at both supported window sizes, where the console stacks under the
-timeline rather than beside it.
+### Releasing
 
-The checkout tracks rust-sdk `main`, which the spec accepts as a dev-time moving part
-([§12](docs/architecture.md#12-dummy-agent-and-test-strategy)). `ACP_RUST_SDK_REV` pins a
-revision, `TESTY_BIN` points the tests at a binary built elsewhere.
-Use rust-sdk `v2.1.0` or later so Testy itself depends on schema 1.7. For a reproducible schema-1.7
-check, build with `ACP_RUST_SDK_REV=v2.1.0 just testy`, then run `just test`.
+`just bundle-macos` has `dx bundle` assemble the application from `crates/app/Dioxus.toml`, then
+names it `ACP Inspector.app`, adds the third-party notices, checks it, and has Apple's own tools
+sign, notarize and image it when passed an identity and a `notarytool` profile; it is made from the
+build and is no part of it, which is the whole of
+[ADR 0010](docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). It needs the icon at
+`crates/app/bundle/icon.icns`, rendered from the window's own mark by `just icon`.
+
+**Build release bundles outside the devenv shell.** Nix's C toolchain links its own libiconv from
+`/nix/store` and its SDK targets macOS 14, so a bundle built there starts only on Macs that have
+that store path. From a plain terminal you need Xcode's Command Line Tools, rustup, `just`,
+`dx` at exactly the `dioxus` version in `Cargo.lock` (the recipe names it and the install command
+if it differs) and cargo-about (`cargo install cargo-about --locked`). The recipe refuses to run in a Nix shell,
+builds with `MACOSX_DEPLOYMENT_TARGET` set to `minimum_system_version` from `Dioxus.toml`, and
+`scripts/check-macos-bundle.sh` fails the bundle unless every library it links is the system's,
+its `minos` matches `LSMinimumSystemVersion`, and its signature verifies.
+
+```sh
+just bundle-macos                                                    # unsigned, for this machine
+just bundle-macos "Developer ID Application: Name (TEAMID)"          # signed
+just bundle-macos "Developer ID Application: Name (TEAMID)" notary   # + notarized
+```
+
+Bump the version in `crates/app/Cargo.toml` and `crates/core/Cargo.toml`, move the CHANGELOG's
+Unreleased entries under the new version, and build one image per architecture.
 
 ## License
 
-MIT OR Apache-2.0, dual, at your option — the host repository's license, carried along on the
-split.
+MIT OR Apache-2.0, dual, at your option. The disk image and the bundle carry the third-party
+notices in `THIRD_PARTY_LICENSES.html`.
