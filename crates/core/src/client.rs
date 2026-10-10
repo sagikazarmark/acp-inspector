@@ -42,16 +42,21 @@ use crate::conformance::{Annotation, Ending, OptionSet, Replay, Reuse};
 use crate::connection::{FrameSink, Received};
 use crate::driven::{AgentCapability, DrivenRecord};
 use crate::elicitation::{ElicitationRequest, Outstanding};
-use crate::frame::Frame;
+use crate::frame::{Frame, Omission};
 use crate::listing::{Cursor, SessionListing};
 use crate::permission::PermissionRequest;
 use crate::restore::Restore;
 use crate::roots::{self, Roots};
-use crate::rpc::{Incoming, Rpc, classify, ours};
+use crate::rpc::{Incoming, PendingCall, Rpc, answer_id, classify, mistyped, ours};
 use crate::session_settings::SessionSettings;
 use crate::store::{Field, locked};
-use crate::timeline::{Recorded, Timeline, Unrecognized};
+use crate::timeline::{EntryId, Recorded, Timeline, Unrecognized};
 use crate::turn::{TurnOutcome, TurnState};
+
+/// How many permission and elicitation requests may wait on the reader at
+/// once. Past it a request is refused with an error and recorded, so an agent
+/// cannot pin unbounded entries in the timeline.
+pub(crate) const PENDING_CAPACITY: usize = 100;
 
 /// What the agent is told this client is.
 ///
@@ -298,7 +303,14 @@ pub(crate) struct Client {
     /// the session was not empty, and one message is the whole of that. Sessions
     /// rather than the trace's whole record: a session id is one agent's, and the
     /// next connection's identical id is a different session.
+    ///
+    /// Only sessions this client opened are kept, so an agent naming arbitrary
+    /// ids cannot pin a frame for each.
     conversed: Arc<Mutex<HashMap<v1::SessionId, Frame>>>,
+    /// The session the reader last saw an open succeed for. Set where the
+    /// answer is read, so updates that follow it are attributed before the
+    /// caller has woken to make it live.
+    opened_last: Arc<Mutex<Option<v1::SessionId>>>,
 }
 
 /// A `session/load` on the wire, and what has crossed since it went out.
@@ -419,7 +431,34 @@ impl Client {
             setting_option: Arc::default(),
             driving: Arc::default(),
             conversed: Arc::default(),
+            opened_last: Arc::default(),
         }
+    }
+
+    pub(crate) fn sink(&self) -> &FrameSink {
+        self.rpc.sink()
+    }
+
+    /// The calls this client is still waiting on, oldest first.
+    pub(crate) fn pending_calls(&self) -> Vec<PendingCall> {
+        self.rpc.pending()
+    }
+
+    /// Asks the agent to give up a call still waiting for its answer, with
+    /// `$/cancel_request`. The call stays pending until the agent answers it.
+    pub(crate) async fn cancel_call(&self, id: i64) -> Result<(), CallError> {
+        if !self.rpc.is_pending(id) {
+            return Err(CallError::NotWaiting);
+        }
+        self.rpc
+            .notify(
+                v1::PROTOCOL_LEVEL_METHOD_NAMES.cancel_request,
+                encode(&v1::CancelRequestNotification::new(v1::RequestId::Number(
+                    id,
+                ))),
+            )
+            .await
+            .map(|_| ())
     }
 
     /// `initialize`: protocol version 1, honest client capabilities, and who we
@@ -1443,9 +1482,33 @@ impl Client {
         // it: an entry is made of frames, and where the trace put each of them
         // is half of what makes the two screens one thing (§6.2).
         let recorded = |frame: Frame| Recorded { frame, captured };
+        if let Some(omission) = frame.omission() {
+            self.omitted(&frame, omission);
+            self.stores.timeline.unrecognized(
+                Unrecognized::Dropped {
+                    length: omission.length,
+                    limit: omission.limit,
+                },
+                recorded(frame),
+            );
+            return;
+        }
         match classify(&frame) {
             Incoming::Notification { method, params } => {
                 if method == v1::CLIENT_METHOD_NAMES.session_update {
+                    let session = params
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(v1::SessionId::new);
+                    // Another session's update changes nothing here: shown, and
+                    // marked as not the live session's.
+                    if let Some(session) = session.filter(|session| self.foreign(session)) {
+                        self.stores.timeline.unrecognized(
+                            Unrecognized::ForeignSession { session },
+                            recorded(frame),
+                        );
+                        return;
+                    }
                     // Before the decoding, and off the envelope rather than out
                     // of it: an update variant v1 has no name for is still the
                     // agent talking in that session, and the load rule is about
@@ -1505,11 +1568,33 @@ impl Client {
                             recorded(frame),
                         ),
                     }
+                } else if method == v1::PROTOCOL_LEVEL_METHOD_NAMES.cancel_request {
+                    self.withdrawn(method, params, recorded(frame)).await;
                 } else {
                     self.stores
                         .timeline
                         .unrecognized(Unrecognized::NotServiced { method }, recorded(frame));
                 }
+            }
+
+            // Past the cap, a blocking request is refused rather than pinned.
+            Incoming::Request { id, method, .. }
+                if (method == v1::CLIENT_METHOD_NAMES.session_request_permission
+                    || method == v1::CLIENT_METHOD_NAMES.elicitation_create)
+                    && self.saturated() =>
+            {
+                self.stores.timeline.unrecognized(
+                    Unrecognized::OverCapacity {
+                        method,
+                        limit: PENDING_CAPACITY,
+                    },
+                    recorded(frame),
+                );
+                let refusal = v1::Error::new(
+                    i32::from(v1::ErrorCode::InternalError),
+                    format!("the client already has {PENDING_CAPACITY} unanswered requests"),
+                );
+                let _ = self.rpc.respond(&id, Err(refusal)).await;
             }
 
             // Two requests are serviced, and the first is the one an ACP turn is
@@ -1670,11 +1755,25 @@ impl Client {
                             .unrecognized(Unrecognized::Unsolicited, recorded(frame));
                     }
                 }
-                None => self
-                    .stores
-                    .timeline
-                    .unrecognized(Unrecognized::Unsolicited, recorded(frame)),
+                None => {
+                    let unrecognized = match mistyped(&id).filter(|&call| self.rpc.is_pending(call))
+                    {
+                        Some(call) => Unrecognized::MistypedId {
+                            id: id.to_string(),
+                            call,
+                        },
+                        None => Unrecognized::Unsolicited,
+                    };
+                    self.stores
+                        .timeline
+                        .unrecognized(unrecognized, recorded(frame));
+                }
             },
+
+            Incoming::Unaddressed(error) => self
+                .stores
+                .timeline
+                .unrecognized(Unrecognized::Unaddressed { error }, recorded(frame)),
 
             Incoming::Unreadable(problem) => self.stores.timeline.unrecognized(
                 Unrecognized::Undecodable {
@@ -1910,6 +2009,16 @@ impl Client {
         let Ok(result) = outcome else {
             return;
         };
+        let session = match opening.how {
+            Setup::New => result
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(v1::SessionId::new),
+            Setup::Restore(_) => opening.session.clone(),
+        };
+        if session.is_some() {
+            *locked(&self.opened_last) = session;
+        }
         self.stores
             .settings
             .set(opening.how.published(result.clone(), opening.stated));
@@ -2272,9 +2381,128 @@ impl Client {
         }
         // The first one only: the claim it is kept for is that the session was
         // not empty, and one message is the whole of that.
-        locked(&self.conversed)
-            .entry(session)
-            .or_insert_with(|| frame.clone());
+        if self.known_sessions().contains(&session) {
+            locked(&self.conversed)
+                .entry(session)
+                .or_insert_with(|| frame.clone());
+        }
+    }
+
+    /// The sessions an update may be about: the live one, the one the reader
+    /// last saw opened, and the one an open on the wire is asking for.
+    fn known_sessions(&self) -> Vec<v1::SessionId> {
+        let opening = locked(&self.opening)
+            .as_ref()
+            .and_then(|opening| opening.session.clone());
+        [
+            self.stores.session.get(),
+            locked(&self.opened_last).clone(),
+            opening,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Whether an update names a session other than the ones this client
+    /// knows of. With none known yet — a `session/new` still unanswered —
+    /// nothing is foreign, because nothing can be shown to be.
+    fn foreign(&self, session: &v1::SessionId) -> bool {
+        let known = self.known_sessions();
+        !known.is_empty() && !known.contains(session)
+    }
+
+    /// Whether the reader already has as many blocking requests as it holds.
+    fn saturated(&self) -> bool {
+        self.stores.permissions.waiting().len() + self.stores.elicitations.waiting().len()
+            >= PENDING_CAPACITY
+    }
+
+    /// The agent withdrew a request of its own with `$/cancel_request`: a
+    /// pending permission or elicitation is answered with the cancellation
+    /// error and marked as cancelled by the agent.
+    async fn withdrawn(&self, method: String, params: Value, frame: Recorded) {
+        let notification = match crate::decode::from_value::<v1::CancelRequestNotification>(params)
+        {
+            Ok(notification) => notification,
+            Err(problem) => {
+                return self.stores.timeline.unrecognized(
+                    Unrecognized::Undecodable {
+                        method: Some(method),
+                        problem: problem.to_string(),
+                    },
+                    frame,
+                );
+            }
+        };
+        let id = RequestId::new(encode(&notification.request_id));
+        let permission = self
+            .stores
+            .permissions
+            .waiting()
+            .into_iter()
+            .find(|request| request.id() == &id);
+        let elicitation = self
+            .stores
+            .elicitations
+            .waiting()
+            .into_iter()
+            .find(|request| request.id() == &id);
+        let entry = match (&permission, &elicitation) {
+            (Some(_), _) => EntryId::Permission(id),
+            (None, Some(_)) => EntryId::Elicitation(id),
+            (None, None) => {
+                return self
+                    .stores
+                    .timeline
+                    .unrecognized(Unrecognized::Unsolicited, frame);
+            }
+        };
+        if !self.stores.timeline.attach(&entry, frame.clone()) {
+            self.stores
+                .timeline
+                .unrecognized(Unrecognized::Unsolicited, frame);
+        }
+        if let Some(request) = permission {
+            let _ = request.withdrawn().await;
+        } else if let Some(request) = elicitation {
+            let _ = request.withdrawn().await;
+        }
+    }
+
+    /// The transport dropped a frame for its length. Where the placeholder
+    /// shows it was an answer to a call of this client's, everything waiting
+    /// on that answer is told it will not come.
+    fn omitted(&self, frame: &Frame, omission: Omission) {
+        let Some(id) = answer_id(frame.as_str()) else {
+            return;
+        };
+        let error = CallError::AnswerDropped {
+            length: omission.length,
+        };
+        if let Some(capabilities) = locked(&self.driving).remove(&id) {
+            self.stores.driven.update(|record| {
+                let mut moved = false;
+                for capability in capabilities {
+                    moved |= record.refused(capability, error.clone());
+                }
+                moved
+            });
+        }
+        locked(&self.loading).take_if(|load| load.call == id);
+        locked(&self.opening).take_if(|open| open.call == id);
+        if let Some(changing) = locked(&self.changing_mode).take_if(|change| change.call == id) {
+            self.stores
+                .settings
+                .update(|settings| settings.mode_refused(changing.mode, error.clone()));
+        }
+        if let Some(setting) = locked(&self.setting_option).take_if(|set| set.call == id) {
+            self.stores.settings.update(|settings| {
+                settings.option_refused(setting.option, setting.value, error.clone())
+            });
+        }
+        self.turn_failed(Some(id), &error);
+        self.rpc.fail(id, error);
     }
 
     /// Says so when a `session/load` answered before the conversation had been

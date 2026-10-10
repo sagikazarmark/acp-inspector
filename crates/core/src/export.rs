@@ -78,6 +78,9 @@ struct Header<'a> {
 /// `encoding`, `frame` — so one reader handles both captures, and extended with
 /// the two the inspector knows and the bridge did not record: which kind of
 /// record this is, and when the frame crossed.
+///
+/// A frame that was not UTF-8 is carried as `encoding: "base64"` of its bytes,
+/// the bridge's other encoding, so the file stays verbatim.
 #[derive(Serialize)]
 struct Record<'a> {
     #[serde(rename = "type")]
@@ -86,7 +89,22 @@ struct Record<'a> {
     connection: u64,
     direction: &'static str,
     encoding: &'static str,
-    frame: &'a str,
+    frame: std::borrow::Cow<'a, str>,
+}
+
+/// Where the transport dropped a frame too long to carry: not a frame, so its
+/// own record type, counted in the header's `dropped`.
+#[derive(Serialize)]
+struct Dropped {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    at: i64,
+    connection: u64,
+    direction: &'static str,
+    /// The dropped line's length in bytes.
+    length: usize,
+    /// The transport's limit it was over.
+    limit: usize,
 }
 
 impl Export {
@@ -105,17 +123,24 @@ impl Export {
 
     /// How many frames it carries.
     pub fn frames(&self) -> usize {
-        self.frames.len()
+        self.frames.len() - self.placeholders()
     }
 
-    /// How many frames the trace captured that this export does not carry —
-    /// cleared, or aged out of the trace's cap.
+    /// How many frames crossed that this export does not carry — cleared, aged
+    /// out of the trace's cap, or dropped by the transport for their length.
     ///
     /// In the header as well, because a consumer reading the file has to be
     /// able to tell an export of a whole session from an export of what was
     /// left of one.
     pub fn dropped(&self) -> usize {
-        self.dropped
+        self.dropped + self.placeholders()
+    }
+
+    fn placeholders(&self) -> usize {
+        self.frames
+            .iter()
+            .filter(|traced| traced.frame.omission().is_some())
+            .count()
     }
 
     /// Writes the export into `directory`, under a name of its own, and answers
@@ -222,24 +247,37 @@ impl fmt::Display for Export {
             format: FORMAT,
             version: VERSION,
             at: stamp(self.at),
-            frames: self.frames.len(),
-            dropped: self.dropped,
+            frames: self.frames(),
+            dropped: self.dropped(),
             warning: WARNING,
         };
         writeln!(f, "{}", line(&header)?)?;
 
         for frame in &self.frames {
+            if let Some(omission) = frame.frame.omission() {
+                let record = Dropped {
+                    kind: "dropped",
+                    at: stamp(frame.at),
+                    connection: frame.connection,
+                    direction: way(frame.direction),
+                    length: omission.length,
+                    limit: omission.limit,
+                };
+                writeln!(f, "{}", line(&record)?)?;
+                continue;
+            }
+            let (encoding, text) = if frame.frame.is_lossy() {
+                ("base64", base64(frame.frame.bytes()).into())
+            } else {
+                ("utf8", frame.frame.as_str().into())
+            };
             let record = Record {
                 kind: "frame",
                 at: stamp(frame.at),
                 connection: frame.connection,
                 direction: way(frame.direction),
-                // Always, and pinned anyway: a `Frame` is text by construction,
-                // so the inspector has nothing to base64. The field is here so
-                // that a reader written for the bridge's records — which can
-                // carry either — reads these without a special case.
-                encoding: "utf8",
-                frame: frame.frame.as_str(),
+                encoding,
+                frame: text,
             };
             writeln!(f, "{}", line(&record)?)?;
         }
@@ -253,6 +291,26 @@ impl fmt::Display for Export {
 /// Serializing cannot fail for either record type: both are plain fields, and
 /// the frame is a string whatever it contains. The error path exists because
 /// `serde_json` has one, not because there is a way to reach it.
+/// Standard base64 with padding (RFC 4648 §4).
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &byte)| n | u32::from(byte) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 fn line(record: &impl Serialize) -> Result<String, fmt::Error> {
     serde_json::to_string(record).map_err(|_| fmt::Error)
 }

@@ -128,10 +128,12 @@ impl<T> Log<T> {
     }
 
     pub(crate) fn append(&self, entry: T) -> u64 {
-        self.append_then(entry, || {})
+        self.append_then(entry, |_, _| {})
     }
 
     /// Appends an entry and does one more thing before letting go of the log.
+    ///
+    /// `handoff` is told the new entry's ordinal and the dropped count.
     ///
     /// `handoff` is what makes the log's order the real order: the trace records
     /// a frame and hands it to the transport under the same lock, so two tasks
@@ -145,7 +147,7 @@ impl<T> Log<T> {
     /// neither of those is a reset ([`clear`](Self::clear)) — which is what
     /// makes it an identity rather than a position, and what lets a consumer
     /// that kept one find the entry again in `dropped + position`.
-    pub(crate) fn append_then(&self, entry: T, handoff: impl FnOnce()) -> u64 {
+    pub(crate) fn append_then(&self, entry: T, handoff: impl FnOnce(u64, usize)) -> u64 {
         let mut held = self.lock();
         let ordinal = (held.dropped + held.entries.len()) as u64;
         held.bytes += (held.weight)(&entry);
@@ -162,7 +164,7 @@ impl<T> Log<T> {
             held.bytes -= (held.weight)(&removed);
             held.dropped += 1;
         }
-        handoff();
+        handoff(ordinal, held.dropped);
         // What the entry just appended is called, in the same terms a reader of
         // this log has: the last position, plus everything that has left.
         // Announced while the log is still held, so a subscriber that wakes on

@@ -59,7 +59,13 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
         ),
         (
             "crates/core/src/frame.rs",
-            "id = match serde_json::from_str::<serde_json::Value>(raw.get())",
+            "let value = serde_json::from_str::<serde_json::Value>(raw.get())",
+        ),
+        // Envelope tokens read off a dropped frame's retained prefix, to find
+        // the id of the answer it was; never a protocol type.
+        (
+            "crates/core/src/rpc.rs",
+            "let mut values = serde_json::Deserializer::from_str(text).into_iter::<T>();",
         ),
         (
             "crates/core/src/indentation.rs",

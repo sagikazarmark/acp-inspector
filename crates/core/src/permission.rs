@@ -68,6 +68,9 @@ pub enum PermissionState {
     /// waiting forever, under a row of buttons that would send an answer to a
     /// turn that is over.
     Abandoned,
+    /// The agent withdrew it with `$/cancel_request` and was answered with the
+    /// cancellation error.
+    CancelledByAgent,
 }
 
 impl PermissionRequest {
@@ -165,6 +168,23 @@ impl PermissionRequest {
     ///
     /// Leaves an answer that is already on its way alone — that one is being
     /// decided by the wire, and this is not evidence about it.
+    /// The agent withdrew the request with `$/cancel_request`, and is answered
+    /// with the cancellation error the protocol asks for.
+    pub(crate) async fn withdrawn(&self) -> Result<(), CallError> {
+        self.claim()?;
+        let told = self
+            .0
+            .resolver
+            .refuse(&self.0.id, v1::Error::request_cancelled())
+            .await;
+        *self.held() = match &told {
+            Ok(()) => PermissionState::CancelledByAgent,
+            Err(_) => PermissionState::Abandoned,
+        };
+        self.moved();
+        told
+    }
+
     pub(crate) fn abandoned(&self) {
         {
             let mut state = self.held();

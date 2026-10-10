@@ -237,6 +237,21 @@ pub enum Unrecognized {
         /// spelling.
         detail: String,
     },
+    /// A `session/update` for a session that is neither live nor opening. It
+    /// changed nothing here: the live session's settings are its own.
+    ForeignSession { session: v1::SessionId },
+    /// A placeholder for a frame the transport dropped for its length; the
+    /// entry's frame is the start of it.
+    Dropped { length: usize, limit: usize },
+    /// An answer whose id is a call of this client's with its type changed
+    /// (`"3"` or `3.0` for `3`). JSON-RPC does not match it, so the call is
+    /// still waiting.
+    MistypedId { id: String, call: i64 },
+    /// An error answering no request: its id was null or missing.
+    Unaddressed { error: v1::Error },
+    /// A blocking request refused because too many were already waiting on
+    /// the reader; the agent was answered with an error.
+    OverCapacity { method: String, limit: usize },
 }
 
 #[derive(Default)]
@@ -509,6 +524,19 @@ impl Timeline {
     /// Adds a frame the typed layer could not use. Never merges: there is no id
     /// to merge on, and guessing at one would be the inspector interpreting
     /// traffic it just said it does not understand.
+    /// Adds a frame to the entry `id` names, where it is still held. Says
+    /// whether it was.
+    pub(crate) fn attach(&self, id: &EntryId, frame: Recorded) -> bool {
+        let mut entries = self.lock();
+        let Some(entry) = entries.entries.iter_mut().find(|entry| &entry.id == id) else {
+            return false;
+        };
+        entry.frames.push(frame.clone());
+        entries.charge(&frame);
+        self.moved(&mut entries);
+        true
+    }
+
     pub(crate) fn unrecognized(&self, unrecognized: Unrecognized, frame: Recorded) {
         let mut entries = self.lock();
         entries.charge(&frame);
@@ -685,11 +713,11 @@ impl Entries {
         }
         if self.turns.len() > Timeline::CAPACITY {
             let mut excess = self.turns.len() - Timeline::CAPACITY;
+            // One pass over the entries, not one per turn.
+            let used: std::collections::HashSet<u64> =
+                self.entries.iter().filter_map(|entry| entry.turn).collect();
             self.turns.retain(|turn| {
-                if excess == 0
-                    || self.open == Some(turn.id)
-                    || self.entries.iter().any(|e| e.turn == Some(turn.id))
-                {
+                if excess == 0 || self.open == Some(turn.id) || used.contains(&turn.id) {
                     return true;
                 }
                 excess -= 1;
@@ -746,8 +774,12 @@ impl Unrecognized {
         match self {
             Self::NotServiced { method } => Some(method),
             Self::Undecodable { method, .. } => method.as_deref(),
-            Self::Unadvertised { method, .. } => Some(method),
-            Self::Unsolicited => None,
+            Self::Unadvertised { method, .. } | Self::OverCapacity { method, .. } => Some(method),
+            Self::ForeignSession { .. } => Some("session/update"),
+            Self::Unsolicited
+            | Self::Dropped { .. }
+            | Self::MistypedId { .. }
+            | Self::Unaddressed { .. } => None,
         }
     }
 }

@@ -27,6 +27,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
+use agent_client_protocol_schema::v1;
 use serde_json::Value;
 
 use crate::call::CallError;
@@ -109,6 +110,11 @@ impl Resolver {
     /// the thing that could not express it.
     pub(crate) async fn respond_to(&self, id: &RequestId, body: Value) -> Result<(), CallError> {
         self.rpc.respond(id.value(), Ok(body)).await
+    }
+
+    /// Puts an error answer on the wire, addressed to the id it answers.
+    pub(crate) async fn refuse(&self, id: &RequestId, error: v1::Error) -> Result<(), CallError> {
+        self.rpc.respond(id.value(), Err(error)).await
     }
 
     /// Says that a request changed, to whoever is watching the timeline it sits

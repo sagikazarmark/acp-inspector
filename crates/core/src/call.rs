@@ -54,6 +54,9 @@ pub enum CallError {
     /// trace, verbatim, like every other (§8); this is what the decoder said
     /// about it.
     Undecodable(String),
+    /// The agent's answer was longer than the transport carries, so it was
+    /// dropped; `length` is its size in bytes. A placeholder is in the trace.
+    AnswerDropped { length: usize },
 }
 
 impl std::fmt::Display for CallError {
@@ -89,6 +92,10 @@ impl std::fmt::Display for CallError {
             Self::Undecodable(problem) => {
                 write!(f, "the agent's answer could not be read as v1: {problem}")
             }
+            Self::AnswerDropped { length } => write!(
+                f,
+                "the agent's answer was {length} bytes, too long to carry, and was dropped"
+            ),
         }
     }
 }

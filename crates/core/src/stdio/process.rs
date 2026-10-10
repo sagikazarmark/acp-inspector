@@ -27,12 +27,26 @@ impl Process {
     }
 
     pub fn terminate(&self) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).terminate();
+        self.lock().terminate();
+    }
+
+    /// Asks the process group to stop (SIGTERM). False where there is no such
+    /// request to make: on Windows, or once the leader is gone.
+    pub fn interrupt(&self) -> bool {
+        self.lock().interrupt()
+    }
+
+    pub fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
+        self.lock().try_wait()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, platform::Process> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub async fn wait(&self) -> io::Result<ExitStatus> {
         loop {
-            let status = self.0.lock().unwrap_or_else(|e| e.into_inner()).try_wait();
+            let status = self.lock().try_wait();
             match status {
                 Ok(Some(status)) => return Ok(status),
                 Ok(None) => {}
@@ -64,6 +78,8 @@ mod platform {
     pub struct Process {
         child: Option<std::process::Child>,
         terminated: bool,
+        /// Kept once reaped: the PID is no longer ours to ask about.
+        status: Option<ExitStatus>,
     }
 
     impl Process {
@@ -76,6 +92,7 @@ mod platform {
             let mut process = Self {
                 child: Some(child),
                 terminated: false,
+                status: None,
             };
             let child = process.child.as_mut().unwrap();
             let stdin = ChildStdin::from_std(child.stdin.take().unwrap())?;
@@ -98,7 +115,22 @@ mod platform {
             }
         }
 
+        pub fn interrupt(&mut self) -> bool {
+            let Some(child) = self.child.as_ref().filter(|_| !self.terminated) else {
+                return false;
+            };
+            // SAFETY: as in `terminate`; `terminated` is set before reaping, so
+            // the leader is still unreaped here.
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGTERM);
+            }
+            true
+        }
+
         pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            if let Some(status) = self.status {
+                return Ok(Some(status));
+            }
             let child = self.child.as_ref().unwrap();
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // SAFETY: valid zero-initialized output; WNOWAIT observes exit
@@ -120,7 +152,8 @@ mod platform {
             // Descendants may still hold both pipes. End them before draining
             // the bytes already written; their inherited handles now reach EOF.
             self.terminate();
-            self.child.as_mut().unwrap().try_wait()
+            self.status = self.child.as_mut().unwrap().try_wait()?;
+            Ok(self.status)
         }
     }
 
@@ -166,6 +199,12 @@ mod platform {
 
         pub fn terminate(&mut self) {
             let _ = self.0.start_kill();
+        }
+
+        /// Windows has no SIGTERM for a console process; stdin EOF was the
+        /// polite request.
+        pub fn interrupt(&mut self) -> bool {
+            false
         }
 
         pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {

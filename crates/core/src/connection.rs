@@ -129,16 +129,26 @@ pub enum DiagnosticKind {
     /// still be queued: consumers must drain the incoming stream before using
     /// this diagnostic to tear down the Connection.
     AgentExited(ExitStatus),
-    /// A frame past the transport's length limit was dropped — the one hole the
-    /// trace can have, so it is announced rather than silently left.
+    /// A frame past the transport's length limit was dropped. A placeholder
+    /// takes its place in the trace ([`Frame::omission`](crate::Frame::omission)).
     ///
     /// The connection continues: an agent that emits a 10 MB line is the
     /// misbehaviour this tool exists to show (§7.3, evidence over silence), not
     /// a reason to stop showing the rest of what it does.
-    FrameDropped { limit: usize },
-    /// The same, for a stderr line. The console loses one line and keeps
-    /// running.
-    StderrLineDropped { limit: usize },
+    FrameDropped { limit: usize, length: usize },
+    /// The stderr line before this one was cut to `limit` of its `length`
+    /// bytes.
+    StderrLineCut { limit: usize, length: usize },
+    /// The stderr line before this one was not UTF-8 and was decoded lossily.
+    StderrLineLossy,
+    /// The agent stopped after a graceful disconnect, and which step did it.
+    Stopped {
+        by: Stop,
+        status: Option<ExitStatus>,
+    },
+    /// The agent exited but something outside its process group kept its
+    /// output pipes open, so reading them was abandoned.
+    DrainAbandoned,
     /// The outgoing pipe broke. Further sends fail, but incoming evidence can
     /// still arrive. This is not a terminal Connection diagnostic: consumers
     /// keep draining until AgentExited or TransportFailed.
@@ -146,6 +156,20 @@ pub enum DiagnosticKind {
     /// A terminal transport failure (including an unreadable incoming pipe).
     /// Consumers interrupt the reader and fail pending calls immediately.
     TransportFailed(Arc<io::Error>),
+}
+
+/// Which step of a graceful stop ended the agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Stop {
+    /// It had exited before it was asked.
+    AlreadyExited,
+    /// It exited when its stdin closed.
+    StdinClosed,
+    /// It exited on SIGTERM to its process group.
+    Terminated,
+    /// It was killed after the polite steps' grace ran out.
+    Killed,
 }
 
 /// Why a frame did not go out.
@@ -176,6 +200,9 @@ pub struct TransportEnds {
     /// Fires when the client has dropped every part of the connection. A
     /// transport that owns a process ends it here; nothing else will.
     pub shutdown: CancellationToken,
+    /// Fires before `shutdown` when the client asked for a graceful stop
+    /// rather than an immediate one.
+    pub graceful: CancellationToken,
 }
 
 /// Cancels the transport when the last client-side part goes away.
@@ -188,6 +215,7 @@ pub struct TransportEnds {
 /// Stdio installs a synchronous stop hook for shutdown without a running executor.
 struct Guard {
     shutdown: CancellationToken,
+    graceful: CancellationToken,
     stop: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
@@ -198,8 +226,10 @@ pub fn connection() -> (Connection, TransportEnds) {
     let (diagnostics_tx, diagnostics_rx) = mpsc::channel(DIAGNOSTIC_CAPACITY);
 
     let shutdown = CancellationToken::new();
+    let graceful = CancellationToken::new();
     let guard = Arc::new(Guard {
         shutdown: shutdown.clone(),
+        graceful: graceful.clone(),
         stop: OnceLock::new(),
     });
 
@@ -225,6 +255,7 @@ pub fn connection() -> (Connection, TransportEnds) {
         incoming: incoming_tx,
         diagnostics: diagnostics_tx,
         shutdown,
+        graceful,
     };
 
     (connection, ends)
@@ -268,18 +299,63 @@ impl FrameSink {
         self._guard.shutdown();
     }
 
+    /// Makes the coming shutdown a graceful stop rather than an immediate one.
+    pub(crate) fn stop_gracefully(&self) {
+        self._guard.graceful.cancel();
+    }
+
+    pub(crate) fn stopping_gracefully(&self) -> bool {
+        self._guard.graceful.is_cancelled()
+    }
+
+    /// Ends the agent now, whatever stop was asked for before.
+    pub(crate) fn kill(&self) {
+        if let Some(stop) = self._guard.stop.get() {
+            stop();
+        }
+        self._guard.shutdown.cancel();
+    }
+
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self._guard, &other._guard)
+    }
+
+    /// Enqueues without waiting, and answers with where the trace put it.
     pub(crate) fn try_send(
         &self,
         frame: Frame,
-    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<()>> {
+    ) -> Result<Option<u64>, tokio::sync::mpsc::error::TrySendError<()>> {
         let permit = self.frames.try_reserve()?;
-        match &self.tap {
+        Ok(match &self.tap {
             Some(tap) => {
-                tap.record_then(Direction::ToAgent, frame, |frame| permit.send(frame));
+                Some(tap.record_then(Direction::ToAgent, frame, |frame| permit.send(frame)))
             }
-            None => permit.send(frame),
+            None => {
+                permit.send(frame);
+                None
+            }
+        })
+    }
+
+    /// [`send`](Self::send), answering with where the trace put the frame.
+    pub(crate) async fn send_captured(&self, frame: Frame) -> Result<Option<u64>, SendError> {
+        if !frame.is_one_message() {
+            return Err(SendError::NotOneMessage);
         }
-        Ok(())
+        let permit = self
+            .frames
+            .reserve()
+            .await
+            .map_err(|_| SendError::Disconnected)?;
+        Ok(match &self.tap {
+            Some(tap) => {
+                Some(tap.record_then(Direction::ToAgent, frame, |frame| permit.send(frame)))
+            }
+            None => {
+                permit.send(frame);
+                None
+            }
+        })
     }
     /// Sends one frame, recording it as it goes.
     ///
@@ -292,24 +368,7 @@ impl FrameSink {
     /// What "sent" therefore means is "handed to the transport" — the honest
     /// claim, since nothing above the seam can know the wire took it.
     pub async fn send(&self, frame: Frame) -> Result<(), SendError> {
-        if !frame.is_one_message() {
-            return Err(SendError::NotOneMessage);
-        }
-        let permit = self
-            .frames
-            .reserve()
-            .await
-            .map_err(|_| SendError::Disconnected)?;
-        match &self.tap {
-            // The ordinal it was recorded under is dropped here rather than
-            // carried: what reads one is a Timeline entry, and nothing this
-            // client sends becomes one (`timeline::Recorded`).
-            Some(tap) => {
-                tap.record_then(Direction::ToAgent, frame, |frame| permit.send(frame));
-            }
-            None => permit.send(frame),
-        }
-        Ok(())
+        self.send_captured(frame).await.map(|_| ())
     }
 }
 
@@ -361,7 +420,10 @@ impl Drop for Guard {
 
 impl Guard {
     fn shutdown(&self) {
-        if let Some(stop) = self.stop.get() {
+        // A graceful stop is the transport's to run; killing here would end it.
+        if !self.graceful.is_cancelled()
+            && let Some(stop) = self.stop.get()
+        {
             stop();
         }
         self.shutdown.cancel();
@@ -397,12 +459,32 @@ impl std::fmt::Display for DiagnosticKind {
                 write!(f, "could not start `{command}`: {error}")
             }
             Self::AgentExited(status) => write!(f, "the agent exited: {status}"),
-            Self::FrameDropped { limit } => {
-                write!(f, "dropped a frame longer than {limit} bytes")
+            Self::FrameDropped { limit, length } => write!(
+                f,
+                "dropped a {length}-byte frame, over the {limit}-byte limit; a placeholder is in the trace"
+            ),
+            Self::StderrLineCut { limit, length } => write!(
+                f,
+                "the stderr line above was cut to its first {limit} of {length} bytes"
+            ),
+            Self::StderrLineLossy => f.write_str(
+                "the stderr line above was not valid UTF-8; invalid bytes are shown as \u{FFFD}",
+            ),
+            Self::Stopped { by, status } => {
+                match by {
+                    Stop::AlreadyExited => f.write_str("the agent had already exited")?,
+                    Stop::StdinClosed => f.write_str("the agent stopped when its stdin closed")?,
+                    Stop::Terminated => f.write_str("the agent stopped on SIGTERM")?,
+                    Stop::Killed => f.write_str("the agent did not stop when asked and was killed")?,
+                }
+                match status {
+                    Some(status) => write!(f, ": {status}"),
+                    None => Ok(()),
+                }
             }
-            Self::StderrLineDropped { limit } => {
-                write!(f, "dropped a stderr line longer than {limit} bytes")
-            }
+            Self::DrainAbandoned => f.write_str(
+                "stopped reading the agent's output: it exited, but another process still holds its pipes",
+            ),
             Self::TransportFailed(error) => write!(f, "the connection broke: {error}"),
             Self::WriteFailed(error) => write!(f, "could not write to the agent: {error}"),
         }

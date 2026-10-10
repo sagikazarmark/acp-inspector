@@ -149,12 +149,12 @@ pub use command::AgentCommand;
 pub use conformance::{Annotation, Ending, OptionSet, Replay, Reuse};
 pub use connection::{
     Connection, ConnectionFactory, Diagnostic, DiagnosticKind, DiagnosticStream, FrameSink,
-    FrameStream, SendError, TransportEnds, connection,
+    FrameStream, SendError, Stop, TransportEnds, connection,
 };
 pub use driven::{AgentCapability, Driven, DrivenRecord};
 pub use elicitation::{ElicitationAnswer, ElicitationRequest, ElicitationState};
 pub use export::Export;
-pub use frame::{Direction, Frame, FrameKind, FrameSummary};
+pub use frame::{Direction, Frame, FrameKind, FrameSummary, Omission};
 pub use indentation::Indentation;
 pub use inspector::{ConnectionStatus, DiagnosticLog, Inspector};
 pub use listing::{Cursor, SessionListing};
@@ -162,6 +162,7 @@ pub use permission::{PermissionRequest, PermissionState};
 pub use recent::RecentCommands;
 pub use restore::Restore;
 pub use roots::Roots;
+pub use rpc::PendingCall;
 pub use session_settings::{ConfigRefusal, ModeChange, SessionSettings};
 pub use settings::Settings;
 pub use stdio::StdioSpawn;
@@ -169,5 +170,5 @@ pub use store::Changes;
 pub use timeline::{
     EntryId, EntryKind, Recorded, Retention, Timeline, TimelineEntry, Turn, Unrecognized,
 };
-pub use trace::{Trace, TracedFrame};
+pub use trace::{Counterpart, Trace, TracedFrame};
 pub use turn::{TurnOutcome, TurnState};

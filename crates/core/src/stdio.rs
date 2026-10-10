@@ -9,31 +9,48 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::codec::{Framed, FramedParts, FramedWrite, LinesCodec, LinesCodecError};
+use futures_util::SinkExt;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::process::{ChildStdin, Command};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::codec::{FramedWrite, LinesCodec, LinesCodecError};
 use tokio_util::sync::CancellationToken;
 
 use crate::connection::{
-    Connection, ConnectionFactory, Diagnostic, DiagnosticKind, TransportEnds, connection,
+    Connection, ConnectionFactory, Diagnostic, DiagnosticKind, Stop, TransportEnds, connection,
 };
-use crate::frame::Frame;
+use crate::frame::{Frame, Omission};
 
 mod process;
 use process::{Process, Spawned, WatchOwner};
 
 /// The longest line the transport will read.
 ///
-/// The MCP TypeScript SDK's number, by way of `app/bridge` (§4.3 there): neither
-/// Zed nor the ACP SDK caps it at all, which makes an unterminated stream a slow
-/// OOM. It is a reading limit and nothing more — a line over it is dropped and
-/// announced, the connection carries on, and an agent that emits one has told
-/// you something about itself.
+/// The MCP TypeScript SDK's number: neither Zed nor the ACP SDK caps it at all,
+/// which makes an unterminated stream a slow OOM. A line over it is replaced by
+/// a placeholder and announced, and the connection carries on.
 const MAX_FRAME_BYTES: usize = 10 * 1024 * 1024;
+
+/// How much of a dropped frame's start the placeholder keeps, which is where
+/// the id of an answer usually is.
+const KEPT_PREFIX_BYTES: usize = 4 * 1024;
+
+/// The longest stderr line kept whole, well under the console's 8 MiB budget
+/// so one line cannot evict the rest of it.
+const MAX_STDERR_LINE_BYTES: usize = 1024 * 1024;
+
+/// How long each polite step of a graceful stop gets before the next.
+const STOP_GRACE: Duration = Duration::from_millis(1500);
+
+/// How long both readers may sit idle on pipes after the agent exited before
+/// they are abandoned to whatever escaped its process group.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 /// Spawns an agent and speaks newline-delimited JSON to it.
 ///
@@ -45,6 +62,8 @@ pub struct StdioSpawn {
     command: OsString,
     args: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
+    removed: Vec<OsString>,
+    clear_env: bool,
     cwd: Option<PathBuf>,
 }
 
@@ -92,6 +111,21 @@ impl StdioSpawn {
         self
     }
 
+    /// Keeps one inherited variable from the child. Variables set with
+    /// [`env`](Self::env) are still set.
+    #[must_use]
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.removed.push(key.into());
+        self
+    }
+
+    /// Starts the child with only the variables set with [`env`](Self::env).
+    #[must_use]
+    pub fn env_clear(mut self) -> Self {
+        self.clear_env = true;
+        self
+    }
+
     /// The child's working directory. Distinct from ACP's per-session `cwd`,
     /// which is a parameter on the wire (§7.1) — this one is the process's.
     #[must_use]
@@ -119,10 +153,15 @@ impl StdioSpawn {
             .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Piped, unlike `app/bridge`, which inherits it: the bridge has
-            // nothing to show stderr *to*, while for the inspector the agent's
-            // diagnostics are a screen (§9) and the spawn-failure evidence.
+            // Piped: the agent's diagnostics are a screen (§9) and the
+            // spawn-failure evidence.
             .stderr(Stdio::piped());
+        if self.clear_env {
+            command.env_clear();
+        }
+        for key in &self.removed {
+            command.env_remove(key);
+        }
         for (key, value) in &self.env {
             command.env(key, value);
         }
@@ -184,10 +223,12 @@ fn pump(child: Spawned, ends: TransportEnds) {
         incoming,
         diagnostics,
         shutdown,
+        graceful,
     } = ends;
 
-    let (stderr_drained, stderr_done) = oneshot::channel();
     let stop_writing = CancellationToken::new();
+    let stdout_reading = Arc::new(Reading::default());
+    let stderr_reading = Arc::new(Reading::default());
 
     let stdin_done = tokio::spawn(write_frames(
         stdin,
@@ -195,24 +236,34 @@ fn pump(child: Spawned, ends: TransportEnds) {
         diagnostics.clone(),
         stop_writing.clone(),
     ));
-    let stdout_done = tokio::spawn(read_frames(stdout, incoming, diagnostics.clone()));
-    tokio::spawn(read_stderr(stderr, diagnostics.clone(), stderr_drained));
-    tokio::spawn(watch(
-        WatchOwner(process),
+    let stdout_done = tokio::spawn(read_frames(
+        Lines::new(stdout, MAX_FRAME_BYTES + 1, stdout_reading.clone()),
+        incoming,
+        diagnostics.clone(),
+    ));
+    let stderr_done = tokio::spawn(read_stderr(
+        Lines::new(stderr, MAX_STDERR_LINE_BYTES, stderr_reading.clone()),
+        diagnostics.clone(),
+    ));
+    tokio::spawn(watch(Watch {
+        child: WatchOwner(process),
         diagnostics,
         shutdown,
+        graceful,
         stop_writing,
         stdin_done,
-        stdout_done,
-        stderr_done,
-    ));
+        readers: [
+            (Some(stdout_done), stdout_reading),
+            (Some(stderr_done), stderr_reading),
+        ],
+    }));
 }
 
 /// Client frames onto the agent's stdin, one per line.
 ///
 /// Ends when the client has dropped every sink, and closing stdin is how that
 /// ending reaches the agent: an stdio agent stops at EOF, which is the first
-/// step of `app/bridge`'s teardown sequence and the polite half of this one.
+/// step of a graceful stop.
 async fn write_frames(
     stdin: ChildStdin,
     mut outgoing: mpsc::Receiver<Frame>,
@@ -252,70 +303,119 @@ async fn write_frames(
 
 /// The agent's stdout, one JSON-RPC message per line.
 ///
-/// The codec is what makes framing the transport's job: a read carrying three
-/// messages becomes three frames, and a message split across reads is
-/// reassembled — both of them bugs a hand-rolled reader has to earn its way out
-/// of.
-async fn read_frames(
-    stdout: ChildStdout,
+/// Bytes rather than text: a line that is not UTF-8 is still a frame, recorded
+/// lossily and flagged, and a line over the limit leaves a placeholder.
+async fn read_frames<R: AsyncRead + Unpin>(
+    mut lines: Lines<R>,
     incoming: mpsc::Sender<Frame>,
     diagnostics: mpsc::Sender<Diagnostic>,
 ) {
-    let mut lines = reader(stdout);
     loop {
-        match lines.next().await {
-            Some(Ok(line)) => {
-                if incoming.send(Frame::new(line)).await.is_err() {
-                    return;
-                }
-            }
-            // One frame is lost, the connection is not, and the loss is
-            // announced rather than left as a gap nobody can see: an agent that
-            // emits a line this long is misbehaving, and misbehaviour is what
-            // this tool is for (§7.3, §8).
-            Some(Err(LinesCodecError::MaxLineLengthExceeded)) => {
+        let frame = match lines.next().await {
+            Ok(Some(Line::Whole(bytes))) => Frame::read(bytes),
+            Ok(Some(Line::Cut { mut kept, length })) => {
                 let _ = diagnostics
                     .send(Diagnostic::now(DiagnosticKind::FrameDropped {
                         limit: MAX_FRAME_BYTES,
+                        length,
                     }))
                     .await;
-                lines = resume(lines);
+                kept.truncate(KEPT_PREFIX_BYTES);
+                Frame::omitted(
+                    &kept,
+                    Omission {
+                        length,
+                        limit: MAX_FRAME_BYTES,
+                    },
+                )
             }
-            Some(Err(LinesCodecError::Io(error))) => {
+            Ok(None) => return,
+            Err(error) => {
                 let _ = diagnostics.send(broken_pipe(error)).await;
                 return;
             }
-            None => return,
+        };
+        if incoming.send(frame).await.is_err() {
+            return;
         }
     }
 }
 
 /// The agent's stderr, line by line, stamped as each line is read
 /// (`CONTEXT.md`, *Diagnostic channel*).
-async fn read_stderr(
-    stderr: ChildStderr,
+///
+/// It drains to EOF whatever the lines contain and whether or not anyone is
+/// still listening: an agent blocked on, or killed by, its own stderr is not
+/// something the inspector may cause.
+async fn read_stderr<R: AsyncRead + Unpin>(
+    mut lines: Lines<R>,
     diagnostics: mpsc::Sender<Diagnostic>,
-    drained: oneshot::Sender<()>,
 ) {
-    let mut lines = reader(stderr);
-    loop {
-        let diagnostic = match lines.next().await {
-            Some(Ok(line)) => Diagnostic::now(DiagnosticKind::Stderr(line)),
-            Some(Err(LinesCodecError::MaxLineLengthExceeded)) => {
-                lines = resume(lines);
-                Diagnostic::now(DiagnosticKind::StderrLineDropped {
-                    limit: MAX_FRAME_BYTES,
-                })
+    let mut listening = true;
+    // The wire is elsewhere: a broken stderr ends the console, not the
+    // connection.
+    while let Ok(Some(line)) = lines.next().await {
+        if !listening {
+            continue;
+        }
+        let (text, lossy, cut) = stderr_line(line);
+        let mut said = vec![Diagnostic::now(DiagnosticKind::Stderr(text))];
+        if lossy {
+            said.push(Diagnostic::now(DiagnosticKind::StderrLineLossy));
+        }
+        if let Some(length) = cut {
+            said.push(Diagnostic::now(DiagnosticKind::StderrLineCut {
+                limit: MAX_STDERR_LINE_BYTES,
+                length,
+            }));
+        }
+        for diagnostic in said {
+            if diagnostics.send(diagnostic).await.is_err() {
+                listening = false;
+                break;
             }
-            // The wire is elsewhere: a broken stderr ends the console, not the
-            // connection.
-            Some(Err(LinesCodecError::Io(_))) | None => break,
-        };
-        if diagnostics.send(diagnostic).await.is_err() {
-            break;
         }
     }
-    let _ = drained.send(());
+}
+
+/// A stderr line as console text: CR stripped, decoded lossily, and cut on a
+/// character boundary.
+fn stderr_line(line: Line) -> (String, bool, Option<usize>) {
+    let (mut bytes, cut) = match line {
+        Line::Whole(mut bytes) => {
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            (bytes, None)
+        }
+        Line::Cut { kept, length } => (kept, Some(length)),
+    };
+    if cut.is_some()
+        && let Err(error) = std::str::from_utf8(&bytes)
+        && error.error_len().is_none()
+    {
+        // The cut split a character; that is not the agent's doing.
+        bytes.truncate(error.valid_up_to());
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => (text, false, cut),
+        Err(error) => (
+            String::from_utf8_lossy(error.as_bytes()).into_owned(),
+            true,
+            cut,
+        ),
+    }
+}
+
+/// What the watch task owns.
+struct Watch {
+    child: WatchOwner,
+    diagnostics: mpsc::Sender<Diagnostic>,
+    shutdown: CancellationToken,
+    graceful: CancellationToken,
+    stop_writing: CancellationToken,
+    stdin_done: JoinHandle<()>,
+    readers: [(Option<JoinHandle<()>>, Arc<Reading>); 2],
 }
 
 /// Owns the child: reports its exit, and ends it when the client lets go.
@@ -323,15 +423,17 @@ async fn read_stderr(
 /// Someone has to hold the `Child`, and it may as well be the one task that has
 /// something to do with it. Without this, a dropped connection would leave the
 /// agent running with nobody reading it.
-async fn watch(
-    child: WatchOwner,
-    diagnostics: mpsc::Sender<Diagnostic>,
-    shutdown: CancellationToken,
-    stop_writing: CancellationToken,
-    stdin_drained: tokio::task::JoinHandle<()>,
-    stdout_drained: tokio::task::JoinHandle<()>,
-    stderr_drained: oneshot::Receiver<()>,
-) {
+async fn watch(watch: Watch) {
+    let Watch {
+        child,
+        diagnostics,
+        shutdown,
+        graceful,
+        stop_writing,
+        stdin_done,
+        mut readers,
+    } = watch;
+
     tokio::select! {
         () = async {
             let exit = child.0.wait().await;
@@ -341,9 +443,13 @@ async fn watch(
             stop_writing.cancel();
             // Exit is not EOF: both pipes can still hold final evidence. The
             // Inspector must also consume the queued Frames before teardown.
-            let _ = stdout_drained.await;
-            let _ = stderr_drained.await;
-            let _ = stdin_drained.await;
+            let abandoned = drain(&mut readers).await;
+            let _ = stdin_done.await;
+            if abandoned {
+                let _ = diagnostics
+                    .send(Diagnostic::now(DiagnosticKind::DrainAbandoned))
+                    .await;
+            }
             let diagnostic = match exit {
                 Ok(status) => Diagnostic::now(DiagnosticKind::AgentExited(status)),
                 Err(error) => broken_pipe(error),
@@ -351,38 +457,160 @@ async fn watch(
             let _ = diagnostics.send(diagnostic).await;
         } => {}
         () = shutdown.cancelled() => {
-            // Nobody is left to tell, so this is teardown and not reporting.
-            child.0.terminate();
+            // Closes stdin once whatever is queued has been written.
             stop_writing.cancel();
+            if graceful.is_cancelled() {
+                let (by, status) = stop(&child.0).await;
+                let stopped = Diagnostic::now(DiagnosticKind::Stopped { by, status });
+                let _ = tokio::time::timeout(STOP_GRACE, diagnostics.send(stopped)).await;
+            } else {
+                // Nobody is left to tell, so this is teardown and not reporting.
+                child.0.terminate();
+            }
         }
     }
 }
 
-/// A line reader that refuses to buffer forever.
-///
-/// One byte of headroom over the cap, following `app/bridge/src/frames.rs`:
-/// `LinesCodec` counts a CR before stripping a CRLF terminator, so without it a
-/// line exactly at the limit would be refused for its own line ending.
-///
-/// `Framed` rather than `FramedRead`, though nothing is ever written through it:
-/// it is the one that can be taken apart and put back together, which is what
-/// [`resume`] needs.
-fn reader<T>(io: T) -> Framed<T, LinesCodec> {
-    Framed::from_parts(FramedParts::new::<String>(
-        io,
-        LinesCodec::new_with_max_length(MAX_FRAME_BYTES + 1),
-    ))
+/// Asks the agent to stop, politely first: stdin is already closing, then
+/// SIGTERM to its group, then SIGKILL. Says which step ended it.
+async fn stop(process: &Process) -> (Stop, Option<ExitStatus>) {
+    if let Ok(Some(status)) = process.try_wait() {
+        return (Stop::AlreadyExited, Some(status));
+    }
+    if let Ok(Ok(status)) = tokio::time::timeout(STOP_GRACE, process.wait()).await {
+        return (Stop::StdinClosed, Some(status));
+    }
+    if process.interrupt()
+        && let Ok(Ok(status)) = tokio::time::timeout(STOP_GRACE, process.wait()).await
+    {
+        return (Stop::Terminated, Some(status));
+    }
+    process.terminate();
+    let status = tokio::time::timeout(STOP_GRACE, process.wait())
+        .await
+        .ok()
+        .and_then(Result::ok);
+    (Stop::Killed, status)
 }
 
-/// Reads on past an over-long line.
+/// Waits for both readers to reach EOF after the agent exited, and says
+/// whether it gave up instead.
 ///
-/// A framed reader fuses itself after a decode error, and the length limit is a
-/// decode error — so continuing means rebuilding the reader around the same
-/// buffer and the same codec, which is still mid-discard and will resume at the
-/// next line ending. Rebuilding from scratch would instead drop whatever of the
-/// *next* frames had already been read.
-fn resume<T>(lines: Framed<T, LinesCodec>) -> Framed<T, LinesCodec> {
-    Framed::from_parts(lines.into_parts())
+/// It gives up only when every reader still running has sat idle on its pipe
+/// for a whole grace period: something outside the process group holds the
+/// pipe open, and EOF may never come. A reader waiting on a slow consumer is
+/// making progress and is waited for.
+async fn drain(readers: &mut [(Option<JoinHandle<()>>, Arc<Reading>); 2]) -> bool {
+    loop {
+        let before = readers
+            .each_ref()
+            .map(|(_, reading)| reading.reads.load(Ordering::Acquire));
+        let joined = tokio::time::timeout(DRAIN_GRACE, async {
+            for (task, _) in readers.iter_mut() {
+                if let Some(running) = task {
+                    let _ = running.await;
+                    *task = None;
+                }
+            }
+        })
+        .await;
+        if joined.is_ok() {
+            return false;
+        }
+        let stalled = readers
+            .iter()
+            .zip(before)
+            .all(|((task, reading), reads)| task.is_none() || reading.idle_since(reads));
+        if stalled {
+            for (task, _) in readers.iter_mut() {
+                if let Some(running) = task.take() {
+                    running.abort();
+                }
+            }
+            return true;
+        }
+    }
+}
+
+/// Whether a reader is waiting on its pipe, and how many reads it has done.
+#[derive(Default)]
+struct Reading {
+    waiting: AtomicBool,
+    reads: AtomicU64,
+}
+
+impl Reading {
+    fn idle_since(&self, reads: u64) -> bool {
+        self.waiting.load(Ordering::Acquire) && self.reads.load(Ordering::Acquire) == reads
+    }
+}
+
+/// One line off a pipe, `\n` excluded and anything before it — `\r` included —
+/// kept verbatim.
+enum Line {
+    Whole(Vec<u8>),
+    /// Longer than the limit: its first `limit` bytes, and its whole length.
+    Cut {
+        kept: Vec<u8>,
+        length: usize,
+    },
+}
+
+/// A line reader that refuses to buffer forever.
+struct Lines<R> {
+    pipe: BufReader<R>,
+    limit: usize,
+    reading: Arc<Reading>,
+}
+
+impl<R: AsyncRead + Unpin> Lines<R> {
+    fn new(pipe: R, limit: usize, reading: Arc<Reading>) -> Self {
+        Self {
+            pipe: BufReader::with_capacity(64 * 1024, pipe),
+            limit,
+            reading,
+        }
+    }
+
+    /// The next line, or `None` at EOF. A last line without a line ending is
+    /// still a line.
+    async fn next(&mut self) -> io::Result<Option<Line>> {
+        let mut kept = Vec::new();
+        let mut length = 0;
+        loop {
+            self.reading.waiting.store(true, Ordering::Release);
+            let filled = self.pipe.fill_buf().await;
+            self.reading.waiting.store(false, Ordering::Release);
+            self.reading.reads.fetch_add(1, Ordering::AcqRel);
+            let buffer = match filled {
+                Ok(buffer) => buffer,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            if buffer.is_empty() {
+                return Ok((length > 0).then(|| self.line(kept, length)));
+            }
+            let end = buffer.iter().position(|&byte| byte == b'\n');
+            let chunk = &buffer[..end.unwrap_or(buffer.len())];
+            let room = self.limit.saturating_sub(kept.len());
+            kept.extend(&chunk[..chunk.len().min(room)]);
+            length += chunk.len();
+            let consumed = end.map_or(buffer.len(), |end| end + 1);
+            self.pipe.consume(consumed);
+            if end.is_some() {
+                return Ok(Some(self.line(kept, length)));
+            }
+        }
+    }
+
+    fn line(&self, mut kept: Vec<u8>, length: usize) -> Line {
+        if length <= self.limit {
+            Line::Whole(kept)
+        } else {
+            kept.truncate(self.limit);
+            Line::Cut { kept, length }
+        }
+    }
 }
 
 /// A terminal read or process-wait failure. Write failure leaves evidence to drain.
