@@ -8,7 +8,10 @@ answers, then stopped on numeric feature unification and field-finding placement
 recorded that stop. [#8](https://github.com/sagikazarmark/acp-inspector/issues/8)
 now contains both numeric features at the typed Frame boundary, and schemaform
 0.5.0 includes the upstream [#7 fixes](https://github.com/sagikazarmark/schemaform/pull/54).
-The registry follows that release at `025d2228e9253032ac6b8deee4890c46e35379b5`.
+The registry follows that release; the renderer installed here is registry commit
+`606352fba2d98cfe08bee7f76c473af13bee4750` (merged into the registry's `main` as
+`affc7af`), as recorded in
+[PROVENANCE.md](../../crates/app/src/components/PROVENANCE.md).
 
 ## Decision
 

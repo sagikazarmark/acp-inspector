@@ -1,18 +1,21 @@
 # Elicitation renderer registry install
 
 Installed with Dioxus CLI 0.7.9 from registry commit
-`606352fba2d98cfe08bee7f76c473af13bee4750` (`feat/compact-form-density`):
+`606352fba2d98cfe08bee7f76c473af13bee4750` (`feat/compact-form-density`, merged
+into the registry's `main` as `affc7af`). To reinstall, from `crates/app`:
 
 ```sh
 dx components add schemaform_daisyui \
-  --path /path/to/dioxus-daisyui-components --force
+  --git https://github.com/sagikazarmark/dioxus-daisyui-components \
+  --rev 606352fba2d98cfe08bee7f76c473af13bee4750 --force
 ```
 
-Run from `crates/app`. The installer fetched the renderer package and its seven
-component dependencies (pinned by the install manifest to `3dfbfd2521e06e539767d10fbf0dfa2171d290ed`).
-The local registry checkout was at the exact commit above. Once published, the
-equivalent remote install uses `--git https://github.com/sagikazarmark/dioxus-daisyui-components
---rev 606352fba2d98cfe08bee7f76c473af13bee4750 --force`.
+The installer fetched the renderer package and its seven component dependencies
+(pinned by the install manifest to `3dfbfd2521e06e539767d10fbf0dfa2171d290ed`).
+The original install used a local registry checkout (`--path`) at the exact
+commit above. If you install from a local checkout instead of `--git`, pull it
+and check out the rev first: `--path` installs whatever the checkout holds, and
+an out-of-date one installs stale components without saying so.
 The installed Rust source is unchanged except for workspace `cargo fmt` formatting.
 The upstream repository is MIT OR Apache-2.0, as are this repository and schemaform.
 
