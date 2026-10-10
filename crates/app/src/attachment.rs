@@ -50,7 +50,7 @@ pub enum AttachmentPreview {
     Text { excerpt: String },
     Pdf,
     Blob,
-    Link { uri: String },
+    Link,
 }
 
 impl Attachment {
@@ -220,7 +220,7 @@ impl Attachment {
             },
             AttachmentContent::Pdf { .. } => AttachmentPreview::Pdf,
             AttachmentContent::Blob { .. } => AttachmentPreview::Blob,
-            AttachmentContent::Link { uri, .. } => AttachmentPreview::Link { uri: uri.clone() },
+            AttachmentContent::Link { .. } => AttachmentPreview::Link,
         }
     }
     pub fn content(&self) -> v1::ContentBlock {
@@ -677,9 +677,7 @@ mod tests {
         assert_eq!(link.name, "spec.md");
         assert_eq!(link.bytes, 0, "a link costs none of the byte budget");
         assert!(link.require_advertisement(false, false, false).is_ok());
-        assert!(
-            matches!(link.preview(), AttachmentPreview::Link { uri } if uri == "file:///repo/docs/spec.md")
-        );
+        assert!(matches!(link.preview(), AttachmentPreview::Link));
         assert_eq!(
             link.describe(),
             "spec.md · link · text/markdown · file:///repo/docs/spec.md"

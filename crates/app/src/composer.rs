@@ -514,7 +514,7 @@ pub fn Composer(
                                     AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
                                     AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
                                     AttachmentPreview::Blob => rsx! { span { class: "hint", "Binary file · original bytes embedded" } },
-                                    AttachmentPreview::Link { .. } => rsx! { span { class: "hint", "Resource link · the agent is sent the URI, not the contents" } },
+                                    AttachmentPreview::Link => rsx! { span { class: "hint", "Resource link · the agent is sent the URI, not the contents" } },
                                 }}
                                 span { "{held.describe()}" }
                             },

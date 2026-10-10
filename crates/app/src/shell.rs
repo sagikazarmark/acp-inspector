@@ -56,7 +56,7 @@ pub fn launch(app: fn() -> Element) {
                 // external browser before this is consulted; everything that
                 // reaches here — file drops, data:, javascript:, custom
                 // schemes — is refused.
-                .with_navigation_handler(|url| navigable(url))
+                .with_navigation_handler(navigable)
                 .with_menu(menu())
                 // The canvas colour, before the page has painted anything (D4).
                 .with_background_color(canvas(prefers_dark()))
