@@ -51,10 +51,12 @@ pub fn launch(app: fn() -> Element) {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
-                // File drops outside the composer must never navigate the
-                // inspector window. Dioxus still hands http(s) links to the
-                // reader's external browser before this policy is consulted.
-                .with_navigation_handler(|url| !url.starts_with("file:"))
+                // The window navigates only to its own pages (S1). Dioxus
+                // serves its own and hands http(s) and mailto links to the
+                // external browser before this is consulted; everything that
+                // reaches here — file drops, data:, javascript:, custom
+                // schemes — is refused.
+                .with_navigation_handler(|url| navigable(url))
                 .with_menu(menu())
                 // The canvas colour, before the page has painted anything (D4).
                 .with_background_color(canvas(prefers_dark()))
@@ -74,6 +76,24 @@ pub fn launch(app: fn() -> Element) {
                 ),
         )
         .launch(app);
+}
+
+/// Whether the webview may navigate to `url` itself: only the app's own
+/// pages, as the renderer serves them (`dioxus://index.html/`, or
+/// `http(s)://dioxus.index.html/` where the custom scheme is spelled as a
+/// host). External http(s) links never navigate the window; the renderer
+/// opens them in the reader's browser instead. Anything else is denied.
+fn navigable(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "dioxus" => true,
+        "http" | "https" => parsed
+            .host_str()
+            .is_some_and(|host| host == "dioxus.index.html"),
+        _ => false,
+    }
 }
 
 /// The canvas colour in each scheme: `--bg` in `theme.css`.
@@ -503,6 +523,35 @@ pub fn icon() -> Option<Icon> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_navigates_only_to_its_own_pages() {
+        for own in [
+            "dioxus://index.html/",
+            "dioxus://index.html/assets/style.css",
+            "http://dioxus.index.html/",
+            "https://dioxus.index.html/",
+        ] {
+            assert!(navigable(own), "{own}");
+        }
+        for elsewhere in [
+            "https://example.com/",
+            "http://evil.example/dioxus.index.html",
+            "https://dioxus.index.html.evil.example@example.com/",
+            "file:///etc/passwd",
+            "data:text/html,<script>alert(1)</script>",
+            "javascript:alert(1)",
+            "blob:https://example.com/1",
+            "about:blank",
+            "mailto:someone@example.com",
+            "vscode://file/etc/passwd",
+            "x-apple.systempreferences:com.apple.preference.security",
+            "",
+            "not a url",
+        ] {
+            assert!(!navigable(elsewhere), "{elsewhere}");
+        }
+    }
 
     // AppKit builds an `NSMenu` on the main thread and nowhere else, and the
     // test harness runs every test on a thread of its own. So on macOS the
