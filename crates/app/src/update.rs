@@ -26,6 +26,7 @@
 use acp_inspector_core::v1;
 use dioxus::prelude::*;
 
+use crate::copy::Copy;
 use crate::disclosure;
 
 /// Whose words a streamed chunk is.
@@ -118,7 +119,7 @@ pub fn content(block: &v1::ContentBlock) -> Element {
         // The text, and nothing around it. Chunks of one message sit side by
         // side in the flow, so what is on screen is the message the agent
         // streamed rather than the pieces it arrived in.
-        v1::ContentBlock::Text(text) => rsx! { "{text.text}" },
+        v1::ContentBlock::Text(text) => rsx! { Windowed { text: text.text.clone() } },
         v1::ContentBlock::Image(image) => rsx! {
             figure { class: "media",
                 // The bytes the agent sent, shown rather than described: an
@@ -157,7 +158,7 @@ fn embedded(resource: &v1::EmbeddedResourceResource) -> Element {
         v1::EmbeddedResourceResource::TextResourceContents(text) => rsx! {
             div { class: "resource",
                 code { class: "mono", "{text.uri}" }
-                pre { class: "quoted", "{text.text}" }
+                Windowed { text: text.text.clone(), class: "quoted" }
             }
         },
         // Base64 of something that is not text, and this window has no idea
@@ -192,6 +193,7 @@ fn tool_call(call: &v1::ToolCall) -> Element {
                 span { class: "evidence-kind", "{kind(call.kind)}" }
                 span { class: "evidence-state {tone}", "{status}" }
             }
+            {call_id(&call.tool_call_id)}
             {locations(&call.locations)}
             {outputs(&call.content)}
             {raw(&call.tool_call_id, "input", call.raw_input.as_ref())}
@@ -233,6 +235,10 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
                     span { class: "evidence-state {tone}", "{what}" }
                 }
             }
+            // Drawn here only where the title above is not already the id.
+            if fields.title.is_some() {
+                {call_id(&update.tool_call_id)}
+            }
             p { class: "evidence-note",
                 "An update for a tool call this session never saw created."
             }
@@ -244,6 +250,18 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
             }
             {raw(&update.tool_call_id, "input", fields.raw_input.as_ref())}
             {raw(&update.tool_call_id, "output", fields.raw_output.as_ref())}
+        }
+    }
+}
+
+/// The id a tool call goes by on the wire, which is what a reader searches the
+/// Trace for and what an elicitation raised inside it names.
+fn call_id(id: &v1::ToolCallId) -> Element {
+    rsx! {
+        div { class: "evidence-meta", "data-slot": "tool-call-id",
+            span { class: "sr-only", "toolCallId " }
+            code { class: "mono", title: "toolCallId", "{id}" }
+            Copy { text: id.to_string(), what: "the tool call id" }
         }
     }
 }
@@ -282,12 +300,12 @@ fn outputs(outputs: &[v1::ToolCallContent]) -> Element {
                             if let Some(old) = &diff.old_text {
                                 del { class: "diff-version removed",
                                     span { class: "sr-only", "Removed content:" }
-                                    pre { class: "quoted", "{old}" }
+                                    Windowed { text: old.clone(), class: "quoted" }
                                 }
                             }
                             ins { class: "diff-version added",
                                 span { class: "sr-only", "Added content:" }
-                                pre { class: "quoted", "{diff.new_text}" }
+                                Windowed { text: diff.new_text.clone(), class: "quoted" }
                             }
                         }
                     },
@@ -330,15 +348,68 @@ fn raw(
         if let Some(value) = value {
             details { class: "disclose", "data-slot": "tool-raw",
                 summary {
-                    aria_label: "Show or hide raw {what} evidence",
-                    title: "Show or hide raw {what} evidence",
-                    onclick: move |_| crate::indent::toggled(&toggling),
+                    aria_label: "Show or hide raw {what}",
+                    title: "Show or hide raw {what}",
+                    onclick: move |event| {
+                        // Opening the evidence is not a press of the Timeline
+                        // row it sits in, which reveals frames and moves focus
+                        // (B1). Propagation only: the native toggle still runs.
+                        event.stop_propagation();
+                        crate::indent::toggled(&toggling);
+                    },
                     {disclosure::chevron()}
                     "{what}"
                 }
-                pre {
+                Windowed {
+                    text: crate::indent::drawn(&disclosure, false, &value.to_string()),
                     class: "quoted",
-                    "{crate::indent::drawn(&disclosure, false, &value.to_string())}"
+                }
+                // The value as it arrived, whatever the layout above says.
+                Copy { text: value.to_string(), what: "raw {what}" }
+            }
+        }
+    }
+}
+
+/// How much of one piece of tool content is drawn before the reader asks for
+/// the rest (L1). A tool call can carry megabytes of output, and every byte
+/// drawn is laid out again whenever the Timeline re-renders.
+pub(crate) const WINDOW: usize = 64 * 1024;
+
+/// Text drawn up to [`WINDOW`] bytes, with a control for the rest.
+///
+/// In a `pre` of `class` where one is given, and inline otherwise. The cut is
+/// at a character boundary and says it is a cut; nothing in the text is
+/// rewritten.
+#[component]
+pub(crate) fn Windowed(text: String, #[props(into, default)] class: Option<String>) -> Element {
+    let mut whole = use_signal(|| false);
+    let cut = text.len() > WINDOW && !whole();
+    let shown = if cut {
+        crate::page::prefix(&text, WINDOW)
+    } else {
+        text.as_str()
+    };
+    let kib = text.len().div_ceil(1024);
+
+    rsx! {
+        if let Some(class) = class {
+            pre { class: "{class}", "{shown}" }
+        } else {
+            "{shown}"
+        }
+        if cut {
+            span { class: "hint windowed", "data-slot": "windowed",
+                " … first {WINDOW / 1024} KiB of {kib} KiB. "
+                button {
+                    class: "btn btn-xs btn-quiet",
+                    r#type: "button",
+                    "data-slot": "show-all",
+                    onclick: move |event| {
+                        event.stop_propagation();
+                        whole.set(true);
+                    },
+                    "Show all"
                 }
             }
         }
@@ -691,11 +762,96 @@ mod tests {
             .0;
 
         assert!(
-            summary.contains(r#"aria-label="Show or hide raw input evidence""#)
-                && summary.contains(r#"title="Show or hide raw input evidence""#)
+            summary.contains(r#"aria-label="Show or hide raw input""#)
+                && summary.contains(r#"title="Show or hide raw input""#)
                 && summary.contains(r#"class="disclosure-icon""#)
                 && summary.contains("<svg"),
             "tool raw evidence uses the shared named outline disclosure: {summary}"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_shows_its_id_and_its_raw_values_can_be_copied() {
+        let html = tool_card(acp_inspector_core::Indentation::Wire, false);
+        assert!(
+            html.contains(r#"data-slot="tool-call-id""#)
+                && html.contains(r#"title="toolCallId">call-1</code>"#),
+            "the id the wire carries is on the card: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="Copy raw input""#)
+                && html.contains(r#"aria-label="Copy the tool call id""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn large_tool_content_is_windowed_until_the_reader_asks_for_all_of_it() {
+        let big = format!("{}🦀{}", "a".repeat(WINDOW - 2), "tail".repeat(1000));
+        let html = dioxus_ssr::render_element(content(&v1::ContentBlock::from(big.as_str())));
+        assert!(
+            html.contains(r#"data-slot="windowed""#)
+                && html.contains(r#"data-slot="show-all""#)
+                && !html.contains("tail")
+                && html.len() < WINDOW + 2048,
+            "only the first window is drawn"
+        );
+        let small = dioxus_ssr::render_element(content(&v1::ContentBlock::from("short")));
+        assert!(small.contains("short") && !small.contains("windowed"));
+    }
+
+    #[test]
+    fn opening_raw_evidence_does_not_press_the_row_around_it() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::Mutation;
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut reveals = use_signal(|| 0);
+            let call = v1::ToolCall::new("call-1", "Reading a file")
+                .raw_input(serde_json::json!({"path": "settings.json"}));
+            let (_, _, body) = render(&v1::SessionUpdate::ToolCall(call)).expect("it renders");
+            rsx! {
+                article { onclick: move |_| reveals += 1, {body} }
+                span { "data-slot": "reveals", "{reveals}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        // The listeners in document order: the row, then the raw summary.
+        let listeners: Vec<_> = edits
+            .iter()
+            .filter_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let summary = *listeners
+            .iter()
+            .find(|id| {
+                edits.iter().any(|edit| {
+                    matches!(edit, Mutation::SetAttribute { name: "aria-label", value: dioxus::core::AttributeValue::Text(text), id: at, .. } if at == *id && text == "Show or hide raw input")
+                })
+            })
+            .expect("the raw input summary listens for clicks");
+        dom.runtime().handle_event(
+            "click",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            ),
+            summary,
+        );
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        assert!(
+            dioxus_ssr::render(&dom).contains(r#"data-slot="reveals">0"#),
+            "{}",
+            dioxus_ssr::render(&dom)
         );
     }
 
