@@ -2652,6 +2652,7 @@ mod tests {
             args: String::new(),
             env: "PATH=/mine".to_owned(),
             cwd: String::new(),
+            ..AgentCommand::default()
         };
         assert_eq!(effective_path(Some(&set)).as_deref(), Some("/mine"));
     }
