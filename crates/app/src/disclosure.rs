@@ -1,4 +1,5 @@
-//! The shared visual marker for compact disclosure controls.
+//! The shared visual markers: the marker for compact disclosure controls, and
+//! the icon each role in the window is drawn with ([`icon`]).
 
 use dioxus::prelude::*;
 use dioxus_free_icons::{
@@ -28,5 +29,74 @@ pub fn close() -> Element {
         span { class: "disclosure-icon", aria_hidden: "true",
             Icon { class: "icon", icon: HiX }
         }
+    }
+}
+
+/// What an icon stands for, wherever one is drawn.
+///
+/// **The one place an icon is chosen** (D8). Screens ask for a role and never
+/// name a glyph, so moving the window to another set (Heroicons v2, or Lucide
+/// through `dioxus-free-icons`' `lucide` feature) is an edit to [`icon`] and
+/// nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// A user's message.
+    User,
+    /// The agent's message.
+    Agent,
+    /// The agent's thinking.
+    Thought,
+    /// A tool call.
+    Tool,
+    /// The agent's plan.
+    Plan,
+    /// A request the turn stopped on.
+    Ask,
+    /// A conformance annotation: what the specification requires.
+    Spec,
+    /// Traffic this window has no name for.
+    Unnamed,
+    /// Anything else the timeline notes.
+    Note,
+    /// Send a prompt.
+    Send,
+    /// Stop a turn.
+    Stop,
+    /// The first-run card: start an agent.
+    Start,
+    /// Sent to the agent.
+    Outgoing,
+    /// Received from the agent.
+    Incoming,
+}
+
+/// The icon for a role, decorative: what it stands for is said in text beside
+/// it, so it is hidden from the accessibility tree.
+pub(crate) fn icon(role: Role) -> Element {
+    use dioxus_free_icons::icons::hi_outline_icons::{
+        HiArrowSmLeft, HiArrowSmRight, HiArrowUp, HiBookOpen, HiChat, HiCog, HiHand,
+        HiInformationCircle, HiLightBulb, HiQuestionMarkCircle, HiSparkles, HiStop, HiTerminal,
+        HiViewList,
+    };
+
+    let drawn = match role {
+        Role::User => rsx! { Icon { class: "icon", icon: HiChat } },
+        Role::Agent => rsx! { Icon { class: "icon", icon: HiSparkles } },
+        Role::Thought => rsx! { Icon { class: "icon", icon: HiLightBulb } },
+        Role::Tool => rsx! { Icon { class: "icon", icon: HiCog } },
+        Role::Plan => rsx! { Icon { class: "icon", icon: HiViewList } },
+        Role::Ask => rsx! { Icon { class: "icon", icon: HiHand } },
+        Role::Spec => rsx! { Icon { class: "icon", icon: HiBookOpen } },
+        Role::Unnamed => rsx! { Icon { class: "icon", icon: HiQuestionMarkCircle } },
+        Role::Note => rsx! { Icon { class: "icon", icon: HiInformationCircle } },
+        Role::Send => rsx! { Icon { class: "icon", icon: HiArrowUp } },
+        Role::Stop => rsx! { Icon { class: "icon", icon: HiStop } },
+        Role::Start => rsx! { Icon { class: "icon", icon: HiTerminal } },
+        Role::Outgoing => rsx! { Icon { class: "icon", icon: HiArrowSmRight } },
+        Role::Incoming => rsx! { Icon { class: "icon", icon: HiArrowSmLeft } },
+    };
+
+    rsx! {
+        span { class: "role-icon", "data-icon": "{role:?}", aria_hidden: "true", {drawn} }
     }
 }

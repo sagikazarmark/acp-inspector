@@ -52,10 +52,8 @@ if (root) {
 }
 "#;
 use dioxus::prelude::*;
-use dioxus_free_icons::{
-    Icon,
-    icons::hi_outline_icons::{HiPaperAirplane, HiStop},
-};
+
+use crate::disclosure::{Role, icon};
 
 /// Picker hints follow each advertisement; signature validation is independent.
 fn accepted_attachments(image: bool, audio: bool, embedded: bool) -> &'static str {
@@ -212,7 +210,10 @@ pub fn Composer(
             })
             .collect::<Vec<_>>();
         if !rejected.is_empty() {
-            overflow.set(Some(format!("Not added (8 attachment rows maximum): {}. Dismiss this notice to send the remaining files.", rejected.join(", "))));
+            overflow.set(Some(format!(
+                "Not added, 8 files at most: {}. The other files are still attached.",
+                rejected.join(", ")
+            )));
         }
         attachment_problem.set(None);
         ids
@@ -420,7 +421,7 @@ pub fn Composer(
             if !matches.is_empty() {
                 div { class: "slash", "data-slot": "commands",
                     div { class: "slash-head",
-                        span { class: "eyebrow", "available_commands_update" }
+                        span { class: "eyebrow", title: "available_commands_update", "Agent commands" }
                         span { class: "slash-count", "{matches.len()} of {commands.len()}" }
                     }
                     div { class: "slash-list", role: "listbox", aria_label: "Commands the agent published",
@@ -465,14 +466,16 @@ pub fn Composer(
                             }
                         }
                         if !draft.read().entries().is_empty() {
-                            span { class: "hint", "{draft.read().entries().len()} attachment rows · {draft.read().bytes()} / 6291456 bytes ready" }
+                            span { class: "hint", "data-slot": "attachment-total",
+                                "{files(draft.read().entries().len())} · {megabytes(draft.read().bytes() as u64)} of 6 MB"
+                            }
                         }
                     }
                 }
                 if let Some(problem) = attachment_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
                 if let Some(problem) = overflow() {
                     div { class: "detail detail-warn", role: "status", "{problem}"
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", onclick: move |_| overflow.set(None), "Dismiss attachment limit notice" }
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Dismiss the attachment limit notice", onclick: move |_| overflow.set(None), "Dismiss" }
                     }
                 }
                 div { class: "prompt-attachments",
@@ -514,10 +517,8 @@ pub fn Composer(
                         // do about that is beside the capability display, and
                         // saying which two things do it is the difference
                         // between a dead box and a next step.
-                        (false, true) => {
-                            "No session is open. session/new opens one, and a listed session is a way into one the agent already has."
-                        }
-                        (false, false) => "Launch an agent to open a session.",
+                        (false, true) => "Open a session to start prompting.",
+                        (false, false) => "Start your agent to open a session.",
                     },
                     oninput: move |event| {
                         text.set(event.value());
@@ -629,10 +630,12 @@ pub fn Composer(
                             ComposerAffordance::Send | ComposerAffordance::Stopping => {}
                         },
                         if matches!(affordance, ComposerAffordance::Stop | ComposerAffordance::Stopping) {
-                            span { aria_hidden: "true", Icon { class: "icon", icon: HiStop } }
+                            {icon(Role::Stop)}
                             if matches!(affordance, ComposerAffordance::Stopping) { "Stopping" } else { "Stop" }
                         } else {
-                            span { aria_hidden: "true", Icon { class: "icon", icon: HiPaperAirplane } }
+                            // An arrow up, not the v1 paper aeroplane: drawn at
+                            // 16px that one read as a warning sign (D6).
+                            {icon(Role::Send)}
                             // The word beside the glyph. It was a circle with an
                             // aeroplane in it, which is what a chat client draws
                             // when its send is the only control on the row; this
@@ -708,12 +711,7 @@ pub(crate) fn presented(
             // — there is nothing for a turn to happen in — and it is not a
             // failure either, because it is usually what the reader just asked
             // for.
-            (None, false, true) => (
-                "off",
-                "No session",
-                Some("nothing is open to prompt into".to_owned()),
-                None,
-            ),
+            (None, false, true) => ("off", "No session", Some("not open".to_owned()), None),
             (None, false, false) => ("off", "No agent", None, None),
             (None, true, _) => ("off", "No turn yet", None, None),
         },
@@ -738,30 +736,35 @@ pub(crate) fn presented(
         // paraphrased it would be standing between the reader and the wire. A
         // cancelled turn reads differently from one that ran out, though — the
         // reader is the one who asked for it.
+        //
+        // The badge is the plain word for it: a turn that ended normally is
+        // done, and the others say how they stopped. The wire's word stays in
+        // the detail beside it.
         TurnState::Ended(reason) => {
-            let tone = if matches!(reason, v1::StopReason::Cancelled) {
-                "warn"
-            } else {
-                "off"
+            let (tone, label) = match reason {
+                v1::StopReason::EndTurn => ("off", "Done"),
+                v1::StopReason::Cancelled => ("warn", "Cancelled"),
+                v1::StopReason::Refusal => ("off", "Refused"),
+                _ => ("off", "Stopped"),
             };
             let reason = stopped(reason);
             (
                 tone,
-                "Ended",
+                label,
                 Some(reason.to_owned()),
                 Some(format!("Turn ended: {reason}.")),
             )
         }
         // The agent never said why, so neither does this: an inspector
         // reporting a stop reason the agent did not give is the one thing it
-        // may not do.
+        // may not do. What happened is that the prompt call failed.
         TurnState::Failed(error) => {
             let error = error.to_string();
             (
                 "bad",
-                "Ended without a reason",
+                "Prompt failed",
                 Some(error.clone()),
-                Some(format!("Turn ended without a stop reason: {error}")),
+                Some(format!("Prompt failed: {error}")),
             )
         }
         // `TurnState` is non-exhaustive, and a state this window has not heard
@@ -848,6 +851,20 @@ fn badge_tone(tone: &str) -> &'static str {
         // gives it: a turn that has ended is a fact, not a grade.
         _ => "",
     }
+}
+
+/// "1 file", "3 files".
+fn files(count: usize) -> String {
+    if count == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{count} files")
+    }
+}
+
+/// A byte count in megabytes, to one decimal: what the 6 MB budget is said in.
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// The `stopReason` an agent gave, as it gave it.
@@ -1485,13 +1502,19 @@ mod tests {
             (
                 TurnState::Ended(v1::StopReason::Refusal),
                 false,
-                "Ended",
+                "Refused",
+                "badge badge-soft",
+            ),
+            (
+                TurnState::Ended(v1::StopReason::EndTurn),
+                false,
+                ">Done<",
                 "badge badge-soft",
             ),
             (
                 TurnState::Failed(CallError::Disconnected),
                 false,
-                "Ended without a reason",
+                "Prompt failed",
                 "badge badge-soft badge-error",
             ),
         ] {
@@ -1521,13 +1544,13 @@ mod tests {
         let disconnected = shown(TurnState::Idle, false, false, false);
         assert!(
             stated(TurnState::Idle, false, false, false).contains("No agent")
-                && disconnected.contains("Launch an agent"),
+                && disconnected.contains("Start your agent"),
             "the disconnected state remains explicit: {disconnected}"
         );
         let no_session = shown(TurnState::Idle, false, true, false);
         assert!(
             stated(TurnState::Idle, false, true, false).contains("No session")
-                && no_session.contains("session/new opens one"),
+                && no_session.contains("Open a session to start prompting"),
             "the no-Session state remains distinct: {no_session}"
         );
 
@@ -1703,9 +1726,6 @@ mod tests {
         }
         assert!(!idle.contains("Turn ended:"), "{idle}");
         assert!(ended.contains("Turn ended: max_tokens."), "{ended}");
-        assert!(
-            failed.contains("Turn ended without a stop reason:"),
-            "{failed}"
-        );
+        assert!(failed.contains("Prompt failed:"), "{failed}");
     }
 }
