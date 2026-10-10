@@ -621,8 +621,8 @@ pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize
 ///
 /// In the page rather than in Rust, because only the page knows which element
 /// a key landed on: a key typed into a field inside a row must stay the
-/// field's. Rows are ordered by where they are drawn, so the list's DOM order
-/// (newest first, laid out bottom-up) does not leak into the keys. Which row
+/// field's. Rows are ordered by where they are drawn — which is also their DOM
+/// order, oldest first (A3) — so ↓ is always the newer row. Which row
 /// holds `tabindex="0"` is the screen's to render; this only moves focus.
 const ROVE: &str = r#"
 const [listSelector, rowSelector, activateSelector] = await dioxus.recv();
@@ -802,15 +802,17 @@ fn Diagnostics(
                 "Everything the transport said about this connection that was not a frame."
             }
         } else {
-            ul { class: "lines", "data-slot": "diagnostics", "data-tail": LINES,
+            div { class: "lines-scroll", "data-tail": LINES,
                 "data-page-latest": "{range.end == ordinals.len()}",
-                // Newest first in the DOM, oldest first on screen: the list is
-                // laid out bottom-up, which is what keeps a streaming console
-                // pinned to its latest line without a scroll script.
+            ul { class: "lines", "data-slot": "diagnostics",
+                // Oldest first, in the DOM as on screen (A3). The scroller
+                // around the list is laid out bottom-up with the list as its
+                // one child, which keeps a streaming console pinned to its
+                // latest line without a scroll script.
                 //
                 // Keyed by the ordinal the line was captured under, the way the
                 // Trace's rows are, even as the retention budgets rotate it.
-                for ordinal in ordinals[range.clone()].iter().copied().rev() {
+                for ordinal in ordinals[range.clone()].iter().copied() {
                     { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
                     li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
@@ -820,6 +822,7 @@ fn Diagnostics(
                     }
                     } }
                 }
+            }
             }
             {crate::tail::to_latest(LINES, "line", Some(anchor))}
         }

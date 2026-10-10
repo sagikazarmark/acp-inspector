@@ -2842,7 +2842,7 @@ html, body, #main {
 html {
   overscroll-behavior: none;
 }
-:is(.rail-body, .turn-stream, .wire-rows, .frame-json, .lines, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
+:is(.rail-body, .turn-stream, .wire-scroll, .frame-json, .lines-scroll, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
   overscroll-behavior: contain;
 }
 body {
@@ -3708,7 +3708,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 }
 .turn-stream {
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -3716,8 +3716,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 }
 .stream {
   display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: flex-start;
   flex: 1;
   width: 100%;
   max-width: 760px;
@@ -4540,22 +4540,23 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 .wire-filters .chip[aria-pressed="false"] {
   border-style: dashed;
 }
-.wire-rows {
+:is(.wire-scroll, .lines-scroll) {
   flex: 1;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column-reverse;
-  justify-content: flex-start;
+}
+.wire-rows {
+  display: flex;
+  flex-direction: column;
+  flex: none;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .wire-rows > li {
   min-width: 0;
-}
-.wire-rows > li:last-child {
-  margin-top: auto;
 }
 .frame-line {
   display: flex;
@@ -4714,18 +4715,12 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   color: var(--dim2);
 }
 .lines {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
   display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-start;
+  flex-direction: column;
+  flex: none;
   margin: 0;
   padding: 0;
   list-style: none;
-}
-.lines > li:last-child {
-  margin-top: auto;
 }
 .lines > li:nth-child(even) > .line, .lines > .line:nth-child(even) {
   background: var(--stripe);

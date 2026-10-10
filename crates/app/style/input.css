@@ -155,7 +155,7 @@ html, body, #main { height: 100%; }
 /* The window is the viewport and the document never scrolls; macOS bounces it
    anyway unless the root says not to (#74). */
 html { overscroll-behavior: none; }
-:is(.rail-body, .turn-stream, .wire-rows, .frame-json, .lines, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
+:is(.rail-body, .turn-stream, .wire-scroll, .frame-json, .lines-scroll, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
   overscroll-behavior: contain;
 }
 
@@ -716,25 +716,27 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .pane-scope { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); white-space: nowrap; }
 .pane-head .btn { height: 28px; flex: none; border-radius: var(--radius-control); }
 
+/* Newest at the bottom and the run of them held there (A3). The rows are in
+   the document oldest first, so reading and focus order are the
+   conversation's; the *scroller* is laid out bottom-up with the list as its one
+   child, which is what starts it at its own end and keeps it there while a
+   turn streams in — in both engines, with no scroll script — and leaves it
+   where the reader put it once they scroll back. */
 .turn-stream {
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 16px 24px 8px;
 }
-/* Newest at the bottom and the run of them held there: a stream that started at
-   the top of an empty screen would walk down it as the agent talked.
-
-   In `column-reverse` the end of the main axis is the top, so a conversation
-   with room to spare reads from the top of the screen and one that fills it
-   ends at the bottom — which is where a reader scrolling back to the beginning
-   expects to find it. */
+/* The list grows to the room it has and packs its rows at the top, so a
+   conversation with room to spare reads from the top of the screen and one
+   that fills it ends at the bottom. */
 .stream {
   display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: flex-start;
   flex: 1;
   width: 100%;
   max-width: 760px;
@@ -1150,9 +1152,13 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 /* A filter that is off is drawn as off (D5): a dashed edge and no check, so a
    row of chips is never four ways of saying the same thing. */
 .wire-filters .chip[aria-pressed="false"] { border-style: dashed; }
-.wire-rows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
+/* The two lists of arriving lines scroll in a box laid out bottom-up with the
+   list as its one child (A3): the rows are oldest first in the document, the
+   box starts at its newest, and a short list sits at the bottom of the room it
+   has, where the next line will arrive. */
+:is(.wire-scroll, .lines-scroll) { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; }
+.wire-rows { display: flex; flex-direction: column; flex: none; margin: 0; padding: 0; list-style: none; }
 .wire-rows > li { min-width: 0; }
-.wire-rows > li:last-child { margin-top: auto; }
 /* **Zebra rather than a hairline under every row** (D11): a rule on each of
    ten thousand rows is a grid laid over the traffic. */
 .frame-line { display: flex; align-items: center; min-width: 0; }
@@ -1235,8 +1241,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .json-punctuation { color: var(--dim2); }
 
 /* The diagnostic channel, striped the way the trace is. */
-.lines { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
-.lines > li:last-child { margin-top: auto; }
+.lines { display: flex; flex-direction: column; flex: none; margin: 0; padding: 0; list-style: none; }
 .lines > li:nth-child(even) > .line, .lines > .line:nth-child(even) { background: var(--stripe); }
 .line {
   display: flex;

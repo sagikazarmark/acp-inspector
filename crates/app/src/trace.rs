@@ -469,17 +469,19 @@ pub fn TraceView(
                     "Every JSON-RPC frame, both directions, exactly as it crossed the wire."
                 }
             } else {
-                ol { class: "wire-rows", "data-tail": FRAMES,
+                div { class: "wire-scroll", "data-tail": FRAMES,
                     "data-page-latest": "{range.end == ordinals.len()}",
+                ol { class: "wire-rows",
                     onmounted: move |_| crate::console::rove(
                         &format!(r#"[data-tail="{FRAMES}"]"#),
                         "button.frame-row",
                         None,
                     ),
-                    // Newest first in the DOM, oldest first on screen: the list
-                    // is laid out bottom-up, which is what keeps a live trace
-                    // showing its latest frame without a scroll script — and
-                    // leaves it where the reader put it once they scroll back.
+                    // Oldest first, in the DOM as on screen (A3). The scroller
+                    // around the list is laid out bottom-up with the list as its
+                    // one child, which keeps a live trace showing its latest
+                    // frame without a scroll script — and leaves it where the
+                    // reader put it once they scroll back.
                     //
                     // **Keyed by the ordinal the frame was captured under, not
                     // by where it now sits in the list.** The trace is a ring:
@@ -487,7 +489,7 @@ pub fn TraceView(
                     // shifts every position by one, and a row keyed by position
                     // would hand whatever the reader had selected to whichever
                     // frame landed there next.
-                    for (key, row) in page.iter().copied().rev() {
+                    for (key, row) in page.iter().copied() {
                         match row {
                             Row::Frame(position) => {
                                 let traced = &held_frames[position];
@@ -517,6 +519,7 @@ pub fn TraceView(
                             Row::Line(position) => stderr_row(key, &held_lines[position]),
                         }
                     }
+                }
                 }
                 {crate::tail::to_latest(FRAMES, "frame", Some(anchor))}
 
@@ -2030,13 +2033,13 @@ mod tests {
         let html = dioxus_ssr::render(&dom);
         let rows = rows_of(&html);
         assert_eq!(rows.len(), 4, "{html}");
-        // Newest first in the DOM: the line read between the first two frames
-        // is third from the top.
+        // Oldest first in the DOM (A3): the line read between the first two
+        // frames is second from the top.
         assert!(
-            rows[2].contains(r#"data-slot="stderr-line""#) && rows[2].contains("agent says hello"),
+            rows[1].contains(r#"data-slot="stderr-line""#) && rows[1].contains("agent says hello"),
             "{rows:?}"
         );
-        assert!(rows[3].contains(r#"data-frame="0""#), "{rows:?}");
+        assert!(rows[0].contains(r#"data-frame="0""#), "{rows:?}");
     }
 
     #[test]
@@ -2064,7 +2067,7 @@ mod tests {
         // Never on the oldest frame the trace still holds: it has no frame
         // before it to have changed from, and marking it would be the screen
         // claiming a handover it cannot have watched.
-        let first = rows_of(&html).last().cloned().unwrap_or_default();
+        let first = rows_of(&html).first().cloned().unwrap_or_default();
         assert!(
             first.contains(r#"data-switched="false""#),
             "the top of the list is where the record begins: {first}"
