@@ -1318,6 +1318,10 @@ async fn read(
     let released = drain(&state, client, incoming, &mut diagnostics, &shutdown).await;
     if released && sink.stopping_gracefully() {
         stopped(&state, &sink, diagnostics).await;
+    } else {
+        // The transport ended before the release was seen (or there was none):
+        // whatever stop was asked for is over, so nothing is still stopping.
+        locked(&state.stopping).retain(|stopping| !stopping.same(&sink));
     }
 }
 
