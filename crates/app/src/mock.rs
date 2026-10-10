@@ -723,14 +723,24 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                     on_reveal: move |_| {},
                     described: live,
                     turns: scene.turns(),
+                    // The first-run card's recent invocations, as the window passes them.
+                    recent: (!live).then(|| rsx! {
+                        crate::spawn::RecentList {
+                            entries: vec![launched()],
+                            labelled_by: "onboarding-recent-label".to_owned(),
+                            launching: false,
+                            on_launch: move |_| {},
+                            on_refill: move |_| {},
+                        }
+                    }),
                 }
                 Console {
-                    frames,
+                    frames: wire.view.frames_or(frames),
                     dropped_frames: 0,
                     saved: None,
                     on_export: move |()| {},
                     on_clear: move |()| {},
-                    lines,
+                    lines: wire.view.lines_or(lines),
                     dropped_lines: 0,
                     tab: if view == rail::Tab::Session { Tab::Trace } else { Tab::Diagnostics },
                     on_select: move |_| {},

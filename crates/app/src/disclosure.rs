@@ -73,9 +73,8 @@ pub(crate) enum Role {
 /// it, so it is hidden from the accessibility tree.
 pub(crate) fn icon(role: Role) -> Element {
     use dioxus_free_icons::icons::ld_icons::{
-        LdArrowLeft, LdArrowRight, LdArrowUp, LdBookOpen, LdCircleHelp, LdHand, LdInfo,
-        LdLightbulb, LdListChecks, LdMessageSquare, LdSparkles, LdSquare, LdSquareTerminal,
-        LdWrench,
+        LdArrowLeft, LdArrowRight, LdArrowUp, LdBookOpen, LdCircleHelp, LdCircleStop, LdHand,
+        LdInfo, LdLightbulb, LdListChecks, LdMessageSquare, LdSparkles, LdSquareTerminal, LdWrench,
     };
 
     let drawn = match role {
@@ -89,7 +88,7 @@ pub(crate) fn icon(role: Role) -> Element {
         Role::Unnamed => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdCircleHelp } },
         Role::Note => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdInfo } },
         Role::Send => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowUp } },
-        Role::Stop => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquare } },
+        Role::Stop => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdCircleStop } },
         Role::Start => {
             rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquareTerminal } }
         }

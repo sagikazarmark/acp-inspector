@@ -29,7 +29,7 @@ use acp_inspector_core::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdDownload, LdTrash2},
+    icons::ld_icons::{LdDownload, LdFolderOpen, LdSquarePen, LdTrash2},
 };
 
 use crate::copy::Copy;
@@ -206,13 +206,15 @@ pub fn Console(
                                 "data-slot": "compose",
                                 r#type: "button",
                                 aria_expanded: composing,
+                                aria_label: "Send by hand",
                                 title: "Write a request or notification by hand and send it to the agent",
                                 onclick: move |_| {
                                     let mut composing = wire.composing;
                                     let now = !composing();
                                     composing.set(now);
                                 },
-                                "Send…"
+                                Icon { class: "icon", width: 16, height: 16, icon: LdSquarePen }
+                                span { class: "btn-label", "Send…" }
                             }
                         }
                         if crate::view::CAN_OPEN {
@@ -220,9 +222,11 @@ pub fn Console(
                                 class: "btn btn-xs btn-quiet",
                                 "data-slot": "open-trace",
                                 r#type: "button",
+                                aria_label: "Open a trace",
                                 title: "Open an exported trace, read-only",
                                 onclick: move |_| wire.view.choose(wire.live()),
-                                "Open…"
+                                Icon { class: "icon", width: 16, height: 16, icon: LdFolderOpen }
+                                span { class: "btn-label", "Open…" }
                             }
                         }
                     }
@@ -240,7 +244,7 @@ pub fn Console(
                             }
                         },
                         Icon { class: "icon", width: 16, height: 16, icon: LdDownload }
-                        "Export…"
+                        span { class: "btn-label", "Export…" }
                     }
                     if let Some(wire) = wire {
                         label {
@@ -250,13 +254,14 @@ pub fn Console(
                             input {
                                 r#type: "checkbox",
                                 class: "checkbox checkbox-xs",
+                                aria_label: "Export with stderr",
                                 checked: (wire.include_stderr)(),
                                 onchange: move |event| {
                                     let mut include = wire.include_stderr;
                                     include.set(event.checked());
                                 },
                             }
-                            "with stderr"
+                            span { class: "btn-label", "with stderr" }
                         }
                     }
                     if !viewing {
@@ -461,7 +466,7 @@ fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
                     });
                 },
                 Icon { class: "icon", width: 16, height: 16, icon: LdTrash2 }
-                if armed_now { "Confirm clear" } else { "Clear" }
+                span { class: "btn-label", if armed_now { "Confirm clear" } else { "Clear" } }
             }
             if armed_now {
                 button {

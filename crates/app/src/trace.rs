@@ -767,16 +767,19 @@ fn frame_row(
                             "Timeline"
                         }
                     }
+                    // An icon on the row, because every frame this client sent
+                    // has one and a column of the words would be wider than the
+                    // frames; the pane below says it in words.
                     if let Some(wire) = resend {
                         button {
-                            class: "btn btn-xs btn-quiet",
+                            class: "btn btn-xs btn-quiet btn-square",
                             "data-slot": "resend",
                             r#type: "button",
                             tabindex,
-                            title: "Copy this frame into the raw composer to edit and send again",
+                            title: "Edit and resend: copy this frame into the raw composer",
                             aria_label: "Edit and resend Frame {ordinal}",
                             onclick: move |_| wire.resend(&copy),
-                            "Edit and resend"
+                            dioxus_free_icons::Icon { class: "icon", width: 16, height: 16, icon: dioxus_free_icons::icons::ld_icons::LdPencilLine }
                         }
                     }
                 }
