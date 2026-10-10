@@ -121,6 +121,12 @@ impl<T> Log<T> {
         self.length.send_replace(0);
     }
 
+    /// Counts `count` entries as captured elsewhere and never held here — the
+    /// ones a file read back in says its producer had already let go of.
+    pub(crate) fn forgotten(&self, count: usize) {
+        self.lock().dropped += count;
+    }
+
     /// Watches this log. The subscription starts from the log as it is now, so
     /// a consumer reads once and then waits.
     pub(crate) fn changes(&self) -> Changes<usize> {

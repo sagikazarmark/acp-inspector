@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::connection::{Diagnostic, DiagnosticKind};
 use crate::frame::Direction;
 use crate::trace::TracedFrame;
 
@@ -56,6 +57,8 @@ pub struct Export {
     at: SystemTime,
     frames: Vec<TracedFrame>,
     dropped: usize,
+    /// The agent's stderr lines, when asked for ([`with_stderr`](Self::with_stderr)).
+    stderr: Option<Vec<(SystemTime, String)>>,
 }
 
 /// The first line of every export: what the file is, and what is in it.
@@ -68,6 +71,9 @@ struct Header<'a> {
     at: i64,
     frames: usize,
     dropped: usize,
+    /// How many stderr records follow, when the export carries any at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stderr: Option<usize>,
     warning: &'a str,
 }
 
@@ -90,6 +96,20 @@ struct Record<'a> {
     direction: &'static str,
     encoding: &'static str,
     frame: std::borrow::Cow<'a, str>,
+    /// `"hand"` for a frame a person sent from the raw request composer;
+    /// absent for everything the inspector composed itself or read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<&'static str>,
+}
+
+/// One line of the agent's stderr, carried only when the export was asked to
+/// carry them: not a frame, so its own record type.
+#[derive(Serialize)]
+struct Stderr<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    at: i64,
+    line: &'a str,
 }
 
 /// Where the transport dropped a frame too long to carry: not a frame, so its
@@ -113,6 +133,53 @@ impl Export {
             at,
             frames,
             dropped,
+            stderr: None,
+        }
+    }
+
+    /// The same export, carrying the agent's stderr lines from `diagnostics`
+    /// as `stderr` records interleaved with the frames by when each was read.
+    /// Everything else on the diagnostic channel — the transport's own remarks
+    /// — stays out: it is this inspector's account, not the agent's output.
+    #[must_use]
+    pub fn with_stderr(mut self, diagnostics: &[Diagnostic]) -> Self {
+        self.stderr = Some(
+            diagnostics
+                .iter()
+                .filter_map(|diagnostic| match &diagnostic.kind {
+                    DiagnosticKind::Stderr(line) => Some((diagnostic.at, line.clone())),
+                    _ => None,
+                })
+                .collect(),
+        );
+        self
+    }
+
+    /// Writes the export to exactly `path`, replacing what is there — the
+    /// destination a person chose in a save dialog, which has already asked
+    /// them about replacing it.
+    ///
+    /// Written beside it first and then moved into place, so a write that
+    /// fails leaves whatever was at `path` as it was, and nothing half-written
+    /// anywhere. Created `0600` on Unix, like [`save_in`](Self::save_in).
+    pub fn save_to(&self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
+        let path = path.as_ref();
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "an export needs a file name")
+        })?;
+        let mut partial = name.to_os_string();
+        partial.push(".partial");
+        let partial = path.with_file_name(partial);
+        let _ = std::fs::remove_file(&partial);
+        let written = create(&partial)
+            .and_then(|file| self.write(file))
+            .and_then(|()| std::fs::rename(&partial, path));
+        match written {
+            Ok(()) => Ok(path.to_path_buf()),
+            Err(error) => {
+                let _ = std::fs::remove_file(&partial);
+                Err(error)
+            }
         }
     }
 
@@ -249,11 +316,30 @@ impl fmt::Display for Export {
             at: stamp(self.at),
             frames: self.frames(),
             dropped: self.dropped(),
+            stderr: self.stderr.as_ref().map(Vec::len),
             warning: WARNING,
         };
         writeln!(f, "{}", line(&header)?)?;
 
+        // Stderr lines go in where they were read: before the first frame read
+        // after them. The frames keep the trace's order, which is authoritative.
+        let mut lines = self.stderr.as_deref().unwrap_or_default().iter().peekable();
+        let mut stderr_until = |f: &mut fmt::Formatter<'_>, until: Option<SystemTime>| {
+            while let Some((at, text)) =
+                lines.next_if(|(at, _)| until.is_none_or(|until| *at < until))
+            {
+                let record = Stderr {
+                    kind: "stderr",
+                    at: stamp(*at),
+                    line: text,
+                };
+                writeln!(f, "{}", line(&record)?)?;
+            }
+            Ok::<(), fmt::Error>(())
+        };
+
         for frame in &self.frames {
+            stderr_until(f, Some(frame.at))?;
             if let Some(omission) = frame.frame.omission() {
                 let record = Dropped {
                     kind: "dropped",
@@ -278,9 +364,11 @@ impl fmt::Display for Export {
                 direction: way(frame.direction),
                 encoding,
                 frame: text,
+                origin: frame.frame.is_hand_sent().then_some("hand"),
             };
             writeln!(f, "{}", line(&record)?)?;
         }
+        stderr_until(f, None)?;
 
         Ok(())
     }

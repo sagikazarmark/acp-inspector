@@ -110,6 +110,15 @@ impl Default for DiagnosticLog {
     }
 }
 
+/// What became of a frame sent by hand ([`Inspector::send_raw`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandSent {
+    /// The id a request went out under; `None` for a notification.
+    pub id: Option<i64>,
+    /// Where the trace put the frame, which is what its answer is paired with.
+    pub captured: Option<u64>,
+}
+
 /// The inspector: an agent connection and the record of it.
 ///
 /// A handle, not the state — cloning shares one inspector, which is what lets
@@ -821,6 +830,42 @@ impl Inspector {
     /// to (a result, or error -32800).
     pub async fn cancel_call(&self, id: i64) -> Result<(), CallError> {
         self.client()?.cancel_call(id).await
+    }
+
+    /// Sends a request or a notification a person composed (F2): `method`,
+    /// and `params` exactly as written (only made one line), beside the typed
+    /// layer rather than through it.
+    ///
+    /// A request takes the next id from the same sequence the typed layer's
+    /// calls do, is listed in [`pending_calls`](Self::pending_calls) until it is
+    /// answered, and can be [cancelled](Self::cancel_call). The frame is marked
+    /// [hand-sent](crate::Frame::is_hand_sent) in the trace and the export, and
+    /// its answer drives none of the stores — not the turn, the session, the
+    /// settings, the login, nor any conformance rule — so poking an agent by
+    /// hand never changes what the window says the agent did. The answer is
+    /// read off the trace, by [`Trace::counterpart`](crate::Trace::counterpart)
+    /// of [`HandSent::captured`].
+    ///
+    /// Returns once the frame is handed to the transport.
+    pub async fn send_raw(
+        &self,
+        method: &str,
+        params: Option<&serde_json::value::RawValue>,
+        notification: bool,
+    ) -> Result<HandSent, CallError> {
+        let client = self.client()?;
+        let rpc = client.rpc();
+        if notification {
+            let captured = rpc.notify_by_hand(method, params).await?;
+            return Ok(HandSent { id: None, captured });
+        }
+        let call = rpc.prepare_by_hand(method, params)?;
+        let id = call.id();
+        let captured = rpc.send_unawaited(call).await?;
+        Ok(HandSent {
+            id: Some(id),
+            captured,
+        })
     }
 
     pub fn status(&self) -> ConnectionStatus {

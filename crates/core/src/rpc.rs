@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use agent_client_protocol_schema::v1;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
@@ -37,6 +38,8 @@ pub struct PendingCall {
     pub since: Instant,
     /// Where the trace put the request frame, once it was sent.
     pub captured: Option<u64>,
+    /// Whether a person sent it from the raw request composer (F2).
+    pub hand_sent: bool,
 }
 
 type Answer = oneshot::Sender<Result<Value, CallError>>;
@@ -163,6 +166,7 @@ impl Rpc {
                     method: method.to_owned(),
                     since: Instant::now(),
                     captured: None,
+                    hand_sent: false,
                 },
             },
         );
@@ -172,6 +176,85 @@ impl Rpc {
             frame,
             answer: wait,
         })
+    }
+
+    /// Allocates an id for a request a person composed (F2), and registers it
+    /// like any other call: answered under that id, listed as pending, and
+    /// cancellable. `params` is carried as written, only made one line.
+    ///
+    /// The answer still goes through [`answer`](Self::answer), but the typed
+    /// layer asks [`is_hand_sent`](Self::is_hand_sent) first and keeps it out
+    /// of every store.
+    pub(crate) fn prepare_by_hand(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+    ) -> Result<Call, CallError> {
+        let mut calls = self.calls();
+        if calls.closed {
+            return Err(CallError::Disconnected);
+        }
+        let id = calls.next_id + 1;
+        calls.next_id = id;
+        let frame = Frame::by_hand(composed(Some(id), method, params));
+        let (answer, wait) = oneshot::channel();
+        calls.pending.insert(
+            id,
+            Waiting {
+                answer,
+                call: PendingCall {
+                    id,
+                    method: method.to_owned(),
+                    since: Instant::now(),
+                    captured: None,
+                    hand_sent: true,
+                },
+            },
+        );
+        Ok(Call {
+            id,
+            frame,
+            answer: wait,
+        })
+    }
+
+    /// Sends a prepared call without waiting for its answer, and answers with
+    /// where the trace put it. Whoever wants the answer reads it off the trace
+    /// ([`Trace::counterpart`](crate::Trace::counterpart)).
+    pub(crate) async fn send_unawaited(&self, call: Call) -> Result<Option<u64>, CallError> {
+        let Call { id, frame, .. } = call;
+        match self.outgoing.send_captured(frame).await {
+            Ok(captured) => {
+                self.captured(id, captured);
+                Ok(captured)
+            }
+            Err(error) => {
+                self.forget(id);
+                Err(from_send(error))
+            }
+        }
+    }
+
+    /// Says something by hand that the agent will not answer (F2), and answers
+    /// with where the trace put it.
+    pub(crate) async fn notify_by_hand(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+    ) -> Result<Option<u64>, CallError> {
+        if self.calls().closed {
+            return Err(CallError::Disconnected);
+        }
+        let frame = Frame::by_hand(composed(None, method, params));
+        self.outgoing.send_captured(frame).await.map_err(from_send)
+    }
+
+    /// Whether the call under this id was sent by hand and is still waiting.
+    pub(crate) fn is_hand_sent(&self, id: i64) -> bool {
+        self.calls()
+            .pending
+            .get(&id)
+            .is_some_and(|waiting| waiting.call.hand_sent)
     }
 
     /// Sends a prepared call and waits for its answer.
@@ -333,6 +416,50 @@ impl Call {
     }
 }
 
+/// The text of a request or notification a person composed: the envelope's
+/// fields, then `params` exactly as written but on one line, because a frame
+/// is one line on a message-per-line transport.
+fn composed(id: Option<i64>, method: &str, params: Option<&RawValue>) -> String {
+    let method = Value::from(method).to_string();
+    let mut text = String::from(r#"{"jsonrpc":"2.0","#);
+    if let Some(id) = id {
+        text.push_str(&format!(r#""id":{id},"#));
+    }
+    text.push_str(&format!(r#""method":{method}"#));
+    if let Some(params) = params {
+        text.push_str(r#","params":"#);
+        text.push_str(&one_line(params.get()));
+    }
+    text.push('}');
+    text
+}
+
+/// JSON with the whitespace between its tokens taken out, and nothing else
+/// changed: keys stay in their order and numbers keep their spelling. Valid
+/// JSON has no raw newline inside a string, so what is left is one line.
+fn one_line(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    let (mut quoted, mut escaped) = (false, false);
+    for character in json.chars() {
+        if quoted {
+            out.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+            out.push(character);
+        } else if !matches!(character, ' ' | '\t' | '\n' | '\r') {
+            out.push(character);
+        }
+    }
+    out
+}
+
 /// Whether an id could be one this client issued.
 ///
 /// Every id it issues is a number, counted up from one, so a string id was
@@ -475,6 +602,20 @@ mod tests {
         assert_eq!(answer_id(r#"{"result":{"pad":"xxx"#), None);
         assert_eq!(answer_id(r#"{"id":"3","result":{"#), None);
         assert_eq!(answer_id("not json"), None);
+    }
+
+    #[test]
+    fn a_hand_composed_frame_keeps_its_params_as_written_on_one_line() {
+        let params: Box<RawValue> =
+            serde_json::from_str("{\n  \"z\": 1.50,\n  \"a\": \"two words\\n\"\n}").unwrap();
+        assert_eq!(
+            composed(Some(7), "x/y", Some(&params)),
+            r#"{"jsonrpc":"2.0","id":7,"method":"x/y","params":{"z":1.50,"a":"two words\n"}}"#
+        );
+        assert_eq!(
+            composed(None, "note", None),
+            r#"{"jsonrpc":"2.0","method":"note"}"#
+        );
     }
 
     #[test]
