@@ -1,10 +1,6 @@
 //! The stdio connection factory (`docs/architecture.md` §6.1): spawn the agent
 //! as a direct child, frame newline-delimited JSON on its stdin/stdout, and pipe
 //! its stderr into the diagnostic channel line by line.
-//!
-//! Two processes, no bridge, no port, no launch token — the MCP Inspector's
-//! CLI/TUI path, which is the one its architecture proves works without the
-//! remote layer (§4).
 
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
@@ -31,11 +27,9 @@ use crate::frame::{Frame, Omission};
 mod process;
 use process::{Process, Spawned, WatchOwner};
 
-/// The longest line the transport will read.
-///
-/// The MCP TypeScript SDK's number: neither Zed nor the ACP SDK caps it at all,
-/// which makes an unterminated stream a slow OOM. A line over it is replaced by
-/// a placeholder and announced, and the connection carries on.
+/// The longest line the transport will read (the MCP TypeScript SDK's limit),
+/// so an unterminated stream cannot exhaust memory. A longer line is replaced
+/// by a placeholder and announced, and the connection carries on.
 const MAX_FRAME_BYTES: usize = 10 * 1024 * 1024;
 
 /// How much of a dropped frame's start the placeholder keeps, which is where
@@ -53,11 +47,8 @@ const STOP_GRACE: Duration = Duration::from_millis(1500);
 /// they are abandoned to whatever escaped its process group.
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
-/// Spawns an agent and speaks newline-delimited JSON to it.
-///
-/// The four fields are the MCP Inspector's, unchanged (§6.1) — command, args,
-/// env, cwd — because they are what a user actually needs to launch an agent
-/// (`npx`-wrapped ones included) and no more.
+/// Spawns an agent and speaks newline-delimited JSON to it: command, args,
+/// env and cwd, as in the MCP Inspector (§6.1).
 #[derive(Clone, Debug, Default)]
 pub struct StdioSpawn {
     command: OsString,
@@ -88,12 +79,8 @@ impl StdioSpawn {
         self
     }
 
-    /// Adds one variable to the child's environment.
-    ///
-    /// **Added to the inherited environment, not replacing it**: the credentials
-    /// in the terminal the inspector was launched from are the credentials the
-    /// agent runs with, which is how every practical agent login already works
-    /// (§7.1 — the inspector never runs a login itself).
+    /// Adds one variable to the child's environment, on top of the inherited
+    /// one, so the agent keeps the credentials of the launching terminal.
     #[must_use]
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.env.push((key.into(), value.into()));
@@ -127,19 +114,16 @@ impl StdioSpawn {
         self
     }
 
-    /// The child's working directory. Distinct from ACP's per-session `cwd`,
-    /// which is a parameter on the wire (§7.1) — this one is the process's.
+    /// The child process's working directory; distinct from ACP's per-session
+    /// `cwd` on the wire.
     #[must_use]
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
         self
     }
 
-    /// The command line as typed, for the spawn-failure evidence.
-    ///
-    /// Arguments included: this string exists to be read by the person who
-    /// wrote it, next to the error it caused, and a failure report that hides
-    /// the argument that caused it is not evidence.
+    /// The command line as typed, arguments included, for the spawn-failure
+    /// evidence.
     pub fn command_line(&self) -> String {
         std::iter::once(self.command.as_os_str())
             .chain(self.args.iter().map(OsString::as_os_str))
@@ -154,8 +138,7 @@ impl StdioSpawn {
             .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Piped: the agent's diagnostics are a screen (§9) and the
-            // spawn-failure evidence.
+            // Piped into the diagnostic channel.
             .stderr(Stdio::piped());
         if self.clear_env {
             command.env_clear();
@@ -178,8 +161,7 @@ impl ConnectionFactory for StdioSpawn {
     ///
     /// A failed spawn is not an error return: the connection comes back with the
     /// failure already in its diagnostic channel and its frame stream ended
-    /// (§6.1). Callers therefore have one shape to handle, whether the agent
-    /// died before the first frame or after the thousandth.
+    /// (§6.1).
     fn connect(&self) -> Connection {
         let (mut connection, ends) = connection();
 
@@ -190,18 +172,16 @@ impl ConnectionFactory for StdioSpawn {
                 pump(child, ends);
             }
             Err(error) => {
-                // `try_send` on a channel nobody has had the chance to fill: the
-                // failure is in the buffer before this returns, so a caller that
-                // reads its diagnostics finds it there, not eventually.
+                // The channel is empty, so `try_send` puts the failure in the
+                // buffer before this returns.
                 let _ = ends
                     .diagnostics
                     .try_send(Diagnostic::now(DiagnosticKind::SpawnFailed {
                         command: self.command_line(),
                         error: Arc::new(error),
                     }));
-                // Dropping `ends` closes the frame stream: nothing will arrive,
-                // and the client learns that by being told rather than by
-                // waiting.
+                // Dropping `ends` closes the frame stream, so the client is told
+                // rather than left waiting.
             }
         }
 
@@ -267,7 +247,7 @@ fn pump(child: Spawned, ends: TransportEnds) {
     ));
 }
 
-/// A pump that reports its own panic (C8): as a terminal transport failure,
+/// A pump that reports its own panic as a terminal transport failure,
 /// so the connection is Lost and its calls fail rather than wait on a task
 /// that is gone. The panic hook, where the app installs one, logs the rest.
 async fn guarded(diagnostics: mpsc::Sender<Diagnostic>, task: impl Future<Output = ()>) {
@@ -291,9 +271,8 @@ async fn write_frames(
     diagnostics: mpsc::Sender<Diagnostic>,
     stop: CancellationToken,
 ) {
-    // No cap on the encoder: what goes out was composed here, and refusing to
-    // write a frame the client asked for would be the transport editing the
-    // conversation.
+    // No cap on the encoder: outgoing frames were composed here, and the
+    // transport must not drop what the client asked to send.
     let mut lines = FramedWrite::new(stdin, LinesCodec::new());
     loop {
         let frame = tokio::select! {
@@ -362,12 +341,10 @@ async fn read_frames<R: AsyncRead + Unpin>(
     }
 }
 
-/// The agent's stderr, line by line, stamped as each line is read
-/// (`CONTEXT.md`, *Diagnostic channel*).
+/// The agent's stderr, line by line, stamped as each line is read.
 ///
-/// It drains to EOF whatever the lines contain and whether or not anyone is
-/// still listening: an agent blocked on, or killed by, its own stderr is not
-/// something the inspector may cause.
+/// Drains to EOF even when nobody is listening, so the agent never blocks on
+/// (or dies of) a full stderr pipe.
 async fn read_stderr<R: AsyncRead + Unpin>(
     mut lines: Lines<R>,
     diagnostics: mpsc::Sender<Diagnostic>,
@@ -439,11 +416,8 @@ struct Watch {
     readers: [(Option<JoinHandle<()>>, Arc<Reading>); 2],
 }
 
-/// Owns the child: reports its exit, and ends it when the client lets go.
-///
-/// Someone has to hold the `Child`, and it may as well be the one task that has
-/// something to do with it. Without this, a dropped connection would leave the
-/// agent running with nobody reading it.
+/// Owns the child: reports its exit, and ends it when the client lets go, so a
+/// dropped connection never leaves the agent running unread.
 async fn watch(watch: Watch) {
     let Watch {
         child,

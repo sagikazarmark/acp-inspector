@@ -7,14 +7,8 @@ use std::time::{Instant, SystemTime};
 
 /// One JSON-RPC message as it crossed the wire (`CONTEXT.md`, *Frame*).
 ///
-/// **Text, not a parsed value.** The inspector's subject matter is what an agent
-/// actually emitted, including what no schema recognizes, so nothing below the
-/// typed layer parses, validates, or reformats a frame — it is carried and
-/// recorded exactly as it arrived (§8, the raw-first rule). A frame that is not
-/// JSON at all is still a frame, and still gets shown.
-///
-/// Cheap to clone, because every frame is cloned at least once: the trace keeps
-/// a copy of everything that passes the seam.
+/// Text, not a parsed value: carried and recorded exactly as it arrived, even
+/// when it is not JSON (§8). Cheap to clone.
 #[derive(Clone)]
 pub struct Frame(Arc<Contents>);
 
@@ -24,7 +18,7 @@ struct Contents {
     origin: Origin,
     /// When a transport read it, for frames that came off a pipe.
     read: Option<(SystemTime, Instant)>,
-    /// Composed by a person rather than by the typed layer (F2).
+    /// Composed by a person rather than by the typed layer.
     hand: bool,
 }
 
@@ -53,9 +47,8 @@ impl PartialEq for Frame {
 }
 impl Eq for Frame {}
 
-/// Which way a frame went. The inspector is always the client, so the two
-/// directions are the two ends of its own connection — never a third party's
-/// (§13: observing other people's traffic is Wiretap's charter, not this one).
+/// Which way a frame went, relative to the inspector, which is always the
+/// client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
     ToAgent,
@@ -76,10 +69,8 @@ impl Frame {
         Self::build(text.into(), Origin::Verbatim, None)
     }
 
-    /// A frame a person wrote and sent by hand, rather than one the typed
-    /// layer composed (F2). The text is carried exactly as given; what marks it
-    /// is [`is_hand_sent`](Self::is_hand_sent), which the trace view and the
-    /// export both read.
+    /// A frame a person wrote and sent by hand, carried exactly as given and
+    /// marked by [`is_hand_sent`](Self::is_hand_sent).
     pub fn by_hand(text: impl Into<Arc<str>>) -> Self {
         Self(Arc::new(Contents {
             hand: true,
@@ -87,9 +78,8 @@ impl Frame {
         }))
     }
 
-    /// Whether a person composed this frame by hand (F2): it was sent from the
-    /// raw request composer, so its answer drives none of the typed stores and
-    /// no conformance rule is judged on it.
+    /// Whether a person composed this frame by hand. Its answer drives none of
+    /// the typed stores and no conformance rule is judged on it.
     pub fn is_hand_sent(&self) -> bool {
         self.0.hand
     }
@@ -190,21 +180,11 @@ impl Frame {
         self.0.read.map(|(_, at)| at)
     }
 
-    /// What the frame says it is, for a surface that has to draw a thousand of
-    /// them in one column.
+    /// What the frame says it is, read off the JSON-RPC envelope alone
+    /// (`method`, `id`, `result`, `error`); payloads are never decoded. Computed
+    /// once and shared by clones.
     ///
-    /// **This is not the typed layer and it decodes nothing** (§8). It reads
-    /// the four fields the JSON-RPC envelope itself defines — `method`, `id`,
-    /// `result`, `error` — and says which of the four shapes the envelope is
-    /// in. It never looks inside `params`, never names a v1 type, and never
-    /// decides whether the agent was right; the Timeline is where a frame
-    /// becomes something with a meaning, and that is still true.
-    ///
-    /// **A frame it cannot read is still a frame**, which is the rule this
-    /// method exists under rather than around: anything that is not a JSON
-    /// object is [`FrameKind::Unreadable`], and the surface that asked draws
-    /// exactly what it drew before — the frame's own text, verbatim. The
-    /// summary is a thing put *in front of* the bytes, never instead of them.
+    /// Anything that is not an envelope object is [`FrameKind::Unreadable`].
     pub fn summary(&self) -> &FrameSummary {
         self.0.summary.get_or_init(|| {
             if self.omission().is_some() {
@@ -214,23 +194,15 @@ impl Frame {
         })
     }
 
-    /// Whether this frame can cross a message-per-line transport as the single
-    /// message it claims to be.
-    ///
-    /// Only `\n` is asked about: it is the framing character, and a frame that
-    /// contains one would arrive at the agent as two messages while the trace
-    /// showed one — the inspector lying about the wire, which is the one thing
-    /// it may never do.
+    /// Whether this frame can cross a message-per-line transport as one
+    /// message: it contains no `\n`, which would split it on the wire while the
+    /// trace showed one.
     pub(crate) fn is_one_message(&self) -> bool {
         !self.as_str().contains('\n')
     }
 }
 
 /// Which of the JSON-RPC envelope's four shapes a frame is in.
-///
-/// The envelope's own vocabulary and nothing above it: what a *call* is for is
-/// the Timeline's answer, and whether the agent should have sent one is the
-/// Conformance Annotations'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameKind {
     /// A method with an id: somebody is waiting for an answer.
@@ -241,8 +213,7 @@ pub enum FrameKind {
     Result,
     /// An answer that did not.
     Error,
-    /// Not a JSON object, or a JSON object in none of those four shapes —
-    /// which is a frame worth seeing rather than a frame to hide (§8).
+    /// Not a JSON object, or a JSON object in none of those four shapes.
     Unreadable,
 }
 
@@ -355,13 +326,8 @@ impl FrameSummary {
         }
     }
 
-    /// The one word a row leads with, or `None` where the envelope said nothing
-    /// this can put there.
-    ///
-    /// The method where there is one, because that is what a reader scans a
-    /// trace for; otherwise what kind of answer it is, because an answer's own
-    /// method is the *call's* and correlating the two is the reader's business
-    /// rather than a label's.
+    /// The one word a row leads with: the method where there is one, otherwise
+    /// `result` or `error`; `None` for an unreadable frame.
     pub fn label(&self) -> Option<&str> {
         match (&self.method, self.kind) {
             (Some(method), _) => Some(method),
@@ -379,8 +345,7 @@ impl fmt::Display for Frame {
 }
 
 impl fmt::Debug for Frame {
-    /// The frame's text, not `Frame("…")` around it: every place this shows up —
-    /// a failed assertion, a log line — wants the JSON that was on the wire.
+    /// The frame's text as a string literal, without a `Frame(…)` wrapper.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.as_str(), f)
     }
@@ -422,8 +387,7 @@ mod tests {
         assert_eq!(notification.label(), Some("session/update"));
         assert_eq!(notification.id, None);
 
-        // An answer carries the id and not the method — correlating the two is
-        // the reader's, so the label says which kind of answer it is.
+        // An answer carries no method, so the label is the kind of answer.
         let result = summary(r#"{"jsonrpc":"2.0","id":3,"result":{"sessionId":"s1"}}"#);
         assert_eq!(result.kind, FrameKind::Result);
         assert_eq!(result.label(), Some("result"));
@@ -436,8 +400,6 @@ mod tests {
 
     #[test]
     fn an_id_is_rendered_as_it_was_written() {
-        // JSON-RPC allows either, and an agent that changed which it sends is
-        // showing the reader something rather than nothing.
         assert_eq!(
             summary(r#"{"id":"3","result":{}}"#).id.as_deref(),
             Some("3")
@@ -447,9 +409,7 @@ mod tests {
 
     #[test]
     fn a_frame_this_cannot_read_is_still_a_frame() {
-        // The rule §8 states, asserted at the one method that could break it:
-        // what comes back is *no label*, never a guess and never an error, and
-        // the surface goes on drawing the bytes.
+        // No label, never a guess or an error (§8).
         for unreadable in [
             "not json at all",
             "[1,2,3]",
@@ -473,9 +433,7 @@ mod tests {
 
     #[test]
     fn a_method_on_an_answer_is_still_the_method() {
-        // An agent that puts both on one object has sent something worth
-        // seeing. The method is what the row leads with either way, because it
-        // is the more specific of the two.
+        // The method is the more specific of the two, so the row leads with it.
         let both = summary(r#"{"id":1,"method":"session/update","result":{}}"#);
         assert_eq!(both.kind, FrameKind::Call);
         assert_eq!(both.label(), Some("session/update"));

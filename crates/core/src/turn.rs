@@ -1,17 +1,9 @@
 //! Where the turn stands (`CONTEXT.md`, *Turn*; `docs/architecture.md` §11
 //! seam 2).
 //!
-//! **A field, not a bracket.** The obvious way to write this is "the prompt
-//! call is in progress, therefore the turn is running" — and it is the wrong
-//! spine. v1 happens to end a turn with the prompt's response; v2 adds a
-//! `state_update` notification that says so directly, and an agent can already
-//! interleave updates and responses in orders a bracket cannot describe. So the
-//! state is a value that several things write, the response being one of them,
-//! and the layer that writes it is the one *reading the stream* — not the one
-//! awaiting the call.
-//!
-//! What the caller of `prompt` gets back is a convenience. What the screen
-//! renders is this.
+//! A field written by the task reading the stream, not a bracket around the
+//! prompt call: v2 can end a turn with a notification, and agents can
+//! interleave updates and responses in orders a bracket cannot describe.
 
 use crate::call::CallError;
 
@@ -21,29 +13,24 @@ use agent_client_protocol_schema::v1;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TurnState {
-    /// Nothing has been prompted in the live session: it has just been opened,
-    /// or the session that was being prompted has been switched away from
-    /// (§7.5) and its turn is no longer this state's to describe.
+    /// Nothing has been prompted in the live session: it was just opened, or
+    /// the previous session was switched away from (§7.5).
     #[default]
     Idle,
     /// A prompt is on the wire and the turn has not resolved.
     InFlight,
     /// A `session/cancel` has been sent and the turn has still not resolved.
     ///
-    /// Its own state rather than a flag on [`InFlight`](Self::InFlight),
-    /// because this is the window in which a conformance violation is visible:
-    /// the spec requires the prompt to resolve with
-    /// [`StopReason::Cancelled`](v1::StopReason::Cancelled) even so (§7.1), and
-    /// an agent that never resolves it leaves the turn sitting here saying
-    /// exactly what it is doing.
+    /// The spec still requires the prompt to resolve with
+    /// [`StopReason::Cancelled`](v1::StopReason::Cancelled) (§7.1); an agent that
+    /// never does stays here.
     Cancelling,
     /// The turn ended and the agent said why — including `cancelled`, which is
     /// what a cancel is supposed to produce.
     Ended(v1::StopReason),
     /// The turn ended without a stop reason: the agent answered the prompt with
-    /// an error, or the connection went away while the turn was open. Not a
-    /// stop reason of our own invention, because the inspector reporting a
-    /// reason the agent never gave is the one thing it may not do.
+    /// an error, or the connection went away while the turn was open. The
+    /// inspector never invents a stop reason.
     Failed(CallError),
 }
 
@@ -55,33 +42,23 @@ impl TurnState {
     }
 }
 
-/// What a turn came to, kept beside the turn it was.
+/// What a finished turn came to, kept for every turn of the session.
 ///
-/// **This is a record and [`TurnState`] is a position.** The state says where
-/// the *live* turn stands and is replaced the moment the next prompt goes out;
-/// this is what a turn that is over came to, and it is kept for every turn the
-/// session had. The two never say the same thing about the same turn: a turn
-/// with an outcome is not the live one any more, and the live one has no
-/// outcome yet — which is why this is a second type rather than a second copy
-/// of the first. `Idle` and `InFlight` are not outcomes and have no spelling
-/// here.
+/// [`TurnState`] is the live turn's position and is replaced by the next
+/// prompt; this is the record of a turn that is over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TurnOutcome {
     /// The agent ended the turn and said why.
     Ended(v1::StopReason),
     /// The turn ended without a stop reason: the agent answered the prompt with
-    /// an error, or the connection went away while it was open. Never a reason
-    /// of the inspector's own invention.
+    /// an error, or the connection went away while it was open.
     Failed(CallError),
 }
 
 impl TurnOutcome {
     /// The outcome a settled state carries, or `None` for a state that is not
-    /// an ending at all.
-    ///
-    /// Read from the state rather than assembled beside it, so the record and
-    /// the position cannot disagree about how a turn finished.
+    /// an ending. Derived from the state so the two cannot disagree.
     pub(crate) fn of(state: &TurnState) -> Option<Self> {
         match state {
             TurnState::Ended(reason) => Some(Self::Ended(*reason)),

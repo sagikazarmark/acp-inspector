@@ -1,47 +1,24 @@
 //! Whether a payload is drawn as it arrived or laid out to be read
-//! (`docs/architecture.md` §8, §9).
+//! (`docs/architecture.md` §8).
 //!
-//! **A reading aid, and only ever that.** A frame is text and stays text
-//! ([`Frame`](crate::Frame)): nothing here touches what was recorded, what an
-//! export writes or what a copy takes — this answers one question, which is what
-//! a surface draws when a reader has asked for the long form. The default is the
-//! wire's own bytes, because the raw-first rule (§8) is what this tool is for and
-//! a preference is not allowed to be the reason somebody sees something other
-//! than what crossed.
-//!
-//! **Indenting adds whitespace and changes nothing else.** The text is validated
-//! as JSON and then *re-spaced*, character by character, rather than parsed into
-//! a value and printed back: a round trip through a decoder sorts an object's
-//! keys, collapses two fields that share a name, and respells numbers and
-//! escapes — every one of which is the inspector quietly editing the evidence. So
-//! the bytes a reader sees indented are the bytes that crossed, in the agent's
-//! own order and the agent's own spelling, with newlines and spaces between them.
-//!
-//! **A payload that is not JSON is drawn as it always was.** A frame can be
-//! anything — that is the whole point of §8 — so anything this cannot read as one
-//! complete JSON document is left exactly alone rather than reported, refused or
-//! guessed at.
-//!
-//! It is in core for the reason [`Appearance`](crate::Appearance) is (§5): what
-//! is stored, what an unknown value falls back to and what indenting does to a
-//! payload are decisions testable without a window
-//! (`crates/core/tests/indentation.rs`), and the desktop crate draws what this answers.
+//! A display preference only: recorded frames, exports and copies always carry
+//! the wire bytes. Indenting validates the text as JSON and then re-spaces it
+//! character by character instead of decode-and-print, so key order, duplicate
+//! keys, number spelling and escapes are preserved. Text that is not one
+//! complete JSON document is drawn unchanged.
 
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
-/// How many spaces one level of nesting is worth. Two, which is what a reader of
-/// JSON expects and what leaves a deeply nested `params` still legible in a
-/// column that shares its window with two other screens.
+/// One level of nesting.
 const STEP: &str = "  ";
 
 /// Whether payloads are drawn as they arrived or indented for reading.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Indentation {
-    /// Exactly the bytes that crossed — the default, and the answer the whole
-    /// tool is built around (§8).
+    /// Exactly the bytes that crossed (the default).
     #[default]
     Wire,
     /// The same bytes with JSON's structure spaced out, where the payload is
@@ -62,11 +39,7 @@ impl Indentation {
     }
 
     /// Parses a token back, falling back to [`Wire`](Self::Wire) for anything
-    /// unrecognized.
-    ///
-    /// A value written by a future version must never leave a reader looking at
-    /// a rendering nobody here can describe: the bytes as they crossed are what
-    /// every version of this tool can honestly draw.
+    /// unrecognized (e.g. a value from a future version).
     pub fn from_token(token: &str) -> Self {
         match token {
             "indented" => Self::Indented,
@@ -84,12 +57,8 @@ impl Indentation {
         self == Self::Indented
     }
 
-    /// A payload as this draws it.
-    ///
-    /// Borrowed and untouched under [`Wire`](Self::Wire), and for anything that
-    /// is not one complete JSON document under either: the answer to "this is
-    /// not JSON" is the text, because a frame that no schema recognizes is
-    /// exactly the frame its reader came to see (§8).
+    /// A payload as this draws it: borrowed and untouched under
+    /// [`Wire`](Self::Wire), or when the text is not one complete JSON document.
     pub fn draw(self, text: &str) -> Cow<'_, str> {
         match self {
             Self::Wire => Cow::Borrowed(text),
@@ -99,13 +68,8 @@ impl Indentation {
 }
 
 /// The same JSON with whitespace between its tokens, or `None` where the text is
-/// not JSON.
-///
-/// The validity question is asked first and asked by a parser, so the pass below
-/// only ever walks a document that is known to be well-formed — which is what
-/// lets it be a re-spacing rather than a decoder. Nothing is built from the
-/// parse: it is read and dropped, and every byte that comes out of this function
-/// came out of `text`.
+/// not JSON. Validated by a parser first, so the re-spacing pass only walks
+/// well-formed input; every output byte comes from `text`.
 fn indented(text: &str) -> Option<String> {
     serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
     Some(respaced(text))
@@ -113,9 +77,8 @@ fn indented(text: &str) -> Option<String> {
 
 /// Walks well-formed JSON and writes it back with one token per line.
 ///
-/// Strings are copied through whole — a `{` inside one is a character in a value
-/// and not a nesting the layout should answer to — and an escape is copied with
-/// the character it escapes, so a `\"` never ends the string it is in.
+/// Strings are copied whole (punctuation inside them is not structure), and an
+/// escape is copied with the character it escapes, so `\"` never ends a string.
 fn respaced(text: &str) -> String {
     let mut out = String::with_capacity(text.len() * 2);
     let mut depth = 0usize;
@@ -140,10 +103,8 @@ fn respaced(text: &str) -> String {
             }
             '{' | '[' => {
                 out.push(character);
-                // An empty collection is closed where it was opened: `{}` says
-                // what it is, and two lines with nothing between them say it
-                // worse. Closed *here*, so the level it never opened is not one
-                // the arm below has to unwind.
+                // An empty collection stays `{}` on one line, closed here so the
+                // closing arm never unwinds a level that was not opened.
                 skip_space(&mut characters);
                 if matches!(characters.peek(), Some('}' | ']')) {
                     out.push(characters.next().expect("the close just peeked at"));
@@ -162,10 +123,8 @@ fn respaced(text: &str) -> String {
                 newline(&mut out, depth);
             }
             ':' => out.push_str(": "),
-            // Whatever whitespace the sender used is not the sender's message.
-            // Numbers, `true`, `false` and `null` are copied character by
-            // character, which is what keeps `1.0`, `1e3` and a hundred digits
-            // of precision spelled the way they arrived.
+            // The sender's whitespace is replaced. Literals are copied
+            // character by character, so `1.0` and `1e3` keep their spelling.
             _ if character.is_whitespace() => {}
             _ => out.push(character),
         }
@@ -193,15 +152,12 @@ mod tests {
 
     #[test]
     fn a_payload_that_is_not_json_is_the_payload() {
-        // §8, at the one function that could break it. Not an error, not a
-        // refusal and not a guess: the text.
         for text in [
             "not json at all",
             "",
-            // JSON followed by something else is not one document, and half of
-            // it laid out would be the tool inventing a frame.
+            // JSON followed by something else is not one document.
             r#"{"jsonrpc":"2.0"} trailing"#,
-            // Truncated: the frame a transport cut in half is a finding.
+            // Truncated.
             r#"{"jsonrpc":"2.0","#,
         ] {
             assert_eq!(
@@ -214,9 +170,7 @@ mod tests {
 
     #[test]
     fn indenting_only_moves_the_bytes_apart() {
-        // Everything a decode-and-print would change, in one frame: two fields
-        // in the agent's order rather than in an alphabet's, a number spelled
-        // the way it was sent, and an escape nobody normalised.
+        // Key order, number spelling and escapes a decode-and-print would change.
         let frame = r#"{"zeta":1,"alpha":{"kept":1.50,"escaped":"a\"b"},"empty":{},"none":[]}"#;
 
         assert_eq!(

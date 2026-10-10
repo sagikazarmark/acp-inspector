@@ -1,16 +1,8 @@
-//! The JSONL trace export (`docs/architecture.md` §10): the trace as a file
-//! somebody else can read.
+//! The JSONL trace export (`docs/architecture.md` §10).
 //!
-//! **The record schema is a contract** (§15 q2, pinned in
-//! `docs/trace-export.md`). The export is the seed of the event log ACP Wiretap
-//! and replay tooling are waiting on, which means its shape stops being this
-//! crate's business the moment anything consumes it — so it is written down,
-//! versioned, and self-describing rather than grown.
-//!
-//! Nothing is redacted, and the header says so. An ACP trace carries prompts,
-//! file contents and tool output; an export that quietly dropped some of it
-//! would be evidence you cannot trust, which is worse than evidence you have to
-//! handle carefully.
+//! The record schema is a versioned, self-describing contract pinned in
+//! `docs/trace-export.md`; change it only there first. Nothing is redacted, and
+//! the header says so.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -27,15 +19,12 @@ use crate::trace::TracedFrame;
 /// What the format calls itself, in every header it writes.
 const FORMAT: &str = "acp-inspector-trace";
 
-/// The schema version. It changes when a consumer that reads version 1 would
-/// read a version 2 file wrongly — never for a field that was added beside the
-/// ones already pinned.
+/// The schema version. Bumped only when an existing reader would misread the
+/// file, not for added fields.
 const VERSION: u32 = 1;
 
-/// What the header warns whoever opens the file.
-///
-/// The bridge's `--trace-frames` header's, word for word (`docs/trace-export.md`):
-/// the two files carry the same risk, so they say the same thing about it.
+/// The header's warning: the bridge's `--trace-frames` wording, verbatim
+/// (`docs/trace-export.md`).
 const WARNING: &str =
     "ACP frames may contain prompts, file contents, and tool output; nothing is redacted";
 
@@ -45,14 +34,8 @@ const EXTENSION: &str = "jsonl";
 /// How many names one export may try before giving up on a directory.
 const NAMES: u32 = 64;
 
-/// A trace, taken as evidence: the frames it held at one moment, and what it
-/// says about itself.
-///
-/// **A snapshot, not a view.** Taking one is the whole of "export": the frames
-/// are copied out from under the trace's lock, so what is written is what had
-/// crossed by the time the button was pressed — the trace going on, or being
-/// cleared, changes nothing about an export already taken (§10, and
-/// `docs/trace-export.md` on what clear means).
+/// A snapshot of a trace: the frames it held at one moment and the count it
+/// had dropped. Later frames or clears do not change an export already taken.
 pub struct Export {
     at: SystemTime,
     frames: Vec<TracedFrame>,
@@ -79,14 +62,9 @@ struct Header<'a> {
 
 /// One frame, as the file has it.
 ///
-/// Aligned with the bridge's `--trace-frames` record field for field where the
-/// fields mean the same thing — `connection`, `direction` (down to the strings),
-/// `encoding`, `frame` — so one reader handles both captures, and extended with
-/// the two the inspector knows and the bridge did not record: which kind of
-/// record this is, and when the frame crossed.
-///
-/// A frame that was not UTF-8 is carried as `encoding: "base64"` of its bytes,
-/// the bridge's other encoding, so the file stays verbatim.
+/// `connection`, `direction`, `encoding` and `frame` match the bridge's
+/// `--trace-frames` records so one reader handles both; `type` and `at` are
+/// added. Non-UTF-8 frames are carried as `encoding: "base64"`.
 #[derive(Serialize)]
 struct Record<'a> {
     #[serde(rename = "type")]
@@ -139,8 +117,7 @@ impl Export {
 
     /// The same export, carrying the agent's stderr lines from `diagnostics`
     /// as `stderr` records interleaved with the frames by when each was read.
-    /// Everything else on the diagnostic channel — the transport's own remarks
-    /// — stays out: it is this inspector's account, not the agent's output.
+    /// Other diagnostics (the transport's own remarks) are left out.
     #[must_use]
     pub fn with_stderr(mut self, diagnostics: &[Diagnostic]) -> Self {
         self.stderr = Some(
@@ -155,13 +132,12 @@ impl Export {
         self
     }
 
-    /// Writes the export to exactly `path`, replacing what is there — the
-    /// destination a person chose in a save dialog, which has already asked
-    /// them about replacing it.
+    /// Writes the export to exactly `path`, replacing what is there (a save
+    /// dialog already confirmed that).
     ///
-    /// Written beside it first and then moved into place, so a write that
-    /// fails leaves whatever was at `path` as it was, and nothing half-written
-    /// anywhere. Created `0600` on Unix, like [`save_in`](Self::save_in).
+    /// Written to a sibling `.partial` file and renamed into place, so a failed
+    /// write leaves `path` untouched and nothing half-written. Created `0600` on
+    /// Unix.
     pub fn save_to(&self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
         let path = path.as_ref();
         let name = path.file_name().ok_or_else(|| {
@@ -193,12 +169,9 @@ impl Export {
         self.frames.len() - self.placeholders()
     }
 
-    /// How many frames crossed that this export does not carry — cleared, aged
+    /// How many frames crossed that this export does not carry: cleared, aged
     /// out of the trace's cap, or dropped by the transport for their length.
-    ///
-    /// In the header as well, because a consumer reading the file has to be
-    /// able to tell an export of a whole session from an export of what was
-    /// left of one.
+    /// Also written in the header.
     pub fn dropped(&self) -> usize {
         self.dropped + self.placeholders()
     }
@@ -210,24 +183,12 @@ impl Export {
             .count()
     }
 
-    /// Writes the export into `directory`, under a name of its own, and answers
-    /// with the file it wrote.
+    /// Writes the export into `directory` under a fresh name, and returns the
+    /// path written.
     ///
-    /// **It never writes over anything.** The file is created rather than
-    /// opened, and a name already taken — two exports inside one millisecond,
-    /// which is one impatient click — is answered with the next name along, not
-    /// with the earlier evidence gone.
-    ///
-    /// On Unix the file is the user's own to read (`0600`), because nothing in
-    /// it is redacted: an ACP trace carries prompts, file contents and tool
-    /// output, and a world-readable copy of it in a shared temp directory is not
-    /// what anybody asked for by pressing Export.
-    ///
-    /// **A write that fails leaves nothing behind.** A half-written export is
-    /// the one outcome worse than none: its header would claim frames the file
-    /// does not have, and it would parse — evidence that lies quietly, which is
-    /// what this format exists not to be. So the file goes when the writing
-    /// does, and the error is the whole answer.
+    /// Never overwrites: a taken name gets a `-N` suffix (up to 64 tries). The
+    /// file is `0600` on Unix because nothing in it is redacted. A failed write
+    /// removes the file, since a truncated export would still parse.
     pub fn save_in(&self, directory: impl AsRef<Path>) -> io::Result<PathBuf> {
         let directory = directory.as_ref();
         let stem = self.stem();
@@ -254,45 +215,32 @@ impl Export {
         ))
     }
 
-    /// Writes the whole document into an open file, and makes sure it is really
-    /// there before saying so.
+    /// Writes the whole document into an open file and flushes it.
     fn write(&self, mut file: File) -> io::Result<()> {
         write!(file, "{self}")?;
         file.flush()
     }
 
-    /// Writes the export where an export goes when nobody says: the system's
-    /// temp directory.
-    ///
-    /// **Somewhere always writable, and never the user's project.** A tool that
-    /// scattered `.jsonl` files through the working directory of whatever the
-    /// agent was pointed at would be leaving litter in someone's repository; a
-    /// tool that wrote to the home directory would be doing it more politely.
-    /// The path comes back so that whoever pressed the button can be told
-    /// exactly where the evidence is — which is the whole of what this owes
-    /// them until there is a save dialog to ask with.
+    /// Writes the export into the system temp directory (always writable, and
+    /// never the agent's project), and returns the path written.
     pub fn save(&self) -> io::Result<PathBuf> {
         self.save_in(std::env::temp_dir())
     }
 
-    /// What the file is called: when it was taken, and what it is.
-    ///
-    /// The timestamp is the export's, so a directory of them sorts into the
-    /// order they were taken — and two traces from one session never collide by
-    /// being from one session.
+    /// The default file name, stamped with when the export was taken so a
+    /// directory of them sorts chronologically.
     pub fn filename(&self) -> String {
         format!("{}.{EXTENSION}", self.stem())
     }
 
-    /// The name without its extension, which is what a name already taken is
-    /// extended from.
+    /// The name without its extension, which a taken name is suffixed from.
     fn stem(&self) -> String {
         format!("acp-trace-{}", stamp(self.at))
     }
 }
 
-/// Creates the file, and no other: an existing name is an error rather than an
-/// overwrite, which is what makes a second export a second file.
+/// Creates a new file (`0600` on Unix); an existing name is an error, never an
+/// overwrite.
 fn create(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -305,9 +253,7 @@ fn create(path: &Path) -> io::Result<File> {
 }
 
 impl fmt::Display for Export {
-    /// The whole document: the header, then one record per frame, each a whole
-    /// line — which is what JSONL is, and what lets a consumer read a huge trace
-    /// a record at a time.
+    /// The whole document: the header line, then one record per line.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let header = Header {
             kind: "header",
@@ -374,11 +320,6 @@ impl fmt::Display for Export {
     }
 }
 
-/// One record, as compact JSON on one line.
-///
-/// Serializing cannot fail for either record type: both are plain fields, and
-/// the frame is a string whatever it contains. The error path exists because
-/// `serde_json` has one, not because there is a way to reach it.
 /// Standard base64 with padding (RFC 4648 §4).
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -399,16 +340,13 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// One record, as compact JSON on one line. Cannot fail for these plain
+/// record types; the error path is `serde_json`'s.
 fn line(record: &impl Serialize) -> Result<String, fmt::Error> {
     serde_json::to_string(record).map_err(|_| fmt::Error)
 }
 
-/// How a direction reads in the file.
-///
-/// The bridge's strings, unchanged: the inspector *is* the client, so its two
-/// directions and the bridge's are the same two facts about the same two ends,
-/// and spelling them differently would cost a consumer a translation table for
-/// nothing.
+/// How a direction reads in the file: the bridge's strings, unchanged.
 fn way(direction: Direction) -> &'static str {
     match direction {
         Direction::ToAgent => "client -> agent",
@@ -416,21 +354,13 @@ fn way(direction: Direction) -> &'static str {
     }
 }
 
-/// A moment, as milliseconds since the Unix epoch.
-///
-/// A number rather than a formatted date, because this file is read by tools:
-/// no timezone to agree on, no parser to write, and the ordering is the
-/// comparison. Rendering it for a human is presentation, and belongs where the
-/// reader's own clock is known.
+/// A moment, as milliseconds since the Unix epoch (a number, so tools need no
+/// timezone or date parser).
 fn stamp(at: SystemTime) -> i64 {
     match at.duration_since(UNIX_EPOCH) {
-        // The saturations are unreachable on any clock: `i64` milliseconds run
-        // to the year 292 million. They are here because a wrong clock must not
-        // be able to panic a stamp — and they saturate the way the clock was
-        // wrong, so a nonsense timestamp at least keeps its sign.
+        // Saturates rather than panics on an absurd clock, keeping the sign.
         Ok(since) => i64::try_from(since.as_millis()).unwrap_or(i64::MAX),
-        // A clock set before 1970 is a machine with a wrong clock, not a reason
-        // to lose a frame: it exports as the negative it is.
+        // A clock before 1970 exports as a negative stamp, not a lost frame.
         Err(before) => {
             i64::try_from(before.duration().as_millis()).map_or(i64::MIN, |millis| -millis)
         }

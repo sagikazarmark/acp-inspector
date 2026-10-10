@@ -2,11 +2,9 @@
 //! (`docs/client-services.md`): which client services it answers, how the
 //! agent's other requests are answered, and the protocol version it asks for.
 //!
-//! **Claimed means answered, never performed.** A claimed `fs/*` or
-//! `terminal/*` call becomes a card the reader answers by hand, or is answered
-//! by a rules file; nothing reads a file, writes one or runs a command (F16).
-//! The claim is still honest: every call it invites gets an answer the reader
-//! chose.
+//! Claimed means answered, never performed: a claimed `fs/*` or `terminal/*`
+//! call is answered by the reader or by a rules file; nothing reads a file,
+//! writes one or runs a command.
 
 use agent_client_protocol_schema::{ProtocolVersion, v1};
 

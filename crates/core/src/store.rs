@@ -1,22 +1,14 @@
-//! What an observable store is made of (`docs/architecture.md` §5): a log of
-//! what happened, and a subscription to its changes.
-//!
-//! **The UI subscribes; core never renders and never calls into a UI.** A store
-//! is therefore a value plus a signal that it moved — the shape a Dioxus signal,
-//! a test's `await`, and a later web surface can all consume unchanged, and the
-//! reason core needs no idea that any of them exist.
+//! Observable stores: a value or log plus a signal that it moved, which a UI or
+//! a test subscribes to. Core never calls into a UI. See
+//! `docs/architecture.md` §5.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::watch;
 
-/// Takes a store's lock, poisoned or not.
-///
-/// **A poisoned store is still a store**: a panic elsewhere must not turn the
-/// record of what an agent did into a second panic here. Every state this crate
-/// holds behind a mutex is held for that reason, so the rule is stated once and
-/// used wherever one is taken.
+/// Takes a store's lock, poisoned or not, so a panic elsewhere does not turn
+/// the record into a second panic here.
 pub(crate) fn locked<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
     state
         .lock()
@@ -25,34 +17,23 @@ pub(crate) fn locked<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// A list of what happened, and a signal when more happens.
 ///
-/// Entries arrive at the end and are never reordered or edited — a log's order
-/// is the order things happened in. What it does not promise is to keep them
-/// all: a [`budgeted`](Log::budgeted) log gives up its oldest to stay a fixed
-/// size, and a [`clear`](Log::clear) gives up everything, both of them counted
-/// so that a log which has forgotten something can say so.
+/// Entries are appended and never reordered or edited. A
+/// [`budgeted`](Log::budgeted) log gives up its oldest entries and a
+/// [`clear`](Log::clear) gives up all of them; both are counted as dropped.
 ///
-/// A handle, not the log: cloning shares one log, so every consumer of a store
-/// is looking at the same entries.
+/// A handle: clones share one log.
 pub(crate) struct Log<T> {
     held: Arc<Mutex<Held<T>>>,
-    /// How many entries there are, as a signal — meaningful on its own, so a
-    /// subscriber that only wants to know "is there more" never has to clone
-    /// the log to find out.
+    /// The entry count, as a signal subscribers can watch without cloning the
+    /// log.
     length: Arc<watch::Sender<usize>>,
 }
 
-/// What a log holds: the entries it still has, and the count of the ones it
-/// does not.
-///
-/// The two under one lock, because a reader that took them separately could
-/// report a set of entries alongside a count that describes a different moment
-/// — and the export's whole claim is that its header describes its records.
+/// The entries a log still has and the count of those it does not, under one
+/// lock so an export's header always describes the records beside it.
 struct Held<T> {
     entries: VecDeque<T>,
-    /// Entries this log captured and no longer holds: aged out of a cap, or
-    /// dropped by a [`clear`](Log::clear). Never reset, because it is the log's
-    /// admission that it is not the whole story, and an admission that resets
-    /// is not one.
+    /// Entries captured and no longer held. Never reset.
     dropped: usize,
     /// How many entries this log keeps, or `None` to keep everything.
     capacity: Option<usize>,
@@ -61,28 +42,19 @@ struct Held<T> {
     weight: fn(&T) -> usize,
 }
 
-/// One value that changes, and a signal when it does.
+/// One value that changes, and a signal when it does: what is true now, where a
+/// [`Log`] is everything that happened.
 ///
-/// The other half of what a store can be: a [`Log`] is everything that
-/// happened, a field is what is true now. The turn's state is the reason this
-/// exists (§11 seam 2) — a turn is not a list of turns, it is a field several
-/// things write to.
-///
-/// A handle, not the value: cloning shares one field.
+/// A handle: clones share one field.
 pub(crate) struct Field<T>(Arc<watch::Sender<T>>);
 
 /// A subscription to a store: what it says now, and a way to wait for it to say
-/// something else.
-///
-/// Wrapping the channel rather than handing it out keeps the async plumbing an
-/// implementation detail — core's consumers are a UI and its tests, and neither
-/// should have to agree with core about which runtime it is built on.
+/// something else. Hides the channel so consumers need not share core's runtime.
 pub struct Changes<T>(watch::Receiver<T>);
 
 impl<T> Log<T> {
-    /// A log that keeps its newest `capacity` entries and counts the rest as
-    /// dropped — a ring, not a stop: the entries a bounded log gives up are the
-    /// oldest, because the newest are the ones whoever is watching came for.
+    /// A ring that keeps its newest `capacity` entries (and at most
+    /// `byte_limit` bytes by `weight`), counting the rest as dropped.
     pub(crate) fn budgeted(capacity: usize, byte_limit: usize, weight: fn(&T) -> usize) -> Self {
         Self {
             held: Arc::new(Mutex::new(Held {
@@ -108,11 +80,8 @@ impl<T> Log<T> {
         self.lock().dropped
     }
 
-    /// Drops every entry it holds, counting them as dropped.
-    ///
-    /// Not a reset: what a log has already given out — an export written to a
-    /// file — is not this log's any more, and what it gives out next says how
-    /// much it threw away to get there.
+    /// Drops every entry it holds, counting them as dropped. Not a reset:
+    /// ordinals keep counting.
     pub(crate) fn clear(&self) {
         let mut held = self.lock();
         held.dropped += held.entries.len();
@@ -121,14 +90,13 @@ impl<T> Log<T> {
         self.length.send_replace(0);
     }
 
-    /// Counts `count` entries as captured elsewhere and never held here — the
-    /// ones a file read back in says its producer had already let go of.
+    /// Counts `count` entries as dropped before they were ever held here, as an
+    /// imported file reports.
     pub(crate) fn forgotten(&self, count: usize) {
         self.lock().dropped += count;
     }
 
-    /// Watches this log. The subscription starts from the log as it is now, so
-    /// a consumer reads once and then waits.
+    /// Watches this log, starting from its current length.
     pub(crate) fn changes(&self) -> Changes<usize> {
         Changes(self.length.subscribe())
     }
@@ -137,30 +105,21 @@ impl<T> Log<T> {
         self.append_then(entry, |_, _| {})
     }
 
-    /// Appends an entry and does one more thing before letting go of the log.
+    /// Appends an entry and runs `handoff(ordinal, dropped)` before releasing
+    /// the lock.
     ///
-    /// `handoff` is told the new entry's ordinal and the dropped count.
+    /// The trace uses `handoff` to enqueue a frame under the same lock it
+    /// records it, so concurrent senders cannot record in one order and send in
+    /// another.
     ///
-    /// `handoff` is what makes the log's order the real order: the trace records
-    /// a frame and hands it to the transport under the same lock, so two tasks
-    /// sending at once cannot record in one order and enqueue in the other.
-    ///
-    /// Returns the ordinal the entry was appended under — how many entries this
-    /// log had taken before it, counting from zero. It is read under the same
-    /// lock as the append for the reason the handoff is: two tasks appending at
-    /// once must not be able to number themselves in one order and land in the
-    /// other. It stays true as the ring rotates and after a clear, because
-    /// neither of those is a reset ([`clear`](Self::clear)) — which is what
-    /// makes it an identity rather than a position, and what lets a consumer
-    /// that kept one find the entry again in `dropped + position`.
+    /// Returns the entry's ordinal: entries taken before it, from zero. It
+    /// survives rotation and [`clear`](Self::clear), so `dropped + position`
+    /// finds the entry again.
     pub(crate) fn append_then(&self, entry: T, handoff: impl FnOnce(u64, usize)) -> u64 {
         let mut held = self.lock();
         let ordinal = (held.dropped + held.entries.len()) as u64;
         held.bytes += (held.weight)(&entry);
         held.entries.push_back(entry);
-        // The oldest goes to make room, under the same lock as the newest
-        // arriving, so what the log holds and what it says it dropped are never
-        // read apart.
         while held
             .capacity
             .is_some_and(|capacity| held.entries.len() > capacity)
@@ -171,16 +130,9 @@ impl<T> Log<T> {
             held.dropped += 1;
         }
         handoff(ordinal, held.dropped);
-        // What the entry just appended is called, in the same terms a reader of
-        // this log has: the last position, plus everything that has left.
-        // Announced while the log is still held, so a subscriber that wakes on
-        // a count and then reads the entries can never find fewer than it was
-        // told about, and concurrent appends cannot announce out of order.
-        //
-        // Sent rather than compared: a log at its cap appends without its
-        // length changing, and a subscriber told nothing happened would stop
-        // seeing the newest entries at exactly the point there are the most of
-        // them.
+        // Announced under the lock so a woken subscriber never finds fewer
+        // entries than announced. Always sent: a full ring appends without its
+        // length changing.
         self.length.send_replace(held.entries.len());
         ordinal
     }
@@ -191,19 +143,13 @@ impl<T> Log<T> {
 }
 
 impl<T: Clone> Log<T> {
-    /// Every entry it holds, oldest first.
-    ///
-    /// A snapshot by value: consumers read while the agent keeps talking, and
-    /// none of them should be holding a lock while they render.
+    /// Every entry it holds, oldest first, copied so nobody renders under the
+    /// lock.
     pub(crate) fn entries(&self) -> Vec<T> {
         self.lock().entries.iter().cloned().collect()
     }
 
-    /// The entries and the count of what is missing, from one moment.
-    ///
-    /// What [`entries`](Self::entries) and [`dropped`](Self::dropped) cannot do
-    /// together: an export reads both, and a header that counted a moment its
-    /// records did not come from would be a self-description that was wrong.
+    /// The entries and the dropped count, read under one lock.
     pub(crate) fn snapshot(&self) -> (Vec<T>, usize) {
         let held = self.lock();
         (held.entries.iter().cloned().collect(), held.dropped)
@@ -251,27 +197,15 @@ impl<T: Clone> Field<T> {
         self.0.send_replace(value);
     }
 
-    /// Changes the value in place, and says whether it changed.
-    ///
-    /// What [`set`](Self::set) cannot do: decide *from the current value*
-    /// whether to write at all, without a gap between the reading and the
-    /// writing. A turn that ended while a cancel was in flight is the reason —
-    /// two producers, one field, and the later one must not overwrite an answer
-    /// the agent already gave.
-    ///
-    /// `change` returns whether it changed anything; subscribers are told only
-    /// when it did.
+    /// Changes the value in place, deciding from the current value with no gap
+    /// between read and write; `change` returns whether it changed anything,
+    /// and subscribers are told only when it did.
     pub(crate) fn update(&self, change: impl FnOnce(&mut T) -> bool) -> bool {
         self.0.send_if_modified(change)
     }
 
-    /// Changes the value in place and answers with what it says afterwards.
-    ///
-    /// What [`update`](Self::update) cannot do: hand the new value back. A
-    /// caller that folds something into a field and then has to report what the
-    /// field now holds would otherwise read it again afterwards — through a gap
-    /// another writer can reach into. Subscribers are always told, because a
-    /// caller that changes a value it also wants back is changing it.
+    /// Changes the value in place and returns the result, read under the same
+    /// lock. Subscribers are always told.
     pub(crate) fn change(&self, change: impl FnOnce(&mut T)) -> T {
         let mut changed = None;
         self.0.send_modify(|value| {
@@ -281,9 +215,7 @@ impl<T: Clone> Field<T> {
         changed.expect("send_modify runs its closure")
     }
 
-    /// Watches this field, starting from what it says now — so a consumer
-    /// subscribes once and then waits, and never has to poll to find out
-    /// whether it missed something.
+    /// Watches this field, starting from its current value.
     pub(crate) fn changes(&self) -> Changes<T> {
         Changes(self.0.subscribe())
     }
@@ -306,15 +238,10 @@ impl<T: Clone> Changes<T> {
         Self(receiver)
     }
 
-    /// Waits for the next change, and answers with what the store says then.
+    /// Waits for the next change and returns the store's value then, or `None`
+    /// once the store is gone.
     ///
-    /// `None` once nothing will ever change again — the inspector holding the
-    /// store is gone — so a consumer looping on this ends with it instead of
-    /// spinning.
-    ///
-    /// **Changes coalesce.** A consumer slower than the agent wakes once with
-    /// the latest state rather than once per entry, which is what keeps a
-    /// chatty turn from costing one render per frame.
+    /// Changes coalesce: a slow consumer wakes once with the latest value.
     pub async fn next(&mut self) -> Option<T> {
         self.0.changed().await.ok()?;
         Some(self.0.borrow_and_update().clone())

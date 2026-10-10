@@ -1,19 +1,9 @@
 //! JSON-RPC over frames: ids out, answers back, and a name for everything that
 //! arrives.
 //!
-//! Adapted from the host project's JSON-RPC wire, not linked
-//! (`docs/architecture.md` §13): the correlation is the same — a map from
-//! request id to whoever is waiting — and everything around it is different,
-//! because this one sits on the frame seam ([`FrameSink`], [`Frame`]) rather
-//! than on a WebSocket, and it is below a layer whose job is to *show* what it
-//! cannot decode.
-//!
-//! **This module knows JSON-RPC and not ACP.** It has no idea what `initialize`
-//! is; it allocates ids, matches answers to them, and hands whatever arrives to
-//! the typed layer with a label on it. That is the line that keeps the envelope
-//! and the protocol version from having to change together (§11 seam 1). The
-//! one ACP type it names is [`v1::Error`], which is the JSON-RPC error object
-//! with a Rust type over it — the envelope's own shape, not the protocol's.
+//! This module knows JSON-RPC and not ACP, so the envelope and the protocol
+//! version can change independently (`docs/architecture.md` §11 seam 1). The
+//! one ACP type it names is [`v1::Error`], the JSON-RPC error object.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -38,7 +28,7 @@ pub struct PendingCall {
     pub since: Instant,
     /// Where the trace put the request frame, once it was sent.
     pub captured: Option<u64>,
-    /// Whether a person sent it from the raw request composer (F2).
+    /// Whether a person sent it from the raw request composer.
     pub hand_sent: bool,
 }
 
@@ -62,10 +52,8 @@ pub(crate) struct Rpc {
 /// A call that has an id and a place to put the answer, and is not on the wire
 /// yet.
 ///
-/// Requests are prepared before they are sent because something above needs the
-/// id first — the turn records which answer it is waiting for before the
-/// question can possibly be answered (§11 seam 2). The prior art splits its
-/// `call` the same way, for its own reason (measuring the encoded size).
+/// Prepared before sending so callers can register the id before the answer
+/// could possibly arrive.
 pub(crate) struct Call {
     id: i64,
     frame: Frame,
@@ -74,19 +62,11 @@ pub(crate) struct Call {
 
 /// What arrived, named.
 ///
-/// Deliberately not "a JSON-RPC message or an error": a frame that is none of
-/// these is [`Unreadable`](Incoming::Unreadable) and goes on to be displayed,
-/// because on this seam an unreadable frame is a fact about the agent rather
-/// than a failure of the reader (§8).
+/// A frame that is not a JSON-RPC message is [`Unreadable`](Incoming::Unreadable)
+/// and is still displayed: it is a fact about the agent (§8).
 pub(crate) enum Incoming {
-    /// The agent asked for something. `id` is kept as it arrived — JSON-RPC ids
-    /// are strings or numbers, and an answer that changed one would be an
-    /// answer to a different question.
-    ///
-    /// The parameters come along undecoded, like a notification's: what they
-    /// are is the typed layer's question, asked of one method
-    /// (`session/request_permission`) and of nothing else, and the frame they
-    /// arrived in stays on the entry either way (§8).
+    /// The agent asked for something. `id` is kept as it arrived (string or
+    /// number) so the answer carries the same id. Params are undecoded.
     Request {
         id: Value,
         method: String,
@@ -178,7 +158,7 @@ impl Rpc {
         })
     }
 
-    /// Allocates an id for a request a person composed (F2), and registers it
+    /// Allocates an id for a request a person composed, and registers it
     /// like any other call: answered under that id, listed as pending, and
     /// cancellable. `params` is carried as written, only made one line.
     ///
@@ -235,7 +215,7 @@ impl Rpc {
         }
     }
 
-    /// Says something by hand that the agent will not answer (F2), and answers
+    /// Sends a hand-composed notification, and answers
     /// with where the trace put it.
     pub(crate) async fn notify_by_hand(
         &self,
@@ -257,7 +237,8 @@ impl Rpc {
             .is_some_and(|waiting| waiting.call.hand_sent)
     }
 
-    /// Sends a prepared call and waits for its answer.
+    /// Queues a prepared call without waiting: fails with `OutgoingBusy` when
+    /// the outgoing queue is full. Collect the answer with [`wait`](Self::wait).
     pub(crate) fn enqueue(&self, call: &Call) -> Result<(), CallError> {
         let captured = self
             .outgoing
@@ -320,13 +301,8 @@ impl Rpc {
         true
     }
 
-    /// Says something the agent will not answer, and answers with the frame it
-    /// said it in.
-    ///
-    /// The frame comes back because a notification is the only thing this
-    /// client sends that nothing will ever refer to by id: a caller that has to
-    /// name what it sent — a conformance rule armed by a `session/cancel` —
-    /// otherwise has no handle on it at all.
+    /// Sends a notification and returns the frame sent, since a notification
+    /// has no id for a conformance rule to refer back to.
     pub(crate) async fn notify(&self, method: &str, params: Value) -> Result<Frame, CallError> {
         let frame =
             Frame::new(json!({ "jsonrpc": "2.0", "method": method, "params": params }).to_string());
@@ -353,29 +329,19 @@ impl Rpc {
             .map_err(from_send)
     }
 
-    /// Hands an answer to whoever is waiting for it, and says whether this was
-    /// an answer to a question *this client asked*.
-    ///
-    /// The distinction is the whole point of the return value: an id nobody
-    /// registered is an agent answering something nobody asked, which is
-    /// evidence (§8) — while a caller that stopped awaiting is this program's
-    /// own business, and blaming the agent for it would be the inspector
-    /// inventing misbehaviour it then reports.
+    /// Hands an answer to whoever is waiting for it. Returns false when no call
+    /// is registered under `id` (an unsolicited answer, §8); a caller that
+    /// stopped awaiting still counts as ours.
     pub(crate) fn answer(&self, id: i64, outcome: Result<Value, v1::Error>) -> bool {
         let Some(waiting) = self.calls().pending.remove(&id) else {
             return false;
         };
-        // Dropped receiver: whoever asked has gone away, and the answer was
-        // still ours.
         let _ = waiting.answer.send(outcome.map_err(CallError::Rejected));
         true
     }
 
     /// Ends the conversation: every call still waiting is told there will be no
-    /// answer, and no new one is registered.
-    ///
-    /// Without this, disconnecting would leave a prompt awaiting an answer from
-    /// a process that no longer exists — the hang this whole design is against
+    /// answer, and no new one is registered, so nothing hangs on a dead agent
     /// (§6.1).
     pub(crate) fn close(&self) {
         self.outgoing.shutdown();
@@ -406,11 +372,7 @@ impl Call {
         self.id
     }
 
-    /// The frame it will be asked in.
-    ///
-    /// For the same caller [`notify`](Rpc::notify) hands its frame back to: a
-    /// conformance rule reads its claim beside the traffic that decides it, and
-    /// the request is half of that traffic (§15 q7).
+    /// The frame it will be asked in, kept as evidence for conformance rules.
     pub(crate) fn frame(&self) -> &Frame {
         &self.frame
     }
@@ -460,11 +422,8 @@ fn one_line(json: &str) -> String {
     out
 }
 
-/// Whether an id could be one this client issued.
-///
-/// Every id it issues is a number, counted up from one, so a string id was
-/// somebody else's question and its answer is not ours to match — the one place
-/// that rule is stated, and the one place the narrowing happens.
+/// Whether an id could be one this client issued. Every id it issues is an
+/// integer, so a string id is never ours.
 pub(crate) fn ours(id: &Value) -> Option<i64> {
     id.as_i64()
 }
@@ -512,11 +471,7 @@ fn token<T: serde::de::DeserializeOwned>(text: &str) -> Option<(T, &str)> {
     Some((value, &text[values.byte_offset()..]))
 }
 
-/// Reads a frame as a JSON-RPC message, without judging what is in it.
-///
-/// The four shapes are told apart by the two fields JSON-RPC uses for exactly
-/// that — `method` and `id` — and nothing else is inspected. What the message
-/// *means* is the typed layer's question, one version at a time (§11 seam 1).
+/// Reads a frame as a JSON-RPC message, told apart by `method` and `id` only.
 pub(crate) fn classify(frame: &Frame) -> Incoming {
     let message = match crate::decode::frame_value(frame.as_str()) {
         Ok(message) => message,
@@ -553,10 +508,8 @@ pub(crate) fn classify(frame: &Frame) -> Incoming {
 
 /// The result or the error of an answer.
 ///
-/// An error object v1 cannot read still ends the call — the alternative is a
-/// caller waiting forever on a malformed refusal — so it becomes an internal
-/// error carrying the object it could not read as data. The verbatim frame is
-/// in the trace either way.
+/// An unreadable error object still ends the call, as an internal error
+/// carrying the object as data, so a caller never waits on a malformed refusal.
 fn outcome(message: &Value) -> Result<Value, v1::Error> {
     match message.get("error") {
         Some(error) => Err(read_error(error)),
@@ -574,10 +527,8 @@ fn read_error(error: &Value) -> v1::Error {
 /// A frame that did not go out is a call that will not be answered.
 fn from_send(error: SendError) -> CallError {
     match error {
-        // Both mean the same thing to a caller: the agent did not hear it. The
-        // one frame this end can compose that a message-per-line transport
-        // would split is not one this module composes — `serde_json` escapes
-        // newlines inside strings — so this arm is a shape, not a path.
+        // Both mean the agent did not hear it. `NotOneMessage` cannot happen
+        // here: `serde_json` escapes newlines inside strings.
         SendError::NotOneMessage | SendError::Disconnected => CallError::Disconnected,
     }
 }

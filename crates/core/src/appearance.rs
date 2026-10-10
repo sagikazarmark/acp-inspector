@@ -4,13 +4,6 @@
 //! the document element, and the stylesheet answers `prefers-color-scheme`.
 //! Explicit choices are mapped to presentation theme names by the desktop crate;
 //! the stable token here is what the settings file and native control exchange.
-//!
-//! It is in core for the reason [`RecentCommands`](crate::RecentCommands) is
-//! (§5): what is stored, what an unknown value falls back to, and what a broken
-//! file means are decisions testable without a window
-//! (`crates/core/tests/appearance.rs`), and the desktop crate paints what this answers.
-//! Core's "no UI types" rule bars Dioxus elements and components, not a
-//! three-valued enum that serializes to a file.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,11 +41,8 @@ impl Appearance {
         }
     }
 
-    /// Parses a token back, falling back to `System` for anything unrecognized.
-    ///
-    /// A value written by a future version must never leave the window
-    /// unpainted: an appearance nobody can name is still an appearance the
-    /// operating system has an answer for.
+    /// Parses a token back, falling back to `System` for anything unrecognized
+    /// (e.g. a value from a future version).
     pub fn from_token(token: &str) -> Self {
         match token {
             "light" => Self::Light,

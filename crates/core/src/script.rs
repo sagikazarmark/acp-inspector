@@ -2,8 +2,8 @@
 //! file chosen at launch that answers the agent's `fs/*`, `terminal/*` and
 //! other unserviced requests with canned results or errors.
 //!
-//! **A mock, not mediation.** A rule hands back the JSON it was written with;
-//! nothing here reads a file, writes one, or runs a command (F16). The first
+//! A mock, not mediation: a rule hands back the JSON it was written with;
+//! nothing here reads a file, writes one, or runs a command. The first
 //! rule that matches answers, and what no rule matches falls back to the
 //! launch settings or to method-not-found, as the file says.
 
