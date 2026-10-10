@@ -1,5 +1,7 @@
 # daisyUI owns ordinary components and themes
 
+> **Amended by the release plan (`docs/release-plan.md`: D3, D15, D19).** The window is set in bundled IBM Plex rather than the system font stack (the OS still owns the frame and the scrollbars, now unskinned); the radii are 6px on a control and 10px on a box; and the repaints of daisyUI's components are written into daisyUI's own base layer so its variants still win.
+
 > **Amended by [ADR 0006](0006-the-window-is-drawn-as-an-application.md)** on layout and register:
 > the regions are inset cards on the chrome ground rather than full-bleed areas divided by
 > hairlines, and the uppercase label register is retired. The palette, the themes, the contrast

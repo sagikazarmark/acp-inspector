@@ -1,5 +1,7 @@
 # The window is the drawing
 
+> **Amended by the release plan (`docs/release-plan.md`: D1, D3, D4, D9, D12, D19).** The sub-AA exception list is gone — `--dim2` is #636c78 / #808a96 and light `--out`, `--ok` and `--acc` were darkened, so every ink clears 4.5:1 — no text is under 11px or control label under 12px; IBM Plex is bundled and inlined rather than asked for; the capitals are one register (a rail section's name), never a wire name; the light fill is the lime with dark ink; the corners are four, not nine; a row fades up only when marked `data-arrived` and the dots blink only while a turn streams; the daisyUI themes point at the palette by `var()` instead of carrying its values.
+
 ## Context
 
 A drawing arrived — one HTML page, one populated screen, both schemes — and it is not a restyle of

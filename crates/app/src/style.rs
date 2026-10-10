@@ -40,33 +40,186 @@
 //! this module can see it — so the vocabulary (`theme.css`) clears Tailwind's
 //! colour namespace before declaring this window's, which is what makes
 //! `bg-red-500` not exist rather than merely discouraged. daisyUI owns the
-//! components and both themes; these rules say what the drawing paints them in.
+//! components; both themes point at this palette rather than carrying a copy of
+//! it, and the rules that say what the window paints a component in are
+//! written into daisyUI's own base layer, so its variants still win.
 //!
 //! ## What the palette clears, and what it does not
 //!
 //! The floor is WCAG AA: 4.5:1 for text against every ground it rests on, 3:1
-//! for a boundary or a signal. **The palette is the drawing's, and three of its
-//! values are below the text floor** — `--dim2` in both schemes, and `--out` and
-//! `--ok` in light. That is a reversal, taken deliberately (ADR 0009): an earlier
-//! ring raised them and the design is what this window is now, so the values are
-//! the drawing's and the exceptions are *named, measured and held* by
-//! `the_palette_is_the_drawings_and_every_value_below_the_text_floor_is_named`
-//! below — which fails if any of the three drifts lower, and fails if a fourth
-//! joins them.
+//! for a boundary or a signal. **Every ink clears it, with no exceptions** —
+//! `every_ink_clears_the_text_floor_on_every_ground` below. The drawing put
+//! `--dim2` in both schemes and `--out` and `--ok` in light under the floor on
+//! purpose, and ADR 0009 held them there as named exceptions; the release plan
+//! (D1) raised all three, and the type floor with them: nothing under 11px, and
+//! nothing a reader presses under 12px or in the metadata grey.
 //!
-//! Everything in that set clears 3:1, which is the floor for a signal, and
-//! nothing in this window is known by colour alone: an unadvertised capability
-//! row states its answer in words, a frame's direction is an arrow and a word,
-//! and every dot repeats what its row says. `--line` and `--line2` are the two
-//! hairlines and are decoration in both schemes for the reason they always were:
-//! at 3:1 a line drawn on every row and every panel is a grid over a dense tool.
+//! Nothing in this window is known by colour alone either: an unadvertised
+//! capability row states its answer in words, a frame's direction is an arrow
+//! and a word, and every dot repeats what its row says. `--line` and `--line2`
+//! are the two hairlines and are decoration in both schemes for the reason they
+//! always were: at 3:1 a line drawn on every row and every panel is a grid over
+//! a dense tool.
 
-/// The generated stylesheet, as the root component inlines it into `<style>`.
+/// One bundled face as an `@font-face` rule whose source is the font itself.
+///
+/// **IBM Plex is shipped rather than asked for** (D3). It is the family the
+/// design was drawn in, and asking for it by name painted the window in
+/// whatever a machine happened to have — Helvetica on a Mac without it,
+/// DejaVu on Linux. The latin subset of five weights is about 125 KB of
+/// woff2 (OFL-1.1, `style/fonts/`), inlined as a `data:` URL so nothing is
+/// resolved at run time and a window with no route out looks the same as one
+/// with. `font-display: block`, because the face is in the document already
+/// and a swap would only ever be a flash.
+macro_rules! face {
+    ($family:literal, $style:literal, $weight:literal, $file:literal) => {{
+        const FONT: &[u8] = include_bytes!(concat!("../style/fonts/", $file));
+        const ENCODED: [u8; base64_len(FONT.len())] = base64(FONT);
+        const PARTS: &[&[u8]] = &[
+            concat!(
+                "\n@font-face{font-family:\"",
+                $family,
+                "\";font-style:",
+                $style,
+                ";font-weight:",
+                $weight,
+                ";font-display:block;src:url(data:font/woff2;base64,"
+            )
+            .as_bytes(),
+            &ENCODED,
+            b") format(\"woff2\");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}",
+        ];
+        const RULE: [u8; total(PARTS)] = join(PARTS);
+        &RULE
+    }};
+}
+
+/// The generated stylesheet and the faces it is set in, as the root component
+/// inlines them into `<style>`.
 ///
 /// `include_str!` of a committed build artifact: nothing resolves it and
 /// nothing generates it at build time, so a checkout with a Rust toolchain
-/// builds a window that is painted (ADR 0003).
-pub const SHEET: &str = include_str!("../style/sheet.css");
+/// builds a window that is painted (ADR 0003). The faces are appended here
+/// rather than generated into `sheet.css`, so the committed sheet stays a
+/// readable diff and `npm run css:check` never compares 170 KB of base64.
+pub static SHEET: &str = joined(&JOINED);
+
+/// The compiled sheet followed by one `@font-face` per bundled face.
+const PARTS: &[&[u8]] = &[
+    include_bytes!("../style/sheet.css"),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        400,
+        "ibm-plex-sans-latin-400-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "italic",
+        400,
+        "ibm-plex-sans-latin-400-italic.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        500,
+        "ibm-plex-sans-latin-500-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        600,
+        "ibm-plex-sans-latin-600-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Mono",
+        "normal",
+        400,
+        "ibm-plex-mono-latin-400-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Mono",
+        "normal",
+        600,
+        "ibm-plex-mono-latin-600-normal.woff2"
+    ),
+];
+
+/// A static rather than a constant: the joined sheet is a few hundred
+/// kilobytes, and a constant would be copied into every place that named it.
+static JOINED: [u8; total(PARTS)] = join(PARTS);
+
+/// How long `bytes` bytes are once base64-encoded, padding included.
+const fn base64_len(bytes: usize) -> usize {
+    bytes.div_ceil(3) * 4
+}
+
+/// Standard base64 with padding, at compile time.
+const fn base64<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = [b'='; N];
+    let mut read = 0;
+    let mut write = 0;
+    while read < bytes.len() {
+        let first = bytes[read];
+        let second = if read + 1 < bytes.len() {
+            bytes[read + 1]
+        } else {
+            0
+        };
+        let third = if read + 2 < bytes.len() {
+            bytes[read + 2]
+        } else {
+            0
+        };
+        out[write] = ALPHABET[(first >> 2) as usize];
+        out[write + 1] = ALPHABET[(((first & 0b11) << 4) | (second >> 4)) as usize];
+        if read + 1 < bytes.len() {
+            out[write + 2] = ALPHABET[(((second & 0b1111) << 2) | (third >> 6)) as usize];
+        }
+        if read + 2 < bytes.len() {
+            out[write + 3] = ALPHABET[(third & 0b11_1111) as usize];
+        }
+        read += 3;
+        write += 4;
+    }
+    out
+}
+
+/// The summed length of `parts`.
+const fn total(parts: &[&[u8]]) -> usize {
+    let mut sum = 0;
+    let mut at = 0;
+    while at < parts.len() {
+        sum += parts[at].len();
+        at += 1;
+    }
+    sum
+}
+
+/// `parts`, one after another.
+const fn join<const N: usize>(parts: &[&[u8]]) -> [u8; N] {
+    let mut out = [0; N];
+    let mut written = 0;
+    let mut at = 0;
+    while at < parts.len() {
+        let part = parts[at];
+        let (_, rest) = out.split_at_mut(written);
+        let (into, _) = rest.split_at_mut(part.len());
+        into.copy_from_slice(part);
+        written += part.len();
+        at += 1;
+    }
+    out
+}
+
+/// The joined bytes as the text they are: a stylesheet and some base64.
+const fn joined(bytes: &'static [u8]) -> &'static str {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => panic!("the stylesheet is UTF-8"),
+    }
+}
 
 /// The stylesheet as it is written, which is what the tests below read.
 ///
@@ -87,13 +240,24 @@ const SOURCE: &str = concat!(
 mod tests {
     use super::{SHEET, SOURCE};
 
-    /// The declarations of the one rule with this exact selector.
+    /// The declarations of the one rule with this exact selector, at whatever
+    /// depth of nesting it is written.
+    ///
+    /// The repaints of daisyUI's components sit inside two `@layer` blocks, so
+    /// a rule is found by its selector at the start of a line, indented or
+    /// not.
     fn rule(selector: &str) -> &'static str {
-        let opens = format!("\n{selector} {{");
+        let opens = format!("{selector} {{");
         SOURCE
-            .split_once(opens.as_str())
+            .match_indices(opens.as_str())
+            .find(|(at, _)| {
+                SOURCE[..*at]
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|indent| indent.chars().all(|c| c == ' '))
+            })
+            .map(|(at, _)| &SOURCE[at + opens.len()..])
             .unwrap_or_else(|| panic!("`{selector}` is a rule in the sheet"))
-            .1
             .split_once('}')
             .expect("the rule is closed")
             .0
@@ -121,8 +285,9 @@ mod tests {
     ///
     /// The nesting is what the rule is inside, outermost first, ending in its
     /// own selector: `["@media (prefers-color-scheme: dark)", ":root:not(…)"]`.
-    /// Three at-rules in this sheet wrap other rules — the two media queries and
-    /// the keyframes — and a caller that could not see *which* would either hold
+    /// Several at-rules in this sheet wrap other rules — the media queries, the
+    /// container query, the keyframes and the layers daisyUI's repaints are
+    /// written into — and a caller that could not see *which* would either hold
     /// a keyframe's stops to the rules a selector obeys or miss half the palette.
     ///
     /// A block that holds only other blocks declares nothing and is not
@@ -159,6 +324,54 @@ mod tests {
     /// The selector a rule is written under, which is the last of its nesting.
     fn selector(nesting: &[String]) -> &str {
         nesting.last().map(String::as_str).unwrap_or_default()
+    }
+
+    /// The compound selector each alternative of a selector list ends in —
+    /// the element the rule actually paints, as opposed to its ancestors.
+    ///
+    /// Split at the top level only, because `:is(.a, .b)` carries a comma and a
+    /// space of its own.
+    fn subjects(selector: &str) -> Vec<String> {
+        let mut alternatives = vec![String::new()];
+        let mut depth = 0usize;
+        for character in selector.chars() {
+            match character {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    alternatives.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            alternatives
+                .last_mut()
+                .expect("one alternative")
+                .push(character);
+        }
+        alternatives
+            .into_iter()
+            .map(|alternative| {
+                let mut compounds = vec![String::new()];
+                let mut depth = 0usize;
+                for character in alternative.trim().chars() {
+                    match character {
+                        '(' | '[' => depth += 1,
+                        ')' | ']' => depth = depth.saturating_sub(1),
+                        ' ' | '>' | '+' | '~' if depth == 0 => {
+                            compounds.push(String::new());
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    compounds.last_mut().expect("one compound").push(character);
+                }
+                compounds
+                    .into_iter()
+                    .rfind(|compound| !compound.is_empty())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// Every `(property, value)` a rule body declares.
@@ -277,6 +490,40 @@ mod tests {
         false
     }
 
+    /// The classes a reader presses: a rule whose subject carries one of these
+    /// (or is a `summary`) is painting a control's label.
+    const CONTROLS: [&str; 14] = [
+        "btn",
+        "chip",
+        "seg-item",
+        "tab",
+        "rail-tab",
+        "wire-tab",
+        "mode-row",
+        "mode-cycle",
+        "palette-open",
+        "to-latest",
+        "recent-label",
+        "slash-row",
+        "palette-row",
+        "frame-row",
+    ];
+
+    /// Whether a compound selector paints one of [`CONTROLS`] itself.
+    fn is_control(compound: &str) -> bool {
+        let element = compound.split(['.', '[', ':']).next().unwrap_or_default();
+        element == "summary"
+            || compound.split('.').skip(1).any(|piece| {
+                let class = piece
+                    .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+                CONTROLS.iter().any(|control| {
+                    class == *control || (*control == "btn" && class.starts_with("btn-"))
+                })
+            })
+    }
+
     #[test]
     fn the_compiled_sheet_is_tailwinds_output() {
         // `include_str!` takes an empty file without complaining and so does
@@ -287,6 +534,96 @@ mod tests {
         // compiled in and that it carries the token contract.
         assert!(SHEET.starts_with("/*! tailwindcss"), "{:.40}", SHEET);
         assert!(SHEET.contains("--color-acc:"), "the tokens are in it");
+    }
+
+    #[test]
+    fn the_window_is_set_in_the_faces_it_ships() {
+        // **IBM Plex is bundled and inlined** (D3): six faces, every one a
+        // `data:` URL, so nothing is resolved at run time and nothing is
+        // fetched — and the stack asks for exactly the families that are here.
+        use base64::Engine as _;
+
+        let faces = [
+            (
+                "IBM Plex Sans",
+                "normal",
+                "400",
+                "ibm-plex-sans-latin-400-normal.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "italic",
+                "400",
+                "ibm-plex-sans-latin-400-italic.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "normal",
+                "500",
+                "ibm-plex-sans-latin-500-normal.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "normal",
+                "600",
+                "ibm-plex-sans-latin-600-normal.woff2",
+            ),
+            (
+                "IBM Plex Mono",
+                "normal",
+                "400",
+                "ibm-plex-mono-latin-400-normal.woff2",
+            ),
+            (
+                "IBM Plex Mono",
+                "normal",
+                "600",
+                "ibm-plex-mono-latin-600-normal.woff2",
+            ),
+        ];
+        assert_eq!(SHEET.matches("@font-face{").count(), faces.len());
+        assert!(
+            !SHEET.contains("url(http") && !SHEET.contains("url(./") && !SHEET.contains("url(/"),
+            "no face is fetched"
+        );
+        for (family, style, weight, file) in faces {
+            let path = format!("{}/style/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+            let font = std::fs::read(&path).expect("the face is in the tree");
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&font);
+            let rule = format!(
+                "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};font-display:block;src:url(data:font/woff2;base64,{encoded}) format(\"woff2\")"
+            );
+            assert!(
+                SHEET.contains(&rule),
+                "{family} {style} {weight} is inlined byte for byte"
+            );
+        }
+        // The cost, held: the faces are a fraction of what a WebView already
+        // loads, and a seventh weight should be a decision rather than drift.
+        let inlined = SHEET.len() - include_str!("../style/sheet.css").len();
+        assert!(inlined < 400 * 1024, "the faces add {inlined} bytes");
+
+        for (stack, family) in [
+            ("--font-sans", "\"IBM Plex Sans\", system-ui"),
+            ("--font-mono", "\"IBM Plex Mono\", ui-monospace"),
+        ] {
+            assert!(
+                vocabulary()
+                    .iter()
+                    .any(|(name, value)| name == stack && value.starts_with(family)),
+                "{stack} asks for the bundled face first and the platform's after it"
+            );
+        }
+        // And no rule asks for a weight the faces do not carry, which the
+        // engine would synthesise.
+        for (name, value) in vocabulary() {
+            if name.starts_with("--font-weight-") {
+                assert!(
+                    ["400", "500", "600"].contains(&value.as_str()),
+                    "{name} is {value}, which no bundled face carries"
+                );
+            }
+        }
     }
 
     #[test]
@@ -357,26 +694,23 @@ mod tests {
     }
 
     #[test]
-    fn the_scrollbars_are_the_windows_own_and_drawn_in_its_boundary_token() {
-        // A WebView's default scrollbar is a browser's, in a palette that does
-        // not change when the window goes dark, and this tool has ten scrollers.
-        // Both spellings, because the two engines this shell runs on answer to
-        // different ones.
-        assert_eq!(declared("*", "scrollbar-width").as_deref(), Some("thin"));
-        assert_eq!(
-            declared("*", "scrollbar-color").as_deref(),
-            Some("var(--line2) transparent"),
-        );
-        assert_eq!(
-            declared("::-webkit-scrollbar-thumb", "background").as_deref(),
-            Some("var(--line2)"),
-        );
-        for trough in ["::-webkit-scrollbar-track", "::-webkit-scrollbar-corner"] {
-            assert_eq!(
-                declared(trough, "background").as_deref(),
-                Some("transparent"),
-                "{trough} is not painted"
+    fn the_platform_draws_the_scrollbars() {
+        // **D4.** A skinned `::-webkit-scrollbar` is a permanent classic
+        // scrollbar on macOS, where every native window has overlay ones that
+        // appear while scrolling; the theme's `color-scheme` is what makes the
+        // platform's scrollbar dark in a dark window, and that is all it needs.
+        for (nesting, body) in rules() {
+            let selector = selector(&nesting);
+            assert!(
+                !selector.contains("::-webkit-scrollbar"),
+                "`{selector}` skins the platform's scrollbar"
             );
+            for property in ["scrollbar-width", "scrollbar-color"] {
+                assert!(
+                    !declares(&body, property),
+                    "`{selector}` restyles the platform's scrollbar with `{property}`"
+                );
+            }
         }
     }
 
@@ -384,15 +718,16 @@ mod tests {
     fn what_the_reader_is_doing_is_drawn_in_the_accent() {
         // The one hue this window spends on *the reader* rather than on the
         // agent: the value they set, the row they asked for, the control the
-        // keyboard is on, and the text they have selected.
+        // keyboard is on, and the text they have selected — which is the lime
+        // fill with the ink the fill was given, in both schemes.
         assert_eq!(
             declared("::selection", "background").as_deref(),
-            Some("var(--acc)"),
+            Some("var(--acc-fill)"),
         );
         assert_eq!(
             declared("::selection", "color").as_deref(),
             Some("var(--acc-ink)"),
-            "and the ink on it is the one the accent was given"
+            "and the ink on it is the one the fill was given"
         );
         assert_eq!(
             declared(":is(.input, .textarea, textarea)", "caret-color").as_deref(),
@@ -403,6 +738,14 @@ mod tests {
             Some("var(--dim2)"),
         );
         assert_eq!(declared("::placeholder", "opacity").as_deref(), Some("1"));
+        // The one filled control, and the window's mark, are the same fill.
+        for filled in [".btn-filled", ".mark"] {
+            let body = rule(filled);
+            assert!(
+                body.contains("var(--acc-fill)") && body.contains("var(--acc-ink)"),
+                "{filled} is the lime with dark ink: {body}"
+            );
+        }
     }
 
     #[test]
@@ -444,9 +787,9 @@ mod tests {
 
     #[test]
     fn the_window_is_a_bar_over_a_rail_and_two_screens() {
-        // The drawing's arrangement, in the four rules that make it: a fixed bar,
-        // a fixed rail, and the two screens sharing what is left — the turn
-        // wider than the wire, because one is read and the other is scanned.
+        // The arrangement, in the four rules that make it: a fixed bar, a fixed
+        // rail, and the two screens sharing what is left — the turn wider than
+        // the wire, because one is read and the other is scanned.
         assert_eq!(
             declared("#main", "flex-direction").as_deref(),
             Some("column")
@@ -473,10 +816,10 @@ mod tests {
 
     #[test]
     fn a_window_too_narrow_for_three_columns_shows_one_region_at_a_time() {
-        // The drawing's answer below 1080: one region, and a bar at the foot to
-        // choose between them. The chooser does not exist at full width — a
-        // control for switching between three things that are all on screen is
-        // three ways to do nothing.
+        // The answer below 1080: one region, and a bar at the foot to choose
+        // between them. The chooser does not exist at full width — a control
+        // for switching between three things that are all on screen is three
+        // ways to do nothing.
         assert_eq!(declared(".mobile-bar", "display").as_deref(), Some("none"));
 
         let narrow = rules()
@@ -548,9 +891,9 @@ mod tests {
         }
 
         // The conversation is the same list read the same way round and is
-        // packed the other way: the drawing starts a turn at the top of the
-        // screen and lets it grow down to the composer, which is where a reader
-        // scrolling back to the beginning of it expects the beginning to be.
+        // packed the other way: a turn starts at the top of the screen and
+        // grows down to the composer, which is where a reader scrolling back
+        // to the beginning of it expects the beginning to be.
         assert_eq!(
             declared(".stream", "flex-direction").as_deref(),
             Some("column-reverse"),
@@ -652,11 +995,55 @@ mod tests {
             "the bytes are laid out and never rewrapped"
         );
         // And the row that chose it says so where the reader's eye already is:
-        // the near edge, in the accent, which is the same mark the palette and
-        // the command list use for the row the keyboard is on.
+        // a tint and a bar at the near edge, the mark every chosen row wears.
+        let chosen = rule(".frame-row[aria-current=\"true\"]");
         assert!(
-            rule(".frame-row[aria-current=\"true\"]").contains("border-left-color: var(--acc)"),
-            "the selected row is marked in the reader's own colour"
+            chosen.contains("border-left-color: var(--acc)")
+                && chosen.contains("background: var(--tint-selected)"),
+            "the selected row is tinted and barred in the reader's own colour: {chosen}"
+        );
+    }
+
+    #[test]
+    fn the_trace_is_striped_and_says_only_what_the_width_allows() {
+        // **D11.** Zebra rather than a hairline on every row; the connection
+        // ordinal only once there is a second connection to tell apart; and the
+        // preview dropped when the wire is too narrow to show enough of it to
+        // read, because the pane under the list shows all of it anyway.
+        assert!(
+            !declares(rule(".frame-line"), "border-bottom"),
+            "a trace row is not ruled off from the next"
+        );
+        assert_eq!(
+            declared(
+                ".wire-rows > li:nth-child(even) > .frame-line",
+                "background"
+            )
+            .as_deref(),
+            Some("var(--stripe)"),
+        );
+        assert_eq!(
+            declared(
+                ".wire-rows:not(:has([data-switched=\"true\"])) .frame-crossing",
+                "display"
+            )
+            .as_deref(),
+            Some("none"),
+            "`#1` says nothing until there is a `#2`"
+        );
+        assert_eq!(
+            declared(".wire", "container-type").as_deref(),
+            Some("inline-size")
+        );
+        assert!(
+            rules().iter().any(|(nesting, body)| {
+                nesting
+                    .first()
+                    .is_some_and(|at| at.starts_with("@container"))
+                    && selector(nesting) == ".frame-peek"
+                    && body.contains("display: none")
+            }),
+            "a narrow wire drops the preview"
         );
     }
 
@@ -740,9 +1127,9 @@ mod tests {
                 "{wrapping} wraps rather than widening the window: {body}"
             );
         }
-        // And the two that are quoted at length scroll inside their own box
-        // rather than making the turn longer than the reader can scroll.
-        let quoted = rule(".quoted, .tool-output");
+        // And what is quoted at length scrolls inside its own box rather than
+        // making the turn longer than the reader can scroll.
+        let quoted = rule(".quoted");
         assert!(
             quoted.contains("max-height: 240px") && quoted.contains("overflow: auto"),
             "quoted output is bounded and scrolls on its own axis: {quoted}"
@@ -774,16 +1161,50 @@ mod tests {
 
     #[test]
     fn every_row_a_pointer_can_be_over_says_so() {
-        // The four lists a reader points at, each answering the pointer the same
-        // way: the ground the drawing gives a row under the cursor, and never a
-        // colour that means something else.
-        for row in [".row", ".slash-row", ".frame-line", ".palette-row"] {
+        // The lists a reader points at, each answering the pointer with a
+        // ground and never with a colour that means something else. The trace
+        // is striped, so it hovers a step past its stripe.
+        for row in [".row", ".slash-row", ".palette-row"] {
             assert_eq!(
                 declared(&format!("{row}:hover"), "background").as_deref(),
                 Some("var(--panel2)"),
                 "{row} says the pointer is over it"
             );
         }
+        assert_eq!(
+            declared(".wire-rows > li > .frame-line:hover", "background").as_deref(),
+            Some("var(--line)"),
+            "a trace row says the pointer is over it, striped or not"
+        );
+    }
+
+    #[test]
+    fn the_hand_cursor_is_for_links_alone() {
+        // **D4.** A desktop application's buttons, rows and toggles keep the
+        // arrow; the hand says *this leaves for somewhere*, which only a link
+        // does. daisyUI gives its controls the hand, so the repaint takes it
+        // back.
+        for (nesting, body) in rules() {
+            let selector = selector(&nesting).to_owned();
+            if declared_value(&body, "cursor").as_deref() == Some("pointer") {
+                assert_eq!(selector, "a", "`{selector}` takes the hand cursor");
+            }
+        }
+        for control in [".btn", ".toggle", ".checkbox"] {
+            assert_eq!(
+                declared(control, "cursor").as_deref(),
+                Some("default"),
+                "{control} keeps the arrow"
+            );
+        }
+    }
+
+    /// The value one rule body gives a property.
+    fn declared_value(body: &str, property: &str) -> Option<String> {
+        declarations_of(body)
+            .into_iter()
+            .find(|(name, _)| name == property)
+            .map(|(_, value)| value)
     }
 
     #[test]
@@ -812,6 +1233,17 @@ mod tests {
                 "{control} takes the window's one focus ring"
             );
         }
+        // And a field's own edge goes to the same colour while the keyboard is
+        // in it, so there is one indicator and not a ring in one colour around
+        // an edge in another (D13).
+        assert_eq!(
+            declared(
+                ".input:focus, .input:focus-within, .textarea:focus, .select:focus, .select:focus-within",
+                "--input-color"
+            )
+            .as_deref(),
+            Some("var(--acc)"),
+        );
 
         // **Two fields are drawn as the surface they are in**, so a ring around
         // the control inside would be a second boundary inside the first — and
@@ -854,6 +1286,52 @@ mod tests {
     }
 
     #[test]
+    fn chosen_is_a_tint_and_a_mark_and_never_the_focus_ring() {
+        // **D5.** The lime ring is the keyboard's. A row, a value or a session
+        // that is *chosen* is the selected tint and a bar or a check, so a
+        // chosen row and a focused one never look alike — and no rule that
+        // draws a chosen state draws an outline.
+        for (chosen, mark) in [
+            (".chip[aria-pressed=\"true\"]", None),
+            (
+                ".mode-row[aria-pressed=\"true\"]",
+                Some("inset 2px 0 0 var(--acc)"),
+            ),
+            (".session-tile", Some("inset 2px 0 0 var(--acc)")),
+            (".session-row.live", Some("inset 2px 0 0 var(--acc)")),
+            (".palette-row[aria-selected=\"true\"]", None),
+            (".slash-row[aria-selected=\"true\"]", None),
+            (".frame-row[aria-current=\"true\"]", None),
+        ] {
+            let body = rule(chosen);
+            assert!(
+                body.contains("background: var(--tint-selected)"),
+                "{chosen} is tinted: {body}"
+            );
+            assert!(
+                !body.contains("outline"),
+                "{chosen} draws the focus ring's shape: {body}"
+            );
+            if let Some(mark) = mark {
+                assert!(body.contains(mark), "{chosen} carries a bar: {body}");
+            }
+        }
+        assert!(
+            rule(".chip[aria-pressed=\"true\"]::before").contains("rotate(45deg)"),
+            "a chosen chip carries a check"
+        );
+        // And a filter that is off says so: a dashed edge and no check.
+        assert_eq!(
+            declared(
+                ".wire-filters .chip[aria-pressed=\"false\"]",
+                "border-style"
+            )
+            .as_deref(),
+            Some("dashed"),
+        );
+    }
+
+    #[test]
     fn a_reader_who_asked_for_less_motion_gets_none() {
         let reduced = rules()
             .into_iter()
@@ -879,11 +1357,11 @@ mod tests {
     }
 
     #[test]
-    fn the_two_things_that_move_on_their_own_are_the_drawings_own() {
+    fn the_two_things_that_move_on_their_own_move_only_when_they_mean_it() {
         // **ADR 0009 reverses ADR 0004's rule against keyframes**, and reverses
-        // it by exactly two: a row fades up as it arrives, and the dot beside a
-        // stream that is open blinks while it is open. Both are the drawing's;
-        // a third would be this window animating something the design does not.
+        // it by exactly two: a row fades up as it arrives, and the dots that
+        // say the connection is live blink while a turn streams. A third would
+        // be this window animating something with nothing to say.
         let keyframes = declarations()
             .match_indices("@keyframes")
             .map(|(at, _)| {
@@ -900,14 +1378,38 @@ mod tests {
             "two animations, and they are the drawing's two"
         );
 
+        // **And each only when it means it** (D4, D12). A row fades up only when
+        // the window marked it as just arrived, so a region shown again does not
+        // replay every row it holds; a dot blinks only while the turn's badge
+        // says a turn is running.
+        for (nesting, body) in rules() {
+            let selector = selector(&nesting).to_owned();
+            if nesting.iter().any(|at| at.starts_with("@keyframes")) {
+                continue;
+            }
+            let Some(animation) = declared_value(&body, "animation") else {
+                continue;
+            };
+            if animation.starts_with("fadeup") {
+                assert_eq!(
+                    selector, ".row[data-arrived]",
+                    "`{selector}` replays an arrival"
+                );
+            } else if animation.starts_with("blink") {
+                assert!(
+                    selector.starts_with("body:has([data-slot=\"turn-state\"].live)"),
+                    "`{selector}` blinks while nothing is streaming"
+                );
+            } else {
+                panic!("`{selector}` animates something of its own: {animation}");
+            }
+        }
+
         // And everything that *transitions* is a control acknowledging the
         // pointer or the keyboard, which is what a transition is for.
         for (nesting, body) in rules() {
             let selector = selector(&nesting).to_owned();
-            let Some((_, transition)) = declarations_of(&body)
-                .into_iter()
-                .find(|(property, _)| property == "transition")
-            else {
+            let Some(transition) = declared_value(&body, "transition") else {
                 continue;
             };
             assert!(
@@ -923,34 +1425,62 @@ mod tests {
     }
 
     #[test]
-    fn the_capitals_are_two_registers_and_both_are_the_drawings() {
-        // A section's name, in the tracked label; and the tiny mark that names a
-        // shape — a frame's envelope, a remembered invocation's transport — in
-        // the tracked mark. Every rule that sets capitals sets one of the two,
-        // so the register cannot be half-adopted somewhere else at some other
-        // size.
+    fn the_capitals_are_one_register_and_no_wire_name_wears_them() {
+        // **D9.** A section's name down the rail is the one register set in
+        // capitals, at one size and one tracking. Nothing the wire carries is:
+        // `agent_message_chunk` in capitals is a word the protocol does not
+        // have, so the wire-name register undoes the transform for every
+        // `.eyebrow` that sits where a wire name does.
         for (nesting, body) in rules() {
             if !body.contains("text-transform: uppercase") {
                 continue;
             }
-            let label = body.contains("font-size: var(--text-label)")
-                && body.contains("letter-spacing: var(--tracking-label)");
-            let mark = body.contains("font-size: var(--text-mark)")
-                && body.contains("letter-spacing: var(--tracking-mark)");
+            assert_eq!(
+                selector(&nesting),
+                ".eyebrow",
+                "capitals outside the one register they belong to: {body}"
+            );
             assert!(
-                label || mark,
-                "`{}` sets capitals outside the two registers they belong to: {body}",
-                selector(&nesting)
+                body.contains("font-size: var(--text-meta)")
+                    && body.contains("letter-spacing: var(--tracking-label)"),
+                "the section name is one size and one tracking: {body}"
             );
         }
+        let wire = ":is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow)";
+        assert_eq!(declared(wire, "text-transform").as_deref(), Some("none"));
+        assert_eq!(
+            declared(wire, "font-family").as_deref(),
+            Some("var(--font-mono)"),
+            "a wire name is spelled in the face the wire is read in"
+        );
+        let heading =
+            ":is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow)";
+        assert_eq!(declared(heading, "text-transform").as_deref(), Some("none"));
+        assert_eq!(
+            declared(heading, "font-size").as_deref(),
+            Some("var(--text-row)")
+        );
     }
 
     #[test]
-    fn every_size_in_the_window_is_a_step_of_the_scale() {
-        // Seven sizes, and a rule that wanted an eighth would be inventing one
-        // for one place. Dimensions stay written out — a 52px bar, a 20px
-        // gutter, a 244px rail — because those are the size of a *thing* rather
-        // than a step of a scale, and review should see and decide them.
+    fn every_size_in_the_window_is_a_step_of_the_scale_and_none_is_below_the_floor() {
+        // **D1.** Five sizes, and none under 11px: the 9 and 10px steps the
+        // drawing set its smallest marks in are gone. Dimensions stay written
+        // out — a 52px bar, a 20px gutter, a 244px rail — because those are the
+        // size of a *thing* rather than a step of a scale.
+        let steps = vocabulary()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("--text-") && !name.contains("--line-height"))
+            .collect::<Vec<_>>();
+        assert_eq!(steps.len(), 5, "five steps: {steps:?}");
+        for (name, value) in &steps {
+            let rem = value
+                .strip_suffix("rem")
+                .and_then(|rem| rem.parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("{name} is in rem: {value}"));
+            assert!(rem * 16.0 >= 11.0, "{name} is {}px", rem * 16.0);
+        }
+
         for (nesting, body) in rules() {
             for (property, value) in declarations_of(&body) {
                 if property != "font-size" {
@@ -963,9 +1493,8 @@ mod tests {
                 );
             }
         }
-        // And the roles are the ones the drawing reads at: the window's body,
-        // what the two parties said to each other, and the one field that is a
-        // question.
+        // And the roles are the ones the window reads at: the body, what the
+        // two parties said to each other, and the one field that is a question.
         assert_eq!(
             declared("body", "font-size").as_deref(),
             Some("var(--text-body)")
@@ -981,36 +1510,125 @@ mod tests {
     }
 
     #[test]
-    fn every_corner_is_a_step_of_the_drawings_ladder() {
-        // **The drawing's radii are a ladder, not a scale**: the corner grows
-        // with the thing it is on, a pixel at a time, and rounding it to five
-        // steps left every control between 24 and 32 pixels a pixel or two off.
-        // Each step is a token, so a rule cannot invent a tenth.
-        let ladder = [
-            ("--radius-chip", "0.3125rem"),
-            ("--radius-control", "0.375rem"),
-            ("--radius-button", "0.4375rem"),
-            ("--radius-tile", "0.5rem"),
-            ("--radius-card", "0.5625rem"),
-            ("--radius-evidence", "0.625rem"),
-            ("--radius-panel", "0.6875rem"),
-            ("--radius-prompt", "0.8125rem"),
-            ("--radius-dialog", "0.875rem"),
-        ];
-        for (step, drawn) in ladder {
-            assert!(
-                vocabulary()
-                    .iter()
-                    .any(|(name, value)| name == step && value == drawn),
-                "{step} is the drawing's {drawn}"
+    fn a_controls_label_is_twelve_pixels_and_never_the_metadata_grey() {
+        // **D1.** The floor for a word a reader presses is 12px, and `--dim2`
+        // — the metadata grey — is never a control's ink: a control drawn in
+        // the quietest grey on the window is one a reader has to hunt for.
+        for (nesting, body) in rules() {
+            let selector = selector(&nesting).to_owned();
+            if nesting.iter().any(|at| at.starts_with("@keyframes")) {
+                continue;
+            }
+            if !subjects(&selector)
+                .iter()
+                .any(|subject| is_control(subject))
+            {
+                continue;
+            }
+            if let Some(size) = declared_value(&body, "font-size") {
+                assert_ne!(
+                    size, "var(--text-meta)",
+                    "`{selector}` sets a control's label below 12px"
+                );
+            }
+            assert_ne!(
+                declared_value(&body, "color").as_deref(),
+                Some("var(--dim2)"),
+                "`{selector}` draws a control's label in the metadata grey"
             );
         }
+    }
+
+    #[test]
+    fn there_is_one_button_one_tab_one_chip_and_one_tag() {
+        // **D2, D13.** One button language — sans, 12px, weight 500 — for the
+        // quiet control and the filled one, and for the form library's own
+        // presence buttons until it can be told (FM6). Monospace is for data.
+        for button in [
+            ":is(.btn-quiet, [data-schemaform-presence] .btn)",
+            ".btn-filled",
+        ] {
+            assert_eq!(
+                declared(button, "font-family").as_deref(),
+                Some("var(--font-sans)")
+            );
+            assert_eq!(
+                declared(button, "font-size").as_deref(),
+                Some("var(--text-row)")
+            );
+            assert_eq!(
+                declared(button, "font-weight").as_deref(),
+                Some("var(--font-weight-label)")
+            );
+            assert!(!declares(rule(button), "text-transform"));
+        }
+        // One tab, for both regions that have panels.
+        let tab = ":is(.tab, .rail-tab, .wire-tab)";
+        assert_eq!(
+            declared(tab, "font-size").as_deref(),
+            Some("var(--text-row)")
+        );
+        assert_eq!(
+            declared(&format!("{tab}[aria-selected=\"true\"]"), "box-shadow").as_deref(),
+            Some("inset 0 -2px 0 var(--acc)"),
+        );
+        for (nesting, _) in rules() {
+            let selector = selector(&nesting);
+            // A rule of one region's own may lay its tab out, but the states —
+            // hovered, open — are the one tab's.
+            assert!(
+                ![".rail-tab[", ".rail-tab:", ".wire-tab[", ".wire-tab:"]
+                    .iter()
+                    .any(|state| selector.starts_with(state)),
+                "`{selector}` draws one region's tabs differently from the other's"
+            );
+        }
+        // And one tag, whose tone is a variable rather than a rule per tone.
+        let tag = ":is(.tag, .version, .evidence-kind, .recent-kind, .frame-kind)";
+        assert_eq!(declared(tag, "--tone").as_deref(), Some("var(--dim)"));
+        assert_eq!(declared(tag, "color").as_deref(), Some("var(--tone)"));
+    }
+
+    #[test]
+    fn every_corner_is_one_of_four() {
+        // **D19.** Four corners, each named for what it is on: a mark, a
+        // control, a card, a dialog. The drawing's nine-step ladder rounded
+        // every neighbour a pixel differently, which read as noise.
+        let corners = [
+            ("--radius-mark", "0.25rem"),
+            ("--radius-control", "0.375rem"),
+            ("--radius-card", "0.625rem"),
+            ("--radius-dialog", "0.875rem"),
+            ("--radius-pill", "9999px"),
+        ];
+        let declared_corners = vocabulary()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("--radius-"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declared_corners,
+            corners
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect::<Vec<_>>(),
+            "four corners and the pill"
+        );
         // **None of them is one of daisyUI's three**, which are set per theme
-        // and would be the same declaration meaning two things.
-        for daisy in ["--radius-field", "--radius-selector", "--radius-box"] {
+        // and would be the same declaration meaning two things — and those
+        // three are the same corners, so a component and a rule agree.
+        for (daisy, ours) in [
+            ("--radius-selector", "0.25rem"),
+            ("--radius-field", "0.375rem"),
+            ("--radius-box", "0.625rem"),
+        ] {
             assert!(
                 !vocabulary().iter().any(|(name, _)| name == daisy),
                 "{daisy} is daisyUI's name for a corner and not this window's"
+            );
+            assert_eq!(
+                SOURCE.matches(&format!("{daisy}: {ours};")).count(),
+                2,
+                "both themes give {daisy} one of the four corners"
             );
         }
 
@@ -1024,7 +1642,7 @@ mod tests {
                 }
                 assert!(
                     value.starts_with("var(--radius-") || value == "0" || value == "50%",
-                    "`{}` rounds `{property}` off the ladder: {value}",
+                    "`{}` rounds `{property}` off the four: {value}",
                     selector(&nesting)
                 );
             }
@@ -1032,31 +1650,80 @@ mod tests {
     }
 
     #[test]
-    fn the_controls_are_the_heights_the_drawing_draws_them_at() {
+    fn every_space_is_on_the_four_pixel_grid() {
+        // **D19.** Every padding, margin and gap is a multiple of 4px, with a
+        // 2px half-step below 8 for the insets inside a segment or a tag, and
+        // 1px only where a hairline is being made up for.
+        let spacing = |property: &str| {
+            property.starts_with("padding")
+                || property.starts_with("margin")
+                || property == "gap"
+                || property == "row-gap"
+                || property == "column-gap"
+        };
+        for (nesting, body) in rules() {
+            if nesting.iter().any(|at| at.starts_with("@keyframes")) {
+                continue;
+            }
+            for (property, value) in declarations_of(&body) {
+                if !spacing(&property) {
+                    continue;
+                }
+                for length in value.split_whitespace() {
+                    let Some(pixels) = length.strip_suffix("px") else {
+                        continue;
+                    };
+                    let pixels = pixels
+                        .trim_start_matches('-')
+                        .parse::<u32>()
+                        .unwrap_or_else(|_| panic!("`{length}` is whole pixels"));
+                    assert!(
+                        pixels % 4 == 0 || (pixels < 8 && pixels % 2 == 0) || pixels == 1,
+                        "`{}` puts `{property}` off the grid: {value}",
+                        selector(&nesting)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_controls_are_the_heights_of_the_grid() {
         // Written out rather than tokenised, because the height of a thing is
         // the size of that thing rather than a step of a scale — and read back
         // here so that a control cannot quietly come out a size smaller, which
         // is what happened when three of these were left to a component
-        // library's `xs`.
+        // library's `xs`. Every one is on the 4px grid.
         for (selector, height) in [
             (".bar", "52px"),
             (".pane-head", "40px"),
-            (".frame-pane-head", "34px"),
+            (".frame-pane-head", "36px"),
             (".palette-query", "48px"),
-            (".rail-tab", "30px"),
-            (".seg-item", "26px"),
-            (".mode-row", "30px"),
-            (".mode-cycle", "26px"),
-            (".palette-open", "30px"),
-            (".chip", "20px"),
-            (".dot", "7px"),
+            (":is(.tab, .rail-tab, .wire-tab)", "32px"),
+            (".seg-item", "24px"),
+            (".mode-row", "32px"),
+            (".mode-cycle", "28px"),
+            (".palette-open", "32px"),
+            (".chip", "24px"),
+            (".dot", "8px"),
             (".tile-actions .btn, .rail-head .btn", "24px"),
-            (".pane-head .btn", "26px"),
+            (".pane-head .btn", "28px"),
         ] {
             assert_eq!(
                 declared(selector, "height").as_deref(),
                 Some(height),
-                "{selector} is {height} in the drawing"
+                "{selector} is {height}"
+            );
+        }
+        // And daisyUI's three sizes are the same three heights.
+        for (size, height) in [("xs", "1.5rem"), ("sm", "1.75rem"), ("md", "2rem")] {
+            assert_eq!(
+                declared(
+                    &format!(".btn-{size}, .input-{size}, .select-{size}"),
+                    "--size"
+                )
+                .as_deref(),
+                Some(height)
             );
         }
     }
@@ -1066,8 +1733,8 @@ mod tests {
         // Three shadows in the vocabulary and nothing else casts one: the shade
         // under a segment that is on, the lift under something drawn over
         // content, and the box a dialog is. A ring around a request the turn
-        // stopped on is a `box-shadow` too and is not a lift — it is the
-        // drawing's own way of ringing the one thing waiting on the reader.
+        // stopped on is a `box-shadow` too and is not a lift, and neither is an
+        // inset bar.
         for (nesting, body) in rules() {
             let selector = selector(&nesting).to_owned();
             for (property, value) in declarations_of(&body) {
@@ -1092,10 +1759,10 @@ mod tests {
 
     #[test]
     fn a_request_the_turn_stopped_on_is_ringed_in_the_tone_of_what_it_is() {
-        // The drawing rings the one thing the turn is waiting on, in the tone of
-        // what is being asked: a permission in the direction colour the agent's
-        // own traffic takes, an elicitation in the one hue that means *this
-        // window has no name for it*. Answered, the ring goes and the box stays.
+        // The one thing the turn is waiting on is ringed, in the tone of what
+        // is being asked: a permission in the direction colour the agent's own
+        // traffic takes, an elicitation in the one hue that means *this window
+        // has no name for it*. Answered, the ring goes and the box stays.
         assert!(
             rule(".blocking").contains("var(--in)") && rule(".blocking").contains("box-shadow"),
             "a request that is waiting is ringed"
@@ -1112,11 +1779,39 @@ mod tests {
     }
 
     #[test]
+    fn the_evidence_cards_say_what_they_are_quietly() {
+        // **D14.** Each side of a diff on a wash of its own tone; an
+        // unrecognized row toned in its label and not in its sentence; the end
+        // of a turn a rule rather than a box.
+        for (side, tone) in [("removed", "--err"), ("added", "--ok")] {
+            let body = rule(&format!(".diff-version.{side} .quoted"));
+            assert!(
+                body.contains(&format!("color-mix(in oklab, var({tone})"))
+                    && body.contains(&format!("inset 2px 0 0 var({tone})")),
+                "the {side} side is a wash and an edge in {tone}: {body}"
+            );
+        }
+        assert_eq!(
+            declared("p.unnamed", "color").as_deref(),
+            Some("var(--txt)")
+        );
+        assert_eq!(
+            declared(".row.unnamed .row-head > .eyebrow", "color").as_deref(),
+            Some("var(--vio)")
+        );
+        let ended = rule(".ended");
+        assert!(
+            !ended.contains("border:") && !ended.contains("background"),
+            "the end of a turn is not a box: {ended}"
+        );
+    }
+
+    #[test]
     fn the_composer_is_one_bounded_field_with_its_footer_inside_it() {
-        // The drawing's composer is one box: the field, and under it the row of
-        // what pressing return does. The `textarea` inside it has no boundary of
-        // its own — two nested boxes is what it looked like before — and the box
-        // takes the accent when the keyboard is in it.
+        // One box: the field, and under it the row of what pressing return
+        // does. The `textarea` inside it has no boundary of its own — two
+        // nested boxes is what it looked like before — and the box takes the
+        // accent when the keyboard is in it.
         assert!(
             rule(".prompt-box").contains("border: 1px solid var(--line2)"),
             "the composer is one bounded field"
@@ -1136,6 +1831,11 @@ mod tests {
         assert!(
             field.contains("resize: none") && field.contains("field-sizing: content"),
             "it grows with what is typed rather than being dragged: {field}"
+        );
+        assert_eq!(
+            declared(".prompt-box textarea", "min-height").as_deref(),
+            Some("44px"),
+            "and empty, it is two lines rather than three (D14)"
         );
         assert!(
             rule(".prompt-foot").contains("border-top: 1px solid var(--line)"),
@@ -1175,6 +1875,84 @@ mod tests {
                 "`{selector}` draws one advertiser's claims differently from the other's"
             );
         }
+    }
+
+    #[test]
+    fn every_class_the_sheet_styles_is_one_the_markup_uses() {
+        // **D15.** A rule for a class nothing renders is a rule a reader of
+        // this sheet has to work out is dead, and fifteen of them had piled up.
+        // Every class a selector names appears somewhere in the crate's source
+        // — as a literal class, or as the prefix a component composes one from.
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut source = String::new();
+        let mut pending = vec![std::path::PathBuf::from(root)];
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                for entry in std::fs::read_dir(&path).expect("the source is readable") {
+                    pending.push(entry.expect("an entry").path());
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == "rs" || ext == "js")
+                && !path.ends_with("style.rs")
+            {
+                source.push_str(&std::fs::read_to_string(&path).expect("UTF-8 source"));
+            }
+        }
+        let used = |class: &str| {
+            source.match_indices(class).any(|(at, _)| {
+                let before = source[..at].chars().next_back();
+                let after = source[at + class.len()..].chars().next();
+                !matches!(before, Some(c) if c.is_alphanumeric() || c == '-' || c == '_')
+                    && !matches!(after, Some(c) if c.is_alphanumeric() || c == '-' || c == '_')
+            })
+        };
+        // The vocabulary the markup is offered rather than already using (the
+        // names the components move onto), and the classes composed at run
+        // time from a prefix and a tone.
+        let offered = [
+            "tab",
+            "tag",
+            "tag-ok",
+            "tag-err",
+            "tag-vio",
+            "tag-in",
+            "tag-out",
+            "heading",
+            "wire-name",
+        ];
+        let composed = ["dot-"];
+
+        let mut dead = Vec::new();
+        for (nesting, _) in rules() {
+            let selector = selector(&nesting);
+            if selector.starts_with('@') || nesting.iter().any(|at| at.contains("@plugin")) {
+                continue;
+            }
+            let mut rest = selector;
+            while let Some(at) = rest.find('.') {
+                rest = &rest[at + 1..];
+                let class = rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+                if class.is_empty()
+                    || class.chars().next().is_some_and(|c| c.is_ascii_digit())
+                    || offered.contains(&class)
+                    || composed.iter().any(|prefix| class.starts_with(prefix))
+                    || used(class)
+                {
+                    continue;
+                }
+                dead.push(format!("{class} (in `{selector}`)"));
+            }
+        }
+        dead.sort();
+        dead.dedup();
+        assert!(
+            dead.is_empty(),
+            "rules for classes nothing renders: {dead:#?}"
+        );
     }
 
     #[test]
@@ -1255,11 +2033,40 @@ mod tests {
     }
 
     #[test]
-    fn the_themes_carry_the_drawings_control_unit() {
-        // daisyUI sizes a control off one unit, and the drawing's is 3.25px:
-        // 19.5px at `xs`, 26px at `sm`, 32.5px at `md` — the three heights it
-        // draws. Flat, because the drawing's buttons are a boundary and a
-        // ground, and the one thing that carries a shadow says so itself.
+    fn the_palette_is_declared_once_and_the_themes_point_at_it() {
+        // **D15.** The two daisyUI themes carry no colour of their own: every
+        // role is a `var()` to a token `theme.css` declares, so a button, a
+        // badge and a field cannot come out in a value the palette does not
+        // have, and changing a colour is one edit rather than three.
+        for name in ["inspector-light", "inspector-dark"] {
+            let opens = format!("name: \"{name}\";");
+            let theme = declarations()
+                .split_once(opens.as_str())
+                .expect("both themes are declared")
+                .1
+                .split_once("\n}")
+                .expect("the theme block is closed")
+                .0
+                .to_owned();
+            let roles = declarations_of(&theme)
+                .into_iter()
+                .filter(|(property, _)| property.starts_with("--color-"))
+                .collect::<Vec<_>>();
+            assert_eq!(roles.len(), 20, "{name} gives every daisyUI role a value");
+            for (role, value) in roles {
+                assert!(
+                    value.starts_with("var(--") && !value.contains('#'),
+                    "{name} {role} is a value of its own rather than the palette's: {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_themes_carry_the_windows_control_unit() {
+        // daisyUI sizes a control off one unit, and this window's is on the
+        // 4px grid; flat, because a button is a boundary and a ground, and the
+        // one thing that carries a shadow says so itself.
         for name in ["inspector-light", "inspector-dark"] {
             let opens = format!("name: \"{name}\";");
             let theme = SOURCE
@@ -1270,11 +2077,11 @@ mod tests {
                 .expect("the theme block is closed")
                 .0;
             for declaration in [
-                "--size-field: 0.203125rem",
+                "--size-field: 0.25rem",
                 "--size-selector: 0.203125rem",
-                "--radius-selector: 0.3125rem",
+                "--radius-selector: 0.25rem",
                 "--radius-field: 0.375rem",
-                "--radius-box: 0.6875rem",
+                "--radius-box: 0.625rem",
                 "--border: 1px",
                 "--depth: 0",
                 "--noise: 0",
@@ -1288,12 +2095,71 @@ mod tests {
     }
 
     #[test]
-    fn daisyui_components_are_repainted_rather_than_reimplemented() {
+    fn daisyui_components_are_repainted_in_daisyuis_own_base_layer() {
+        // **B2, D15.** daisyUI draws its bases in `daisyui.l1.l2.l3` and its
+        // variants in `daisyui.l1.l2`. A repaint written outside any layer
+        // outranked every variant: `.badge` drew a running turn, a refused one
+        // and a waiting one in the same grey. So every repaint of a daisyUI
+        // class is written into the base layer, where `badge-soft
+        // badge-success` still wins over it — and the compiled sheet is held to
+        // still carry the layer names this depends on.
+        for layer in ["@layer daisyui.l1.l2.l3", "@layer daisyui.l1.l2 "] {
+            assert!(
+                SHEET.contains(layer),
+                "daisyUI no longer draws into `{layer}`, and the repaints are in the wrong layer"
+            );
+        }
+        let in_base = |nesting: &[String]| {
+            nesting.len() == 3
+                && nesting[0] == "@layer utilities"
+                && nesting[1] == "@layer daisyui.l1.l2.l3"
+        };
+        for component in [
+            ".btn",
+            ".input, .textarea, .select",
+            ".badge",
+            ".toggle",
+            ".checkbox",
+        ] {
+            let found = rules()
+                .into_iter()
+                .find(|(nesting, _)| selector(nesting) == component)
+                .unwrap_or_else(|| panic!("`{component}` is repainted"));
+            assert!(
+                in_base(&found.0),
+                "`{component}` is repainted outside daisyUI's base layer: {:?}",
+                found.0
+            );
+        }
+        // Nothing outside a layer names a daisyUI class on its own, which is
+        // the shape the badge bug had.
+        for (nesting, _) in rules() {
+            if nesting.iter().any(|at| at.starts_with("@layer")) {
+                continue;
+            }
+            let selector = selector(&nesting);
+            for component in [
+                ".badge",
+                ".input",
+                ".select",
+                ".textarea",
+                ".checkbox",
+                ".toggle",
+            ] {
+                assert!(
+                    selector.contains(' ') && !selector.contains(", ")
+                        || !subjects(selector)
+                            .iter()
+                            .any(|subject| subject == component),
+                    "`{selector}` repaints {component} outside daisyUI's layers"
+                );
+            }
+        }
+
         // daisyUI keeps the geometry, the states and the accessibility; these
-        // rules say what the drawing paints them in, and they say it in
-        // daisyUI's own variables wherever there is one. A rule that gave a
-        // component its own height or its own layout would be a component this
-        // window had rewritten and would have to go on rewriting.
+        // rules say what the design paints them in, in daisyUI's own variables
+        // wherever there is one. A rule that gave a component its own layout
+        // would be a component this window had rewritten.
         let paint = [
             "background",
             "background-color",
@@ -1325,11 +2191,19 @@ mod tests {
                 );
             }
         }
+        // And the badge says nothing about colour at all: its tone is the
+        // variant's to draw.
+        for property in ["color", "background", "background-color", "border-color"] {
+            assert!(
+                !declares(rule(".badge"), property),
+                "the badge repaint decides its `{property}`, which is the tone's"
+            );
+        }
         // **`.alert` is the one component drawn as a box of this window's own**,
-        // and it is named here rather than left to be noticed: the drawing's
-        // notice is a hairline in the tone of what it is about, where daisyUI's
-        // is a filled grid, and every notice in this window is a sentence about
-        // the agent rather than a banner about the tool.
+        // and it is named here rather than left to be noticed: the notice is a
+        // hairline in the tone of what it is about, where daisyUI's is a filled
+        // grid, and every notice in this window is a sentence about the agent
+        // rather than a banner about the tool.
         let alert = rule(".alert");
         assert!(
             alert.contains("border: 1px solid var(--line)")
@@ -1358,65 +2232,58 @@ mod tests {
     }
 
     #[test]
-    fn the_palette_is_the_drawings_and_every_value_below_the_text_floor_is_named() {
+    fn every_ink_clears_the_text_floor_on_every_ground() {
         // WCAG AA, measured rather than eyeballed: 4.5:1 for text on every
-        // ground it rests on, 3:1 for a signal. The palette is the drawing's, so
-        // three of its values do not clear the text floor — and the point of
-        // this test is that they are *named*, that they are held where they are,
-        // and that a fourth cannot join them quietly (ADR 0009).
+        // ground it rests on. **There are no exceptions any more** (D1): the
+        // drawing's metadata grey and two of its light hues sat below the floor
+        // on purpose, and the floor won.
         const GROUNDS: [&str; 4] = ["--bg", "--panel", "--panel2", "--sunk"];
         const INK: [&str; 13] = [
             "--txt", "--dim", "--dim2", "--acc", "--out", "--in", "--ok", "--err", "--vio",
             "--key", "--str", "--num", "--lit",
         ];
 
-        for (name, palette, below) in [
-            (
-                "light",
-                scheme("\n:root {"),
-                // The drawing's own, and the worst ratio each of them reaches on
-                // any of the four grounds. Every one of them says what it means
-                // a second way — a word on the row, an arrow, a position — and
-                // every one clears the 3:1 a signal owes.
-                vec![("--dim2", 3.05), ("--out", 4.40), ("--ok", 3.83)],
-            ),
-            (
-                "dark",
-                scheme("\n[data-theme=\"inspector-dark\"] {"),
-                vec![("--dim2", 3.66)],
-            ),
+        for (name, palette) in [
+            ("light", scheme("\n:root {")),
+            ("dark", scheme("\n[data-theme=\"inspector-dark\"] {")),
         ] {
             for token in INK {
                 let worst = GROUNDS
                     .into_iter()
                     .map(|ground| contrast(&value(&palette, token), &value(&palette, ground)))
                     .fold(f64::INFINITY, f64::min);
-
-                match below.iter().find(|(named, _)| *named == token) {
-                    // A named exception, held where the drawing put it: lower is
-                    // a regression and higher means the record is stale.
-                    Some((_, recorded)) => assert!(
-                        (worst - recorded).abs() < 0.01,
-                        "{name} {token} is {worst:.2}:1 and is recorded as {recorded:.2}:1"
-                    ),
-                    None => assert!(
-                        worst >= 4.5,
-                        "{name} {token} is text at {worst:.2}:1 and is not one of the named exceptions"
-                    ),
-                }
                 assert!(
-                    worst >= 3.0,
-                    "{name} {token} is below the floor a signal owes: {worst:.2}:1"
+                    worst >= 4.5,
+                    "{name} {token} is text at {worst:.2}:1 on its tightest ground"
                 );
             }
 
-            // The ink the accent was given, on the accent: the one filled
-            // control on any surface.
+            // The ink the fill was given, on the fill: the one filled control
+            // on any surface, the selection, the window's mark.
             assert!(
-                contrast(&value(&palette, "--acc-ink"), &value(&palette, "--acc")) >= 4.5,
+                contrast(
+                    &value(&palette, "--acc-ink"),
+                    &value(&palette, "--acc-fill")
+                ) >= 4.5,
                 "{name} the ink on a filled control clears the text floor"
             );
+            // And the ink daisyUI puts on any other filled hue.
+            for hue in ["--dim", "--vio", "--out", "--ok", "--in", "--err"] {
+                assert!(
+                    contrast(&value(&palette, "--on-hue"), &value(&palette, hue)) >= 4.5,
+                    "{name} the ink on a filled {hue} clears the text floor"
+                );
+            }
         }
+
+        // **And a payload's strings are not the reader's colour** (D9): in dark
+        // they were the same lime at 1.04:1.
+        let dark = scheme("\n[data-theme=\"inspector-dark\"] {");
+        assert_ne!(value(&dark, "--str"), value(&dark, "--acc"));
+        assert!(
+            contrast(&value(&dark, "--str"), &value(&dark, "--acc")) > 1.2,
+            "a string in a payload is told apart from the accent"
+        );
     }
 
     #[test]
@@ -1424,11 +2291,11 @@ mod tests {
         // **Every colour in this sheet is a token**, and a literal anywhere else
         // is a rule that only works in one scheme — the whole failure mode this
         // arrangement exists to make impossible. The blocks where the values
-        // live are the two daisyUI themes and the three palette blocks.
+        // live are the three palette blocks, and nowhere else: the daisyUI
+        // themes point at them.
         for (nesting, body) in rules() {
             let selector = selector(&nesting).to_owned();
-            if nesting.iter().any(|at| at.contains("@plugin"))
-                || selector.contains("@theme")
+            if selector.contains("@theme")
                 || selector == ":root"
                 || selector == ":root:not([data-theme])"
                 || selector == "[data-theme=\"inspector-dark\"]"
