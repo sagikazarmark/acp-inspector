@@ -147,44 +147,28 @@ fn rendering() -> bool {
         .is_some_and(|runtime| runtime.try_current_scope_id().is_some())
 }
 
-/// The switch, in the bar beside the appearance — the same segmented group,
-/// because it is the same kind of preference: one question about how the whole
-/// window reads, with two exclusive answers.
+/// The switch, in the bar beside the appearance: one control, "Pretty JSON",
+/// on or off (D7). Two segments named "wire" and "indent" asked the reader to
+/// know which of two jargon words was the default; a switch with a plain name
+/// says what turning it on does.
 ///
-/// The words are the two the choice has (`Indentation`): the wire, or the wire
-/// laid out. Each button carries the complete name; the group carries the
-/// question.
+/// The tooltip says what it does not change: the bytes that crossed, which a
+/// copy and an export still carry.
 #[component]
 pub fn IndentationControl(chosen: Indentation, on_choose: EventHandler<Indentation>) -> Element {
+    let on = chosen.indented();
     rsx! {
-        div {
-            class: "seg indentation",
-            role: "group",
-            aria_label: "How payloads are drawn",
-            title: "Draw JSON payloads indented. What crossed the wire is unchanged: an export and a copy still carry the bytes.",
-            for choice in Indentation::ALL {
-                button {
-                    key: "{choice.token()}",
-                    class: "seg-item seg-word",
-                    "data-slot": "indentation",
-                    "data-indentation": choice.token(),
-                    r#type: "button",
-                    aria_pressed: choice == chosen,
-                    aria_label: "{word(choice)} payloads",
-                    onclick: move |_| on_choose.call(choice),
-                    "{word(choice)}"
-                }
-            }
+        button {
+            class: "seg seg-switch indentation",
+            "data-slot": "indentation",
+            "data-indentation": chosen.token(),
+            r#type: "button",
+            role: "switch",
+            aria_checked: if on { "true" } else { "false" },
+            title: "Draw JSON payloads indented. What crossed the wire is unchanged: a copy and an export still carry the exact bytes.",
+            onclick: move |_| on_choose.call(Indentation::of(!on)),
+            span { class: "seg-item seg-word", "Pretty JSON" }
         }
-    }
-}
-
-/// What each choice is called on its segment: the wire's own bytes, or the same
-/// bytes spaced out.
-fn word(indentation: Indentation) -> &'static str {
-    match indentation {
-        Indentation::Wire => "wire",
-        Indentation::Indented => "indent",
     }
 }
 
@@ -204,27 +188,22 @@ mod tests {
     }
 
     #[test]
-    fn indentation_is_a_named_segmented_group_beside_the_appearance() {
+    fn indentation_is_one_named_switch_beside_the_appearance() {
         let html = screen(Indentation::Wire);
 
         assert!(
-            html.contains(r#"class="seg indentation""#)
-                && html.contains(r#"role="group""#)
-                && html.contains(r#"aria-label="How payloads are drawn""#)
+            html.contains(r#"role="switch""#)
+                && html.contains(">Pretty JSON<")
                 && html.contains("title=\"Draw JSON"),
-            "the group carries the question and the tooltip that qualifies it: {html}"
+            "one switch with a plain name and the tooltip that qualifies it: {html}"
         );
-        // The two answers the choice has, each with its complete name.
         assert!(
-            html.contains(r#"data-indentation="wire""#)
-                && html.contains(r#"aria-label="wire payloads""#)
-                && html.contains(r#"data-indentation="indented""#)
-                && html.contains(r#"aria-label="indent payloads""#),
-            "both answers are named: {html}"
+            !html.contains(">wire<") && !html.contains(">indent<"),
+            "no jargon segments: {html}"
         );
         // A window nobody has switched draws the wire.
         assert!(
-            html.contains(r#"data-indentation="wire" type="button" aria-pressed=true"#),
+            html.contains(r#"aria-checked="false""#),
             "the window opens on the bytes that crossed: {html}"
         );
     }
@@ -233,7 +212,8 @@ mod tests {
     fn the_persisted_choice_is_what_the_switch_shows() {
         let html = screen(Indentation::Indented);
         assert!(
-            html.contains(r#"data-indentation="indented" type="button" aria-pressed=true"#),
+            html.contains(r#"data-indentation="indented""#)
+                && html.contains(r#"aria-checked="true""#),
             "{html}"
         );
     }

@@ -1,21 +1,60 @@
 //! Shared, in-memory MCP input shown before Launch and in the Sessions dialog.
-use acp_inspector_core::{Inspector, McpDraft, McpEnv, McpServerDraft, McpTransport, v1};
+//!
+//! **Rows are keyed on core's identities** ([`McpServerDraft::identify`]), not on
+//! their position: moving or removing a row keeps every other row's DOM node and
+//! focus, and the control that should take focus after a move is found by the
+//! same identity rather than by searching labels.
+//!
+//! **Findings wait for the reader.** A field the reader has not left yet, in a
+//! form nobody has tried to submit, is a field still being typed into; what is
+//! wrong with it is said once it is touched or a launch or session opening was
+//! attempted. A transport the agent did not advertise is a fact about the
+//! agent, not about typing, and is said at once.
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
+
+use acp_inspector_core::{
+    Inspector, McpDraft, McpEnv, McpFinding, McpServerDraft, McpTransport, v1,
+};
 use dioxus::prelude::*;
+use dioxus_field::{FieldContext, FieldMetaValues};
+use dioxus_free_icons::{
+    Icon,
+    icons::ld_icons::{LdArrowDown, LdArrowUp, LdTrash2},
+};
+use dioxus_primitives::dioxus_attributes::attributes;
+
+use crate::components::{
+    field::{Field, FieldError, FieldLabel},
+    input::Input,
+};
 
 #[derive(Clone)]
 pub struct McpInput {
     draft: Signal<McpDraft>,
     inspector: Inspector,
     capabilities: Signal<Option<v1::McpCapabilities>>,
+    /// Whether a launch or a session opening was attempted with this draft,
+    /// which is what reveals findings on fields nobody has touched.
+    attempted: Signal<bool>,
 }
 
 pub fn provide(inspector: Inspector) {
-    let draft = use_signal(|| inspector.mcp_draft());
+    let draft = use_signal(|| {
+        let mut draft = inspector.mcp_draft();
+        draft.identify();
+        inspector.set_mcp_draft(draft.clone());
+        draft
+    });
     let mut capabilities = use_signal(|| {
         inspector
             .agent()
             .map(|agent| agent.agent_capabilities.mcp_capabilities)
     });
+    let attempted = use_signal(|| false);
     let watched = inspector.clone();
     use_future(move || {
         let inspector = watched.clone();
@@ -30,22 +69,47 @@ pub fn provide(inspector: Inspector) {
         draft,
         inspector,
         capabilities,
+        attempted,
     });
 }
 
+/// Whether the draft can be sent with a launch. Callable from render and from
+/// event handlers alike.
 pub fn valid() -> bool {
-    try_use_context::<McpInput>().is_none_or(|input| input.draft.read().findings().is_empty())
+    try_consume_context::<McpInput>().is_none_or(|input| input.draft.read().findings().is_empty())
+}
+
+/// A launch was attempted: say every finding, and take the reader to the first
+/// one if there is any. Answers whether the draft is valid.
+pub fn attempt_launch() -> bool {
+    let Some(mut input) = try_consume_context::<McpInput>() else {
+        return true;
+    };
+    input.attempted.set(true);
+    let valid = input.draft.read().findings().is_empty();
+    if !valid {
+        reveal("#connect-dialog");
+    }
+    valid
+}
+
+/// Open the editor inside `dialog` and put focus in its first invalid field.
+fn reveal(dialog: &'static str) {
+    document::eval(&format!(
+        "const section = document.querySelector('{dialog} [data-slot=mcp-editor]'); const details = section?.querySelector('details'); if (details) details.open = true; requestAnimationFrame(() => section?.querySelector('[aria-invalid=true]')?.focus());"
+    ));
 }
 
 pub fn correct_in_sessions() {
+    if let Some(mut input) = try_consume_context::<McpInput>() {
+        input.attempted.set(true);
+    }
     crate::session::open();
-    document::eval(
-        "const section = document.querySelector('#sessions-dialog [data-slot=mcp-editor]'); const details = section?.querySelector('details'); if (details) details.open = true; section?.querySelector('[aria-describedby]')?.focus();",
-    );
+    reveal("#sessions-dialog");
 }
 
 pub fn ready_to_open() -> bool {
-    if try_use_context::<McpInput>().is_none_or(|input| {
+    if try_consume_context::<McpInput>().is_none_or(|input| {
         input
             .draft
             .read()
@@ -63,10 +127,33 @@ impl McpInput {
     fn edit(&self, change: impl FnOnce(&mut McpDraft)) {
         let mut signal = self.draft;
         let mut draft = signal.write();
+        // Before, so parallel identity lists are aligned for a reorder; after,
+        // so a row just added has one.
+        draft.identify();
         change(&mut draft);
+        draft.identify();
         // Synchronous publication: shortcuts in the same event batch must see
         // the edited list, including an incomplete row, not the previous list.
         self.inspector.set_mcp_draft(draft.clone());
+    }
+}
+
+/// Controls that may take focus after a reorder, by DOM id. Not a signal: a
+/// control mounting is not a reason to render anything again.
+#[derive(Clone, Default)]
+struct Focusable {
+    mounted: Rc<RefCell<HashMap<String, Rc<MountedData>>>>,
+    pending: Signal<Option<String>>,
+}
+
+impl Focusable {
+    fn register(&self, id: String, element: Rc<MountedData>) {
+        self.mounted.borrow_mut().insert(id, element);
+    }
+
+    fn request(&self, id: String) {
+        let mut pending = self.pending;
+        pending.set(Some(id));
     }
 }
 
@@ -75,6 +162,24 @@ pub fn McpEditor(prefix: &'static str) -> Element {
     let Some(input) = try_use_context::<McpInput>() else {
         return rsx! {};
     };
+    let focusable = use_context_provider(|| Focusable {
+        mounted: Rc::default(),
+        pending: Signal::new(None),
+    });
+    let mut pending = focusable.pending;
+    let registry = focusable.mounted.clone();
+    use_effect(move || {
+        let Some(id) = pending() else {
+            return;
+        };
+        if let Some(element) = registry.borrow().get(&id).cloned() {
+            spawn(async move {
+                let _ = element.set_focus(true).await;
+            });
+        }
+        pending.set(None);
+    });
+
     let draft = input.draft.read().clone();
     let capabilities = use_memo(move || {
         if prefix == "launch" {
@@ -83,149 +188,471 @@ pub fn McpEditor(prefix: &'static str) -> Element {
             (input.capabilities)()
         }
     });
+    let mut touched = use_signal(HashSet::<(u64, &'static str)>::new);
+    let attempted = (input.attempted)();
     let findings = draft.findings_for(capabilities.read().as_ref());
-    let draft_signal = input.draft;
-    use_effect(move || {
-        if !draft_signal
-            .read()
-            .findings_for(capabilities.read().as_ref())
-            .is_empty()
-        {
+    // What is said now: anything about the agent's advertisement, and anything
+    // about a field the reader has left or tried to submit.
+    let shown = |server: &McpServerDraft, index: usize, field: &str| -> Option<String> {
+        findings
+            .iter()
+            .find(|finding| finding.server == index && finding.field == field)
+            .filter(|finding| {
+                finding.field == "transport"
+                    || attempted
+                    || touched.read().contains(&(server.id, finding.field))
+            })
+            .map(|finding| finding.message.to_owned())
+    };
+    let any_shown = findings.iter().any(|finding: &McpFinding| {
+        finding.field == "transport"
+            || attempted
+            || draft
+                .servers
+                .get(finding.server)
+                .is_some_and(|server| touched.read().contains(&(server.id, finding.field)))
+    });
+    use_effect(use_reactive!(|any_shown| {
+        if any_shown {
             let eval = document::eval(
                 "const id = await dioxus.recv(); const details = document.getElementById(id); if (details) details.open = true;",
             );
             let _ = eval.send(format!("{prefix}-mcp-details"));
         }
-    });
+    }));
     let edit = use_callback(move |change: Edit| input.edit(|draft| change.apply(draft)));
+    let touch = use_callback(move |key: (u64, &'static str)| {
+        if !touched.peek().contains(&key) {
+            touched.write().insert(key);
+        }
+    });
+    let count = draft.servers.len();
+    let server_ids: Vec<u64> = draft.servers.iter().map(|server| server.id).collect();
+
     rsx! {
-        section { class: "mcp-editor", "data-slot":"mcp-editor",
-            p { class:"hint", "{draft.servers.len()} MCP servers will be supplied on the next Session-opening call." }
-            details { id:"{prefix}-mcp-details",
-                summary { "MCP servers" }
-                p { class:"hint", "Inspector-supplied input, shared with Launch and Sessions. Edits affect subsequent new/load/resume calls, not the live Session. Reconnect keeps this list; recent commands do not save it." }
-                p { class:"hint", "The Agent runs stdio commands and connects to HTTP/SSE URLs. A Session setup answer does not confirm individual MCP connections. Definitions, environment values and headers appear verbatim in Trace and exports." }
-                if capabilities.read().is_none() { p { class:"hint", "HTTP/SSE Advertisements will be checked after initialize, before opening the first Session." } }
+        section { class: "mcp-editor", "data-slot": "mcp-editor",
+            details { id: "{prefix}-mcp-details", class: "mcp-disclosure",
+                summary {
+                    span { class: "mcp-summary", "MCP servers ({count})" }
+                    span { class: "hint", " · sent when a session opens" }
+                }
+                p { class: "hint", "Used for the next new, load or resume. Doesn't change the open session. Not saved between launches." }
+                details { class: "mcp-about",
+                    summary { class: "hint", "About MCP servers" }
+                    p { class: "hint", "The agent runs stdio commands and connects to HTTP and SSE URLs. A session opening doesn't confirm each MCP connection. Definitions, environment values and headers appear verbatim in the trace and in exports." }
+                    if capabilities.read().is_none() {
+                        p { class: "hint", "HTTP and SSE support is checked after the agent starts, before the first session opens." }
+                    }
+                }
                 for (index, server) in draft.servers.iter().enumerate() {
-                    fieldset { key:"{index}", class:"mcp-server",
+                    fieldset { key: "{server.id}", class: "mcp-server",
                         legend { "MCP server {index + 1}" }
-                        ListActions { prefix, label:format!("MCP server {}",index+1), base:"MCP server".to_owned(), index, len:draft.servers.len(), on_change:move |action| edit.call(Edit::Server(index,action)) }
-                        label { r#for:"{prefix}-mcp-{index}-name", "Server name" }
-                        input { id:"{prefix}-mcp-{index}-name", class:"input", value:server.name.clone(), aria_label:"MCP server {index + 1} name", aria_describedby:findings.iter().any(|f|f.server==index&&f.field=="name").then(||format!("{prefix}-mcp-{index}-name-finding")),
-                            oninput:move |event| edit.call(Edit::Name(index,event.value())) }
-                        for finding in findings.iter().filter(|f|f.server==index&&f.field=="name") {
-                            p { id:"{prefix}-mcp-{index}-name-finding", class:"detail detail-warn", "{finding.message}" }
+                        ListActions {
+                            prefix,
+                            label: format!("MCP server {}", index + 1),
+                            ids: server_ids.clone(),
+                            index,
+                            add: format!("{prefix}-mcp-add-server"),
+                            on_change: move |action| edit.call(Edit::Server(index, action)),
                         }
-                        label { r#for:"{prefix}-mcp-{index}-transport", "Transport" }
-                        select { id:"{prefix}-mcp-{index}-transport", class:"select", value:server.transport.token(), aria_label:"MCP server {index + 1} transport", aria_describedby:findings.iter().any(|f|f.server==index&&f.field=="transport").then(||format!("{prefix}-mcp-{index}-transport-finding")),
-                            onchange:move |event| edit.call(Edit::Transport(index,match event.value().as_str() {"http"=>McpTransport::Http,"sse"=>McpTransport::Sse,_=>McpTransport::Stdio})),
-                            for transport in [McpTransport::Stdio,McpTransport::Http,McpTransport::Sse] {
-                                option { value:transport.token(), disabled:capabilities.read().as_ref().is_some_and(|caps| !transport.advertised(caps)), "{transport.token()}" }
-                            }
+                        McpText {
+                            id: format!("{prefix}-mcp-{}-name", server.id),
+                            label: "Name",
+                            value: server.name.clone(),
+                            error: shown(server, index, "name"),
+                            on_input: move |value| edit.call(Edit::Name(index, value)),
+                            on_blur: {
+                                let id = server.id;
+                                move |()| touch.call((id, "name"))
+                            },
                         }
-                        for finding in findings.iter().filter(|f|f.server==index&&f.field=="transport") {
-                            p { id:"{prefix}-mcp-{index}-transport-finding", class:"detail detail-warn", role:"status", "{finding.message}" }
-                        }
-                        if server.transport == McpTransport::Stdio {
-                        label { r#for:"{prefix}-mcp-{index}-command", "Absolute executable path" }
-                        input { id:"{prefix}-mcp-{index}-command", class:"input", value:server.command.clone(), aria_label:"MCP server {index + 1} command", spellcheck:false, aria_describedby:findings.iter().any(|f|f.server==index&&f.field=="command").then(||format!("{prefix}-mcp-{index}-command-finding")),
-                            oninput:move |event| edit.call(Edit::Command(index,event.value())) }
-                        for finding in findings.iter().filter(|f|f.server==index&&f.field=="command") {
-                            p { id:"{prefix}-mcp-{index}-command-finding", class:"detail detail-warn", "{finding.message}" }
-                        }
-                        p { class:"hint", "Arguments in order; an empty row sends an empty argument." }
-                        for (arg, value) in server.args.iter().enumerate() {
-                            div { key:"{arg}", class:"mcp-row",
-                                input { class:"input", value:value.clone(), aria_label:"MCP server {index + 1} argument {arg + 1}", oninput:move |event| edit.call(Edit::Argument(index,arg,event.value())) }
-                                ListActions { prefix, label:format!("MCP server {} argument {}",index+1,arg+1), base:format!("MCP server {} argument",index+1), index:arg, len:server.args.len(), on_change:move |action| edit.call(Edit::Arguments(index,arg,action)) }
-                            }
-                        }
-                        button { r#type:"button", class:"btn btn-xs btn-quiet", onclick:move |_| edit.call(Edit::AddArgument(index)), "Add argument to MCP server {index + 1}" }
-                        p { class:"hint", "Environment in order; empty values and duplicate names are preserved." }
-                        for (pair, env) in server.env.iter().enumerate() {
-                            div { key:"{pair}", class:"mcp-row",
-                                input { class:"input", value:env.name.clone(), aria_label:"MCP server {index + 1} environment {pair + 1} name", oninput:move |event| edit.call(Edit::EnvName(index,pair,event.value())) }
-                                input { class:"input", value:env.value.clone(), aria_label:"MCP server {index + 1} environment {pair + 1} value", oninput:move |event| edit.call(Edit::EnvValue(index,pair,event.value())) }
-                                ListActions { prefix, label:format!("MCP server {} environment {}",index+1,pair+1), base:format!("MCP server {} environment",index+1), index:pair, len:server.env.len(), on_change:move |action| edit.call(Edit::Environment(index,pair,action)) }
-                            }
-                        }
-                        button { r#type:"button", class:"btn btn-xs btn-quiet", onclick:move |_| edit.call(Edit::AddEnv(index)), "Add environment to MCP server {index + 1}" }
-                        } else {
-                            label { r#for:"{prefix}-mcp-{index}-url", "URL" }
-                            input { id:"{prefix}-mcp-{index}-url", class:"input", value:server.url.clone(), aria_label:"MCP server {index + 1} URL", spellcheck:false,
-                                aria_describedby:findings.iter().any(|f|f.server==index&&f.field=="url").then(||format!("{prefix}-mcp-{index}-url-finding")),
-                                oninput:move |event| edit.call(Edit::Url(index,event.value())) }
-                            for finding in findings.iter().filter(|f|f.server==index&&f.field=="url") {
-                                p { id:"{prefix}-mcp-{index}-url-finding", class:"detail detail-warn", "{finding.message}" }
-                            }
-                            p { class:"hint", "Headers in order; empty values and duplicate names are preserved." }
-                            for (pair, header) in server.headers.iter().enumerate() {
-                                div { key:"{pair}", class:"mcp-row",
-                                    input {class:"input",value:header.name.clone(),aria_label:"MCP server {index + 1} header {pair + 1} name",oninput:move |event|edit.call(Edit::HeaderName(index,pair,event.value()))}
-                                    input {class:"input",value:header.value.clone(),aria_label:"MCP server {index + 1} header {pair + 1} value",oninput:move |event|edit.call(Edit::HeaderValue(index,pair,event.value()))}
-                                    ListActions {prefix,label:format!("MCP server {} header {}",index+1,pair+1),base:format!("MCP server {} header",index+1),index:pair,len:server.headers.len(),on_change:move |action|edit.call(Edit::Headers(index,pair,action))}
+                        div { class: "mcp-field",
+                            label { r#for: "{prefix}-mcp-{server.id}-transport", "Transport" }
+                            select {
+                                id: "{prefix}-mcp-{server.id}-transport",
+                                class: "select",
+                                value: server.transport.token(),
+                                aria_invalid: shown(server, index, "transport").is_some().then_some("true"),
+                                aria_describedby: shown(server, index, "transport").map(|_| format!("{prefix}-mcp-{}-transport-finding", server.id)),
+                                onchange: move |event| edit.call(Edit::Transport(index, match event.value().as_str() {
+                                    "http" => McpTransport::Http,
+                                    "sse" => McpTransport::Sse,
+                                    _ => McpTransport::Stdio,
+                                })),
+                                for transport in [McpTransport::Stdio, McpTransport::Http, McpTransport::Sse] {
+                                    option {
+                                        value: transport.token(),
+                                        disabled: capabilities.read().as_ref().is_some_and(|caps| !transport.advertised(caps)),
+                                        "{transport.token()}"
+                                    }
                                 }
                             }
-                            button {r#type:"button",class:"btn btn-xs btn-quiet",onclick:move |_| edit.call(Edit::AddHeader(index)),"Add header to MCP server {index + 1}"}
+                            if let Some(message) = shown(server, index, "transport") {
+                                p { id: "{prefix}-mcp-{server.id}-transport-finding", class: "detail detail-warn", role: "status", "{message}" }
+                            }
+                        }
+                        if server.transport == McpTransport::Stdio {
+                            McpText {
+                                id: format!("{prefix}-mcp-{}-command", server.id),
+                                label: "Command (absolute path)",
+                                value: server.command.clone(),
+                                mono: true,
+                                error: shown(server, index, "command"),
+                                on_input: move |value| edit.call(Edit::Command(index, value)),
+                                on_blur: {
+                                    let id = server.id;
+                                    move |()| touch.call((id, "command"))
+                                },
+                            }
+                            div { class: "mcp-rows", role: "group", aria_label: "Arguments",
+                                p { class: "hint", "Arguments, in order. An empty row sends an empty argument." }
+                                for (arg, value) in server.args.iter().enumerate() {
+                                    div { key: "{server.arg_ids[arg]}", class: "mcp-row",
+                                        label {
+                                            r#for: "{prefix}-mcp-arg-{server.arg_ids[arg]}",
+                                            "Argument {arg + 1}"
+                                        }
+                                        input {
+                                            id: "{prefix}-mcp-arg-{server.arg_ids[arg]}",
+                                            class: "input",
+                                            value: value.clone(),
+                                            spellcheck: "false",
+                                            oninput: move |event| edit.call(Edit::Argument(index, arg, event.value())),
+                                        }
+                                        ListActions {
+                                            prefix,
+                                            label: format!("MCP server {} argument {}", index + 1, arg + 1),
+                                            ids: server.arg_ids.clone(),
+                                            index: arg,
+                                            add: format!("{prefix}-mcp-{}-add-argument", server.id),
+                                            on_change: move |action| edit.call(Edit::Arguments(index, arg, action)),
+                                        }
+                                    }
+                                }
+                                AddButton {
+                                    id: format!("{prefix}-mcp-{}-add-argument", server.id),
+                                    on_click: move |()| edit.call(Edit::AddArgument(index)),
+                                    "Add argument"
+                                }
+                            }
+                            div { class: "mcp-rows", role: "group", aria_label: "Environment",
+                                p { class: "hint", "Environment, in order. Empty values and repeated names are sent as written." }
+                                for (pair, env) in server.env.iter().enumerate() {
+                                    Pair {
+                                        key: "{server.env_ids[pair]}",
+                                        prefix,
+                                        id: format!("{prefix}-mcp-env-{}", server.env_ids[pair]),
+                                        what: "Variable",
+                                        nth: pair,
+                                        name: env.name.clone(),
+                                        value: env.value.clone(),
+                                        on_name: move |value| edit.call(Edit::EnvName(index, pair, value)),
+                                        on_value: move |value| edit.call(Edit::EnvValue(index, pair, value)),
+                                        actions: rsx! {
+                                            ListActions {
+                                                prefix,
+                                                label: format!("MCP server {} environment {}", index + 1, pair + 1),
+                                                ids: server.env_ids.clone(),
+                                                index: pair,
+                                                add: format!("{prefix}-mcp-{}-add-env", server.id),
+                                                on_change: move |action| edit.call(Edit::Environment(index, pair, action)),
+                                            }
+                                        },
+                                    }
+                                }
+                                AddButton {
+                                    id: format!("{prefix}-mcp-{}-add-env", server.id),
+                                    on_click: move |()| edit.call(Edit::AddEnv(index)),
+                                    "Add variable"
+                                }
+                            }
+                        } else {
+                            McpText {
+                                id: format!("{prefix}-mcp-{}-url", server.id),
+                                label: "URL",
+                                value: server.url.clone(),
+                                mono: true,
+                                error: shown(server, index, "url"),
+                                on_input: move |value| edit.call(Edit::Url(index, value)),
+                                on_blur: {
+                                    let id = server.id;
+                                    move |()| touch.call((id, "url"))
+                                },
+                            }
+                            div { class: "mcp-rows", role: "group", aria_label: "Headers",
+                                p { class: "hint", "Headers, in order. Empty values and repeated names are sent as written." }
+                                for (pair, header) in server.headers.iter().enumerate() {
+                                    Pair {
+                                        key: "{server.header_ids[pair]}",
+                                        prefix,
+                                        id: format!("{prefix}-mcp-header-{}", server.header_ids[pair]),
+                                        what: "Header",
+                                        nth: pair,
+                                        name: header.name.clone(),
+                                        value: header.value.clone(),
+                                        on_name: move |value| edit.call(Edit::HeaderName(index, pair, value)),
+                                        on_value: move |value| edit.call(Edit::HeaderValue(index, pair, value)),
+                                        actions: rsx! {
+                                            ListActions {
+                                                prefix,
+                                                label: format!("MCP server {} header {}", index + 1, pair + 1),
+                                                ids: server.header_ids.clone(),
+                                                index: pair,
+                                                add: format!("{prefix}-mcp-{}-add-header", server.id),
+                                                on_change: move |action| edit.call(Edit::Headers(index, pair, action)),
+                                            }
+                                        },
+                                    }
+                                }
+                                AddButton {
+                                    id: format!("{prefix}-mcp-{}-add-header", server.id),
+                                    on_click: move |()| edit.call(Edit::AddHeader(index)),
+                                    "Add header"
+                                }
+                            }
                         }
                     }
                 }
-                button { r#type:"button", class:"btn btn-xs btn-quiet", onclick:move |_| edit.call(Edit::AddServer), "Add MCP server" }
+                AddButton {
+                    id: format!("{prefix}-mcp-add-server"),
+                    on_click: move |()| edit.call(Edit::AddServer),
+                    "Add MCP server"
+                }
             }
         }
     }
 }
 
-#[derive(Clone, Copy)]
+/// One labelled text field on the registry components: a visible label that is
+/// the accessible name, and an error region that speaks once there is something
+/// to say.
+#[component]
+fn McpText(
+    id: String,
+    label: &'static str,
+    value: ReadSignal<String>,
+    #[props(default)] mono: bool,
+    error: Option<String>,
+    on_input: EventHandler<String>,
+    on_blur: EventHandler<()>,
+) -> Element {
+    let context = FieldContext::empty().with_meta_values(FieldMetaValues {
+        id: Some(Rc::from(id.as_str())),
+        errors: error.iter().map(|error| Rc::from(error.as_str())).collect(),
+        ..FieldMetaValues::default()
+    });
+    rsx! {
+        Field { context, class: "mcp-field",
+            FieldLabel { "{label}" }
+            Input {
+                value,
+                class: if mono { "mono" } else { "" },
+                on_change: move |value| on_input.call(value),
+                on_focus_exit: move |()| on_blur.call(()),
+                attributes: attributes!(input { "spellcheck": "false" }),
+            }
+            FieldError {}
+        }
+    }
+}
+
+/// A name and a value, each with its own visible label, as one group.
+#[component]
+fn Pair(
+    prefix: &'static str,
+    id: String,
+    what: &'static str,
+    nth: usize,
+    name: String,
+    value: String,
+    on_name: EventHandler<String>,
+    on_value: EventHandler<String>,
+    actions: Element,
+) -> Element {
+    let _ = prefix;
+    rsx! {
+        div { class: "mcp-row", role: "group", aria_label: "{what} {nth + 1}",
+            label { r#for: "{id}-name", "Name" }
+            input {
+                id: "{id}-name",
+                class: "input",
+                value: name,
+                spellcheck: "false",
+                oninput: move |event| on_name.call(event.value()),
+            }
+            label { r#for: "{id}-value", "Value" }
+            input {
+                id: "{id}-value",
+                class: "input",
+                value,
+                spellcheck: "false",
+                oninput: move |event| on_value.call(event.value()),
+            }
+            {actions}
+        }
+    }
+}
+
+/// An "add" control that can take focus back when the last row it made goes.
+#[component]
+fn AddButton(id: String, on_click: EventHandler<()>, children: Element) -> Element {
+    let focusable = use_context::<Focusable>();
+    let registered = id.clone();
+    rsx! {
+        button {
+            id: "{id}",
+            r#type: "button",
+            class: "btn btn-xs btn-quiet",
+            onmounted: move |event| focusable.register(registered.clone(), event.data()),
+            onclick: move |_| on_click.call(()),
+            {children}
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListAction {
     Remove,
     Up,
     Down,
 }
 
+impl ListAction {
+    fn slot(self) -> &'static str {
+        match self {
+            Self::Remove => "remove",
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
+}
+
+/// Which control takes focus after `action` on the row at `index` of `ids`:
+/// the moved row's own control in the direction it can still go, or its
+/// remove control at an end; after a removal, the nearest survivor's remove
+/// control, or the list's add control when none is left.
+fn focus_after(
+    prefix: &str,
+    ids: &[u64],
+    index: usize,
+    action: ListAction,
+    add: &str,
+) -> Option<String> {
+    let moved = *ids.get(index)?;
+    let control = |id: u64, action: ListAction| format!("{prefix}-mcp-{id}-{}", action.slot());
+    Some(match action {
+        ListAction::Up if index == 0 => return None,
+        ListAction::Up if index > 1 => control(moved, ListAction::Up),
+        ListAction::Up => control(moved, ListAction::Remove),
+        ListAction::Down if index + 1 >= ids.len() => return None,
+        ListAction::Down if index + 2 < ids.len() => control(moved, ListAction::Down),
+        ListAction::Down => control(moved, ListAction::Remove),
+        ListAction::Remove => match ids
+            .get(index + 1)
+            .or_else(|| index.checked_sub(1).and_then(|before| ids.get(before)))
+        {
+            Some(survivor) => control(*survivor, ListAction::Remove),
+            None => add.to_owned(),
+        },
+    })
+}
+
 #[component]
 fn ListActions(
     prefix: &'static str,
     label: String,
-    base: String,
+    /// The identities of the list this row is in, in order.
+    ids: Vec<u64>,
     index: usize,
-    len: usize,
+    /// The add control's DOM id, for focus once the list is empty.
+    add: String,
     on_change: EventHandler<ListAction>,
 ) -> Element {
-    let change = use_callback(move |action| {
-        on_change.call(action);
-        let target = match action {
-            ListAction::Up if index > 1 => format!("Move {base} {} up", index),
-            ListAction::Down if index + 2 < len => format!("Move {base} {} down", index + 2),
-            ListAction::Up => format!("Remove {base} {}", index),
-            ListAction::Down => format!("Remove {base} {}", index + 2),
-            ListAction::Remove if len > 1 => format!("Remove {base} {}", (index + 1).min(len - 1)),
-            ListAction::Remove => String::new(),
+    let focusable = use_context::<Focusable>();
+    let len = ids.len();
+    let id = ids.get(index).copied().unwrap_or_default();
+    let change = {
+        let focusable = focusable.clone();
+        let ids = ids.clone();
+        let add = add.clone();
+        move |action: ListAction| {
+            let target = focus_after(prefix, &ids, index, action, &add);
+            on_change.call(action);
+            if let Some(target) = target {
+                focusable.request(target);
+            }
+        }
+    };
+    let button = |action: ListAction| {
+        let focusable = focusable.clone();
+        let dom = format!("{prefix}-mcp-{id}-{}", action.slot());
+        let registered = dom.clone();
+        let change = change.clone();
+        let (name, icon) = match action {
+            ListAction::Up => (
+                format!("Move {label} up"),
+                rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowUp } },
+            ),
+            ListAction::Down => (
+                format!("Move {label} down"),
+                rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowDown } },
+            ),
+            ListAction::Remove => (
+                format!("Remove {label}"),
+                rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdTrash2 } },
+            ),
         };
-        // Position identifies display order, not focus ownership: after moving,
-        // follow the moved item; after removal, follow its nearest survivor.
-        let eval = document::eval(
-            "const [id, label] = await dioxus.recv(); requestAnimationFrame(() => requestAnimationFrame(() => { const root = document.getElementById(id); const buttons = Array.from(root?.querySelectorAll('button') || []); const target = buttons.find(b => b.getAttribute('aria-label') === label) || buttons[buttons.length - 1]; target?.focus(); }));",
-        );
-        let _ = eval.send((format!("{prefix}-mcp-details"), target));
-    });
-    rsx! { div { class:"mcp-actions",
-        button { r#type:"button", class:"btn btn-xs btn-ghost", aria_label:"Move {label} up", disabled:index==0, onclick:move |_| change.call(ListAction::Up), "↑" }
-        button { r#type:"button", class:"btn btn-xs btn-ghost", aria_label:"Move {label} down", disabled:index+1>=len, onclick:move |_| change.call(ListAction::Down), "↓" }
-        button { r#type:"button", class:"btn btn-xs btn-ghost", aria_label:"Remove {label}", onclick:move |_| change.call(ListAction::Remove), "Remove" }
-    } }
+        let disabled = match action {
+            ListAction::Up => index == 0,
+            ListAction::Down => index + 1 >= len,
+            ListAction::Remove => false,
+        };
+        rsx! {
+            button {
+                id: "{dom}",
+                r#type: "button",
+                class: "btn btn-xs btn-ghost",
+                aria_label: "{name}",
+                title: "{name}",
+                disabled,
+                onmounted: move |event| focusable.register(registered.clone(), event.data()),
+                onclick: move |_| change(action),
+                span { class: "disclosure-icon", aria_hidden: "true", {icon} }
+            }
+        }
+    };
+    rsx! {
+        div { class: "mcp-actions",
+            {button(ListAction::Up)}
+            {button(ListAction::Down)}
+            {button(ListAction::Remove)}
+        }
+    }
 }
 
-fn rearrange<T>(items: &mut Vec<T>, index: usize, action: ListAction) {
+fn rearrange<T>(items: &mut Vec<T>, ids: &mut Vec<u64>, index: usize, action: ListAction) {
     if index >= items.len() {
         return;
     }
     match action {
         ListAction::Remove => {
             items.remove(index);
+            if index < ids.len() {
+                ids.remove(index);
+            }
         }
-        ListAction::Up if index > 0 => items.swap(index, index - 1),
-        ListAction::Down if index + 1 < items.len() => items.swap(index, index + 1),
+        ListAction::Up if index > 0 => {
+            items.swap(index, index - 1);
+            if index < ids.len() {
+                ids.swap(index, index - 1);
+            }
+        }
+        ListAction::Down if index + 1 < items.len() => {
+            items.swap(index, index + 1);
+            if index + 1 < ids.len() {
+                ids.swap(index, index + 1);
+            }
+        }
         _ => {}
     }
 }
@@ -280,10 +707,13 @@ impl Edit {
             }
             Self::Headers(i, j, action) => {
                 if let Some(s) = draft.servers.get_mut(i) {
-                    rearrange(&mut s.headers, j, action);
+                    rearrange(&mut s.headers, &mut s.header_ids, j, action);
                 }
             }
-            Self::Server(i, action) => rearrange(&mut draft.servers, i, action),
+            Self::Server(i, action) => {
+                let mut ids: Vec<u64> = draft.servers.iter().map(|server| server.id).collect();
+                rearrange(&mut draft.servers, &mut ids, i, action);
+            }
             Self::Name(i, value) => {
                 if let Some(s) = draft.servers.get_mut(i) {
                     s.name = value;
@@ -306,7 +736,7 @@ impl Edit {
             }
             Self::Arguments(i, j, action) => {
                 if let Some(s) = draft.servers.get_mut(i) {
-                    rearrange(&mut s.args, j, action);
+                    rearrange(&mut s.args, &mut s.arg_ids, j, action);
                 }
             }
             Self::AddEnv(i) => {
@@ -326,7 +756,7 @@ impl Edit {
             }
             Self::Environment(i, j, action) => {
                 if let Some(s) = draft.servers.get_mut(i) {
-                    rearrange(&mut s.env, j, action);
+                    rearrange(&mut s.env, &mut s.env_ids, j, action);
                 }
             }
         }
@@ -386,7 +816,7 @@ mod tests {
             },
         );
         let mut edits = dom.rebuild_to_vec().edits;
-        assert!(dioxus_ssr::render(&dom).contains("checked after initialize"));
+        assert!(dioxus_ssr::render(&dom).contains("checked after the agent starts"));
         let mut caps = TEST_CAPS.with(|slot| slot.borrow().unwrap());
         caps.set(Some(v1::McpCapabilities::new().sse(true)));
         edits.extend(dom.render_immediate_to_vec().edits);
@@ -397,7 +827,7 @@ mod tests {
             .split("id=\"launch-mcp-details\"")
             .nth(1)
             .unwrap()
-            .split("</details>")
+            .split("id=\"remote-mcp-details\"")
             .next()
             .unwrap();
         assert!(!launch.contains("did not advertise"));
@@ -409,7 +839,8 @@ mod tests {
                 .contains("option value=\"http\" disabled"),
             "next Launch must not use previous Agent gates"
         );
-        let transport = target(&edits, "MCP server 1 transport");
+        let server = inspector.mcp_draft().servers[0].clone();
+        let transport = target(&edits, "id", &format!("remote-mcp-{}-transport", server.id));
         dom.runtime().handle_event(
             "change",
             Event::new(
@@ -423,9 +854,13 @@ mod tests {
         );
         edits.extend(dom.render_immediate_to_vec().edits);
         assert!(!dioxus_ssr::render(&dom).contains("did not advertise"));
-        let value = target(&edits, "MCP server 1 header 2 value");
+        let value = target(
+            &edits,
+            "id",
+            &format!("remote-mcp-header-{}-value", server.header_ids[1]),
+        );
         edits.extend(input(&mut dom, value, " two words "));
-        let up = target(&edits, "Move MCP server 1 header 2 up");
+        let up = target(&edits, "aria-label", "Move MCP server 1 header 2 up");
         click(&mut dom, up);
         let definitions = inspector
             .mcp_draft()
@@ -444,20 +879,20 @@ mod tests {
         );
     }
 
-    fn target(edits: &[Mutation], label: &str) -> dioxus::core::ElementId {
+    fn target(edits: &[Mutation], attribute: &str, expected: &str) -> dioxus::core::ElementId {
         edits
             .iter()
             .rev()
             .find_map(|edit| match edit {
                 Mutation::SetAttribute {
-                    name: "aria-label",
+                    name,
                     value: dioxus::core::AttributeValue::Text(value),
                     id,
                     ..
-                } if *value == label => Some(*id),
+                } if *name == attribute && *value == expected => Some(*id),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("missing target {label}"))
+            .unwrap_or_else(|| panic!("missing target {attribute}={expected}"))
     }
     fn click(dom: &mut VirtualDom, id: dioxus::core::ElementId) -> Vec<Mutation> {
         dom.runtime().handle_event(
@@ -503,14 +938,15 @@ mod tests {
         }
         set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         let inspector = Inspector::new();
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         inspector.set_mcp_draft(McpDraft {
             servers: vec![
                 McpServerDraft {
                     name: "first".into(),
-                    command: std::env::current_exe()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
+                    command: executable.clone(),
                     args: vec!["".into(), "two words".into()],
                     env: vec![
                         McpEnv {
@@ -526,10 +962,7 @@ mod tests {
                 },
                 McpServerDraft {
                     name: "second".into(),
-                    command: std::env::current_exe()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
+                    command: executable.clone(),
                     ..Default::default()
                 },
             ],
@@ -541,25 +974,33 @@ mod tests {
             },
         );
         let mut edits = dom.rebuild_to_vec().edits;
-        assert!(dioxus_ssr::render(&dom).contains("2 MCP servers will be supplied"));
-        let command = target(&edits, "MCP server 1 command");
+        edits.extend(dom.render_immediate_to_vec().edits);
+        assert!(dioxus_ssr::render(&dom).contains("MCP servers (2)"));
+        let first = inspector.mcp_draft().servers[0].clone();
+        let command = target(&edits, "id", &format!("test-mcp-{}-command", first.id));
         edits.extend(input(&mut dom, command, "relative"));
         assert!(inspector.mcp_draft().definitions().is_err());
-        assert!(dioxus_ssr::render(&dom).contains("Enter an absolute executable path."));
-        edits.extend(input(
-            &mut dom,
-            command,
-            &std::env::current_exe().unwrap().to_string_lossy(),
-        ));
-        let argument = target(&edits, "MCP server 1 argument 1");
+        // Not said while the field is still being typed into.
+        assert!(!dioxus_ssr::render(&dom).contains("Enter an absolute executable path."));
+        edits.extend(input(&mut dom, command, &executable));
+        let argument = target(&edits, "id", &format!("test-mcp-arg-{}", first.arg_ids[0]));
         edits.extend(input(&mut dom, argument, " leading and trailing "));
-        let up = target(&edits, "Move MCP server 1 argument 2 up");
+        let up = target(&edits, "aria-label", "Move MCP server 1 argument 2 up");
         edits.extend(click(&mut dom, up));
         assert_eq!(
             inspector.mcp_draft().servers[0].args,
             vec!["two words", " leading and trailing "]
         );
-        let value = target(&edits, "MCP server 1 environment 2 value");
+        // The rows moved with their identities: the second identity is first.
+        assert_eq!(
+            inspector.mcp_draft().servers[0].arg_ids,
+            vec![first.arg_ids[1], first.arg_ids[0]]
+        );
+        let value = target(
+            &edits,
+            "id",
+            &format!("test-mcp-env-{}-value", first.env_ids[1]),
+        );
         edits.extend(input(&mut dom, value, ""));
         assert_eq!(
             inspector.mcp_draft().servers[0]
@@ -569,12 +1010,104 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("X", ""), ("X", "")]
         );
-        let down = target(&edits, "Move MCP server 1 down");
+        let down = target(&edits, "aria-label", "Move MCP server 1 down");
         edits.extend(click(&mut dom, down));
         assert_eq!(inspector.mcp_draft().servers[0].name, "second");
-        let remove = target(&edits, "Remove MCP server 2");
+        let remove = target(&edits, "aria-label", "Remove MCP server 2");
         click(&mut dom, remove);
         assert_eq!(inspector.mcp_draft().servers.len(), 1);
         assert!(inspector.mcp_draft().definitions().is_ok());
+    }
+
+    #[test]
+    fn findings_wait_for_a_touch_or_an_attempt_and_mark_the_field_invalid() {
+        #[derive(Clone, Props)]
+        struct Props {
+            inspector: Inspector,
+        }
+        impl PartialEq for Props {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        fn host(props: Props) -> Element {
+            provide(props.inspector);
+            let input = use_context::<McpInput>();
+            rsx! {
+                button { aria_label: "Attempt".to_owned(), onclick: move |_| { let mut attempted = input.attempted; attempted.set(true); }, "Attempt" }
+                McpEditor { prefix: "test" }
+            }
+        }
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let inspector = Inspector::new();
+        inspector.set_mcp_draft(McpDraft {
+            servers: vec![McpServerDraft::default()],
+        });
+        let mut dom = VirtualDom::new_with_props(
+            host,
+            Props {
+                inspector: inspector.clone(),
+            },
+        );
+        let edits = dom.rebuild_to_vec().edits;
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        let id = inspector.mcp_draft().servers[0].id;
+        assert!(
+            html.contains(&format!(
+                r#"for="test-mcp-{id}-name" class="label">Name</label>"#
+            )),
+            "the visible label names the control: {html}"
+        );
+        assert!(
+            !html.contains("Enter a nonblank server name.")
+                && !html.contains(r#"aria-invalid="true""#),
+            "nothing is said before the reader is done: {html}"
+        );
+        click(&mut dom, target(&edits, "aria-label", "Attempt"));
+        dom.render_immediate_to_vec();
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("Enter a nonblank server name.")
+                && html.contains("Enter an absolute executable path.")
+                && html.contains(r#"aria-invalid="true""#),
+            "an attempt says every finding where it is: {html}"
+        );
+    }
+
+    #[test]
+    fn focus_follows_the_moved_row_or_the_nearest_survivor() {
+        let ids = [10, 20, 30];
+        let add = "p-mcp-add";
+        assert_eq!(
+            focus_after("p", &ids, 2, ListAction::Up, add).as_deref(),
+            Some("p-mcp-30-up")
+        );
+        assert_eq!(
+            focus_after("p", &ids, 1, ListAction::Up, add).as_deref(),
+            Some("p-mcp-20-remove"),
+            "a row moved to the top can no longer go up"
+        );
+        assert_eq!(
+            focus_after("p", &ids, 0, ListAction::Down, add).as_deref(),
+            Some("p-mcp-10-down")
+        );
+        assert_eq!(
+            focus_after("p", &ids, 1, ListAction::Down, add).as_deref(),
+            Some("p-mcp-20-remove")
+        );
+        assert_eq!(
+            focus_after("p", &ids, 1, ListAction::Remove, add).as_deref(),
+            Some("p-mcp-30-remove")
+        );
+        assert_eq!(
+            focus_after("p", &ids, 2, ListAction::Remove, add).as_deref(),
+            Some("p-mcp-20-remove")
+        );
+        assert_eq!(
+            focus_after("p", &[10], 0, ListAction::Remove, add).as_deref(),
+            Some(add)
+        );
     }
 }

@@ -25,7 +25,7 @@
 use acp_inspector_core::AgentCommand;
 use dioxus::prelude::*;
 
-use crate::spawn::SpawnForm;
+use crate::spawn::{LaunchFailure, SpawnForm};
 
 /// The dialog, by the name the two scripts below reach it under.
 const DIALOG: &str = "connect-dialog";
@@ -57,6 +57,29 @@ pub fn close() {
     document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
 }
 
+/// Show the dialog if it is not showing, and put focus on the launch failure
+/// alert once it is drawn — or on Command, if the alert never comes.
+///
+/// The alert is drawn from stores that settle a frame or two after the
+/// launch returns, so this waits for it rather than assuming it is there.
+pub fn show_failure() {
+    document::eval(&failure_focus());
+}
+
+fn failure_focus() -> String {
+    format!(
+        r#"const dialog = document.getElementById({DIALOG:?});
+if (dialog && !dialog.open) dialog.showModal();
+for (let attempt = 0; attempt < 30; attempt += 1) {{
+  await new Promise(requestAnimationFrame);
+  const alert = document.getElementById('launch-failure');
+  if (alert) {{ alert.focus(); return; }}
+}}
+document.getElementById({COMMAND:?})?.focus();"#,
+        COMMAND = crate::spawn::COMMAND,
+    )
+}
+
 /// The launch form, in a dialog over the window.
 #[component]
 pub fn Connect(
@@ -64,6 +87,12 @@ pub fn Connect(
     launching: bool,
     recent: Vec<AgentCommand>,
     unsaved: Option<String>,
+    /// Why the last launch did not reach an agent, said inside the dialog.
+    #[props(default)]
+    failure: Option<LaunchFailure>,
+    /// The invocation the window last launched, which the fields follow.
+    #[props(default)]
+    launched: Option<AgentCommand>,
     on_launch: EventHandler<AgentCommand>,
 ) -> Element {
     rsx! {
@@ -71,9 +100,10 @@ pub fn Connect(
             id: DIALOG,
             class: "modal connect-dialog",
             "data-slot": "connect",
+            aria_labelledby: "connect-title",
             div { class: "modal-box dialog-box connect-box",
                 header { class: "dialog-head",
-                    h2 { "Connect to an agent" }
+                    h2 { id: "connect-title", if running { "Agent command" } else { "Connect to an agent" } }
                     span { class: "grow" }
                     button {
                         class: "btn btn-xs btn-quiet",
@@ -86,15 +116,14 @@ pub fn Connect(
                     }
                 }
 
-                SpawnForm { running, launching, recent, unsaved, on_launch }
+                SpawnForm { running, launching, recent, unsaved, failure, launched, on_launch }
             }
 
             // The click outside. Nothing in it is drawn — the box above covers
-            // the middle and this covers the rest — and its one control is
-            // named for the reader who reaches it by keyboard rather than by
-            // pointing.
+            // the middle and this covers the rest. Out of the Tab order: the
+            // keyboard already has Escape and the Close button.
             form { method: "dialog", class: "modal-backdrop",
-                button { "data-slot": "dismiss", "close" }
+                button { "data-slot": "dismiss", tabindex: "-1", "close" }
             }
         }
     }
@@ -156,6 +185,17 @@ mod tests {
         assert!(
             html.contains(r#"data-slot="close-connect""#),
             "and a way out that is not the keyboard: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-labelledby="connect-title""#)
+                && html.contains(r#"<h2 id="connect-title">Connect to an agent</h2>"#)
+                && html.contains(r#"data-slot="dismiss" tabindex="-1""#),
+            "the dialog is named by its heading and the backdrop is not a Tab stop: {html}"
+        );
+        assert!(
+            failure_focus().contains("launch-failure")
+                && failure_focus().contains("launch-command"),
+            "a failed launch takes focus to its alert, or to Command"
         );
     }
 }

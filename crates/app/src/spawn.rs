@@ -5,26 +5,266 @@
 //! line becomes an argument, so the rules live somewhere they can be tested and
 //! somewhere a second surface would inherit them from.
 //!
-//! The recent list is the convenience the spec allows and stops at (§1.1): a
-//! click puts an invocation back in the fields, and the Launch button that was
-//! always there runs it. Nothing here decides what is remembered or where it is
-//! kept — that is [`RecentCommands`](acp_inspector_core::RecentCommands), for the
-//! same reason as everything else in this crate (§5) — and nothing here edits,
-//! names, imports or exports one, because the catalog that would do those is
-//! deferred and this is what was built instead.
+//! **One form, on the registry's field components.** Each field has a visible
+//! label that is also its accessible name, a description it is described by,
+//! and an error region that speaks once the reader has left the field or tried
+//! to launch. The fields sit in a `<form>`, so Enter in a single-line field and
+//! ⌘/Ctrl+Enter in a multi-line one launch, the way any dialog form does.
 //!
-//! **The form does not fold, because it is not on the window** (§9). It folded
-//! for as long as it was a permanent column: written once per connection, read
-//! never afterwards, and four fifths of the rail at the default window size, so
-//! the agent's own account of itself began below it from the first launch
-//! onward. A dialog answers the same measurement better than a fold does — one
-//! that is not open takes no room at all — so the fold, the chevron that worked
-//! it, and the line naming the running agent all go with the column. What is
-//! running is on the toolbar, which is where the window says what it is
-//! connected to whatever else is on screen ([`crate::connect`]).
+//! **The recent list is the convenience the spec allows and stops at** (§1.1):
+//! a row's label refills the fields, and its play button launches it directly.
+//! Nothing here decides what is remembered or where it is kept — that is
+//! [`RecentCommands`](acp_inspector_core::RecentCommands).
+//!
+//! **A failed launch is said here** (X1): the dialog stays open on the fields
+//! that produced it, with the reason in an alert above them, rather than
+//! closing onto a window that changed tabs behind its backdrop.
 
-use acp_inspector_core::AgentCommand;
+use std::rc::Rc;
+
+use acp_inspector_core::{AgentCommand, CallError, ConnectionStatus, Diagnostic, DiagnosticKind};
 use dioxus::prelude::*;
+use dioxus_field::{Binding, FieldContext, FieldMetaValues};
+use dioxus_free_icons::{Icon, icons::ld_icons::LdPlay};
+use dioxus_primitives::dioxus_attributes::attributes;
+
+use crate::components::{
+    field::{
+        Field, FieldAppearance, FieldDescription, FieldDescriptionAppearance, FieldError,
+        FieldLabel,
+    },
+    input::Input,
+    textarea::Textarea,
+};
+
+/// The Command field's DOM id, which a failed launch hands focus back to.
+pub const COMMAND: &str = "launch-command";
+
+/// Why the last launch did not get as far as an agent, as the dialog says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchFailure {
+    /// One sentence, the reason first.
+    pub headline: String,
+    /// Supporting lines: the command as run, how it exited, what it last said.
+    pub detail: Vec<String>,
+    /// The `PATH` a bare command name was looked up in, where the failure was
+    /// that it was not found.
+    pub path: Option<String>,
+}
+
+/// What the dialog should say about the last launch, if anything.
+///
+/// `lines` are the diagnostics recorded since that launch began, oldest first.
+/// `path` is the search path the spawn used. An agent that described itself is
+/// not a failed launch: what went wrong after that is the session's, and is
+/// said on the timeline.
+pub fn launch_failure(
+    status: ConnectionStatus,
+    problem: Option<&CallError>,
+    described: bool,
+    lines: &[Diagnostic],
+    path: Option<&str>,
+) -> Option<LaunchFailure> {
+    if described {
+        return None;
+    }
+    let spawn = lines.iter().rev().find_map(|line| match &line.kind {
+        DiagnosticKind::SpawnFailed { command, error } => Some((command, error)),
+        _ => None,
+    });
+    if let Some((command, error)) = spawn {
+        let bare = command
+            .split_whitespace()
+            .next()
+            .is_some_and(|program| !program.contains('/'));
+        return Some(LaunchFailure {
+            headline: format!("Couldn't start the agent: {error}"),
+            detail: vec![format!("Command: {command}")],
+            path: (error.kind() == std::io::ErrorKind::NotFound && bare)
+                .then(|| path.map(str::to_owned))
+                .flatten(),
+        });
+    }
+    if status == ConnectionStatus::FailedToStart {
+        return Some(LaunchFailure {
+            headline: match problem {
+                Some(problem) if *problem != CallError::Disconnected => {
+                    format!("Couldn't start the agent: {problem}")
+                }
+                _ => "Couldn't start the agent.".to_owned(),
+            },
+            detail: Vec::new(),
+            path: None,
+        });
+    }
+    let problem = problem?;
+    let mut detail = Vec::new();
+    let headline = match problem {
+        CallError::Disconnected => {
+            if let Some(status) = lines.iter().rev().find_map(|line| match &line.kind {
+                DiagnosticKind::AgentExited(status) => Some(status),
+                _ => None,
+            }) {
+                detail.push(format!("It exited with {status}."));
+            }
+            if let Some(said) = lines.iter().rev().find_map(|line| match &line.kind {
+                DiagnosticKind::Stderr(text) if !text.trim().is_empty() => Some(text.trim()),
+                _ => None,
+            }) {
+                detail.push(format!("Last output: {said}"));
+            }
+            "The agent stopped before it answered.".to_owned()
+        }
+        problem => format!("Couldn't start the agent: {problem}"),
+    };
+    Some(LaunchFailure {
+        headline,
+        detail,
+        path: None,
+    })
+}
+
+/// A search path as a reader scans it: one entry per segment, with the home
+/// directory written `~`.
+pub fn abbreviate_path(path: &str, home: Option<&str>) -> String {
+    path.split(':')
+        .map(|entry| match home {
+            Some(home) if !home.is_empty() && entry.starts_with(home) => {
+                format!("~{}", &entry[home.len()..])
+            }
+            _ => entry.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// A whole command line typed into Command, split the way a shell would read
+/// it: leading `NAME=value` words are environment, the next word is the
+/// program, and everything after it is arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandLine {
+    pub env: Vec<String>,
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// Whether `command` reads as a command line rather than a program, and how
+/// it would split if so.
+///
+/// Whitespace in a command is either a command line or a path with a space in
+/// it. A path is read as one when it starts like a path and its last word still
+/// has a `/` in it — `/Applications/My Agent.app/Contents/MacOS/agent` — and is
+/// left alone; anything else with whitespace is offered a split, never split
+/// without asking.
+pub fn command_line(command: &str) -> Option<CommandLine> {
+    let command = command.trim();
+    if !command.contains(char::is_whitespace) {
+        return None;
+    }
+    let path_like = command.starts_with(['/', '~', '.'])
+        && command
+            .rsplit(char::is_whitespace)
+            .next()
+            .is_some_and(|last| last.contains('/'));
+    if path_like {
+        return None;
+    }
+    let mut words = words(command).into_iter().peekable();
+    let mut env = Vec::new();
+    while let Some(word) = words.peek() {
+        let assignment = word.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+        if !assignment {
+            break;
+        }
+        env.extend(words.next());
+    }
+    let program = words.next()?;
+    Some(CommandLine {
+        env,
+        program,
+        args: words.collect(),
+    })
+}
+
+/// Shell-style words: whitespace separates, single and double quotes group,
+/// a backslash escapes the next character outside single quotes.
+fn words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quote = None::<char>;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some('"') | None, '\\') => {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+                started = true;
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
+/// The 1-based numbers of environment lines that set nothing because they
+/// have no `=` — the lines core drops (`AgentCommand::variables`).
+pub fn unset_lines(env: &str) -> Vec<usize> {
+    env.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty() && !line.contains('='))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+fn unset_warning(lines: &[usize]) -> String {
+    match lines {
+        [one] => format!(
+            "Line {one} has no \u{201c}=\u{201d}, so it sets nothing. Write it as NAME=value."
+        ),
+        many => {
+            let (last, rest) = many.split_last().expect("not empty");
+            let rest = rest
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Lines {rest} and {last} have no \u{201c}=\u{201d}, so they set nothing. Write each as NAME=value."
+            )
+        }
+    }
+}
+
+/// Field metadata for one of the four launch fields.
+fn meta(id: &str, error: Option<&str>) -> FieldMetaValues {
+    FieldMetaValues {
+        id: Some(Rc::from(id)),
+        errors: error.into_iter().map(Rc::from).collect(),
+        ..FieldMetaValues::default()
+    }
+}
 
 /// The four fields, a button that hands them over as typed, and what has been
 /// launched before.
@@ -40,6 +280,13 @@ pub fn SpawnForm(
     /// half-remembers is worse than one that does not pretend to, so a list that
     /// could not be written says so where it is shown.
     unsaved: Option<String>,
+    /// Why the last launch did not reach an agent, if it did not.
+    #[props(default)]
+    failure: Option<LaunchFailure>,
+    /// The invocation the window last launched. The fields follow it, so a
+    /// dialog opened over a running agent shows what is running.
+    #[props(default)]
+    launched: Option<AgentCommand>,
     on_launch: EventHandler<AgentCommand>,
 ) -> Element {
     let mut command = use_signal(String::new);
@@ -48,6 +295,19 @@ pub fn SpawnForm(
     let mut cwd = use_signal(String::new);
     let mut recall_confirmation = use_signal(|| None::<String>);
     let mut clear_recall_confirmation = move || recall_confirmation.set(None);
+    // Whether the reader tried to launch, or left Command: either is when an
+    // empty Command becomes something worth saying.
+    let mut attempted = use_signal(|| false);
+    let mut left_command = use_signal(|| false);
+
+    use_effect(use_reactive!(|launched| {
+        if let Some(entry) = launched {
+            command.set(entry.command.clone());
+            args.set(entry.args.clone());
+            env.set(entry.env.clone());
+            cwd.set(entry.cwd.clone());
+        }
+    }));
 
     let agent = use_memo(move || AgentCommand {
         command: command(),
@@ -57,10 +317,8 @@ pub fn SpawnForm(
         ..AgentCommand::default()
     });
 
-    // Selecting a remembered invocation is a *refill*, not a launch: the fields
-    // are where a run is decided, and an agent that started because a list was
-    // clicked would be a form that ran something the user had not looked at.
-    // Launch is the click after it, in the place it always is.
+    // Selecting a remembered invocation's label is a *refill*: the fields are
+    // where a run is decided. Its play button is the direct way, beside it.
     let mut refill = move |entry: &AgentCommand| {
         let invocation = invocation(entry);
         command.set(entry.command.clone());
@@ -68,198 +326,320 @@ pub fn SpawnForm(
         env.set(entry.env.clone());
         cwd.set(entry.cwd.clone());
         recall_confirmation.set(Some(format!(
-            "Invocation refilled: {invocation}. Review the fields, then Launch."
+            "Filled in {invocation}. Press Launch to start it."
         )));
     };
 
-    let launch_available = !launching && !running && agent().is_runnable() && crate::mcp::valid();
+    let runnable = agent().is_runnable();
+    let command_error =
+        (!runnable && (attempted() || left_command())).then_some("Enter a command to launch.");
+    let split = command_line(&command());
+    let unset = unset_lines(&env());
+    let mcp_valid = crate::mcp::valid();
+    let reason = if launching {
+        Some("Starting the agent\u{2026}")
+    } else if !runnable {
+        Some("Enter a command to launch.")
+    } else if !mcp_valid {
+        Some("Fix the MCP server fields first.")
+    } else {
+        None
+    };
+
+    let mut submit = move || {
+        if launching {
+            return;
+        }
+        attempted.set(true);
+        let mcp_ok = crate::mcp::attempt_launch();
+        if !agent.peek().is_runnable() {
+            focus(COMMAND);
+            return;
+        }
+        if !mcp_ok {
+            return;
+        }
+        clear_recall_confirmation();
+        on_launch.call(agent());
+    };
 
     rsx! {
-        div { class: "dialog-body", "data-slot": "spawn",
-            crate::mcp::McpEditor { prefix:"launch" }
-            // The four fields the transport takes, each named by the key it
-            // goes out under and what it is for — which is how the drawing lays
-            // a form out, and what makes a field legible to somebody reading
-            // the protocol rather than the label.
-            div { class: "form-field",
-                div { class: "form-label",
-                    span { class: "form-key", "cmd" }
-                    span { class: "form-note", "executable only" }
+        form {
+            class: "contents",
+            "data-slot": "spawn-form",
+            novalidate: true,
+            onsubmit: move |event| {
+                event.prevent_default();
+                submit();
+            },
+            // Enter in a textarea is a new line; ⌘/Ctrl+Enter is the launch.
+            onkeydown: move |event| {
+                let modifiers = event.modifiers();
+                if event.key() == Key::Enter && (modifiers.meta() || modifiers.ctrl()) {
+                    event.prevent_default();
+                    submit();
                 }
-                input {
-                    class: "input",
-                    value: "{command}",
-                    spellcheck: false,
-                    aria_label: "Command",
-                    aria_describedby: "launch-command-help",
-                    // **The platform focuses it, once per opening.**
-                    // `showModal` puts the keyboard on the autofocus element of
-                    // the dialog it is showing.
-                    autofocus: true,
-                    placeholder: "npx",
-                    oninput: move |event| {
-                        command.set(event.value());
-                        clear_recall_confirmation();
-                    },
-                }
-                p { id: "launch-command-help", class: "hint", "Executable name or path, without arguments or shell quotes." }
-            }
-            div { class: "form-field",
-                div { class: "form-label",
-                    span { class: "form-key", "args" }
-                    span { class: "form-note", "arguments, one per line" }
-                }
-                textarea {
-                    class: "textarea",
-                    rows: 3,
-                    value: "{args}",
-                    spellcheck: false,
-                    aria_label: "Arguments",
-                    aria_describedby: "launch-args-help",
-                    placeholder: "@zed-industries/claude-code-acp",
-                    oninput: move |event| {
-                        args.set(event.value());
-                        clear_recall_confirmation();
-                    },
-                }
-                p { id: "launch-args-help", class: "hint", "One argument per line; put a flag and its value on separate lines. Spaces within a line stay in that argument. No shell quoting or expansion; blank lines and surrounding whitespace are ignored." }
-            }
-            div { class: "form-field",
-                div { class: "form-label",
-                    span { class: "form-key", "env" }
-                    span { class: "form-note", "environment, KEY=value per line" }
-                }
-                textarea {
-                    class: "textarea",
-                    rows: 2,
-                    value: "{env}",
-                    spellcheck: false,
-                    aria_label: "Environment",
-                    placeholder: "ACP_LOG=debug",
-                    oninput: move |event| {
-                        env.set(event.value());
-                        clear_recall_confirmation();
-                    },
-                }
-            }
-            div { class: "form-field",
-                div { class: "form-label",
-                    span { class: "form-key", "cwd" }
-                    span { class: "form-note", "session working directory" }
-                }
-                input {
-                    class: "input",
-                    value: "{cwd}",
-                    spellcheck: false,
-                    aria_label: "Working directory",
-                    aria_describedby: "launch-cwd-help",
-                    placeholder: "the inspector's own",
-                    oninput: move |event| {
-                        cwd.set(event.value());
-                        clear_recall_confirmation();
-                    },
-                }
-                p { id: "launch-cwd-help", class: "hint", "Empty uses the inspector's working directory; relative paths resolve against it. The Agent starts there, and session/new receives an absolute path." }
-            }
-
-            if !recent.is_empty() {
-                div { class: "form-field",
-                    div { class: "form-label",
-                        span { class: "eyebrow", "Recent" }
+            },
+            div { class: "dialog-body", "data-slot": "spawn",
+                if let Some(failure) = &failure {
+                    div {
+                        id: "launch-failure",
+                        class: "alert alert-error launch-failure",
+                        "data-slot": "launch-failure",
+                        role: "alert",
+                        tabindex: "-1",
+                        div { class: "launch-failure-body",
+                            p { class: "launch-failure-headline", "{failure.headline}" }
+                            for line in failure.detail.iter() {
+                                p { class: "hint mono", "{line}" }
+                            }
+                            if let Some(path) = &failure.path {
+                                p { class: "hint", "data-slot": "launch-path",
+                                    "Searched PATH: "
+                                    code { class: "mono", title: "{path}",
+                                        {abbreviate_path(path, std::env::var("HOME").ok().as_deref())}
+                                    }
+                                }
+                            }
+                            p { class: "hint", "Everything the agent wrote is in the Diagnostics tab." }
+                        }
                     }
-                    div { class: "recents",
-                        for (nth , entry) in recent.iter().enumerate() {
-                            // By position, because the list *is* an order: the
-                            // same invocation relaunched moves to the front,
-                            // and a key made of its text would move a row the
-                            // reader would rather saw redrawn where it now is.
-                            div { class: "recent-row", key: "{nth}",
-                                span { class: "recent-kind", "stdio" }
-                                button {
-                                    class: "recent-label recall",
-                                    r#type: "button",
-                                    // The whole invocation, and what pressing
-                                    // it does: the row shows the program and
-                                    // its arguments, and a click is a refill
-                                    // rather than the launch a list of past
-                                    // runs might be read as offering.
-                                    title: "Put this back in the form: {invocation(entry)}",
-                                    onclick: {
-                                        let entry = entry.clone();
-                                        move |_| refill(&entry)
-                                    },
-                                    {running_label(entry)}
-                                }
-                                if let Some(under) = under(entry) {
-                                    span { class: "recent-when", title: "{under}", "{under}" }
-                                }
+                }
+
+                Field {
+                    context: FieldContext::new(Binding::<String>::from(command)).with_meta_values(meta(COMMAND, command_error)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field",
+                    FieldLabel { "Command" }
+                    Input {
+                        class: "mono",
+                        on_change: move |_| clear_recall_confirmation(),
+                        on_focus_exit: move |()| left_command.set(true),
+                        // String keys: `autofocus` and `spellcheck` are on both
+                        // attribute sets the component extends (U9, #21).
+                        // **The platform focuses it, once per opening.**
+                        attributes: attributes!(input {
+                            "autofocus": true,
+                            "spellcheck": "false",
+                            autocomplete: "off",
+                            placeholder: "npx",
+                        }),
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "Executable name or path, without arguments or shell quotes."
+                    }
+                    if let Some(split) = split.clone() {
+                        FieldDescription {
+                            appearance: FieldDescriptionAppearance::None,
+                            class: "hint split-offer",
+                            "data-slot": "split-offer",
+                            "This looks like a whole command line. "
+                            button {
+                                class: "btn btn-xs btn-quiet",
+                                "data-slot": "split-command",
+                                r#type: "button",
+                                onclick: move |_| {
+                                    let mut lines = split.args.clone();
+                                    let kept = args.peek().trim().to_owned();
+                                    if !kept.is_empty() {
+                                        lines.push(kept);
+                                    }
+                                    args.set(lines.join("\n"));
+                                    if !split.env.is_empty() {
+                                        let mut vars = split.env.clone();
+                                        let kept = env.peek().trim().to_owned();
+                                        if !kept.is_empty() {
+                                            vars.push(kept);
+                                        }
+                                        env.set(vars.join("\n"));
+                                    }
+                                    command.set(split.program.clone());
+                                    clear_recall_confirmation();
+                                    focus(COMMAND);
+                                },
+                                "Split into command + arguments"
                             }
                         }
                     }
-                    p {
-                        class: "hint",
-                        "data-slot": "recall-confirmation",
-                        role: "status",
-                        aria_live: "polite",
-                        aria_atomic: "true",
-                        if let Some(message) = recall_confirmation() {
-                            "{message}"
+                    FieldError {}
+                }
+                Field {
+                    context: FieldContext::new(Binding::<String>::from(args)).with_meta_values(meta("launch-args", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field",
+                    FieldLabel { "Arguments" }
+                    Textarea {
+                        class: "mono",
+                        on_change: move |_| clear_recall_confirmation(),
+                        attributes: attributes!(textarea {
+                            rows: 3,
+                            "spellcheck": "false",
+                            placeholder: "@zed-industries/claude-code-acp",
+                        }),
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "One per line. Put a flag and its value on separate lines. No shell quoting or expansion."
+                    }
+                }
+                Field {
+                    context: FieldContext::new(Binding::<String>::from(env)).with_meta_values(meta("launch-env", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field",
+                    FieldLabel { "Environment" }
+                    Textarea {
+                        class: "mono",
+                        on_change: move |_| clear_recall_confirmation(),
+                        attributes: attributes!(textarea {
+                            rows: 2,
+                            "spellcheck": "false",
+                            placeholder: "ACP_LOG=debug",
+                        }),
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "One NAME=value per line, added to the inspector's own environment."
+                    }
+                    if !unset.is_empty() {
+                        FieldDescription {
+                            appearance: FieldDescriptionAppearance::None,
+                            class: "hint field-warning",
+                            "data-slot": "env-warning",
+                            {unset_warning(&unset)}
                         }
                     }
                 }
-            }
-
-            // Under the form and not on a row of the list, because it is about
-            // the launch that just worked rather than about any one invocation
-            // in it.
-            if let Some(reason) = &unsaved {
-                p { class: "alert alert-warning", "data-slot": "unsaved", role: "status",
-                    "Launched, but not remembered for next time: {reason}."
-                }
-            }
-        }
-
-        div { class: "dialog-foot",
-            p { class: "hint",
-                if running {
-                    "Stop the running Agent before launching another."
-                } else {
-                    "Launch starts the Agent and opens a Session."
-                }
-            }
-            button {
-                class: "btn btn-md btn-quiet",
-                r#type: "button",
-                onclick: move |_| crate::connect::close(),
-                "Cancel"
-            }
-            button {
-                class: "btn btn-md btn-filled launch",
-                r#type: "button",
-                // Running: one connection at a time, and stopping is a decision
-                // taken deliberately rather than by relaunching over the top of
-                // an agent mid-turn.
-                aria_disabled: (!launch_available).then_some("true"),
-                tabindex: (!launch_available).then_some("-1"),
-                onclick: move |_| {
-                    if launch_available {
-                        clear_recall_confirmation();
-                        on_launch.call(agent());
+                Field {
+                    context: FieldContext::new(Binding::<String>::from(cwd)).with_meta_values(meta("launch-cwd", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field",
+                    FieldLabel { "Working directory" }
+                    Input {
+                        class: "mono",
+                        on_change: move |_| clear_recall_confirmation(),
+                        attributes: attributes!(input {
+                            "spellcheck": "false",
+                            autocomplete: "off",
+                            placeholder: "the inspector's own",
+                        }),
                     }
-                },
-                if launching { "Launching" } else if running { "Running" } else { "Launch" }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "Empty uses the inspector's own; relative paths resolve against it. The agent starts here, and the session gets it as an absolute path."
+                    }
+                }
+
+                crate::mcp::McpEditor { prefix: "launch" }
+
+                if !recent.is_empty() {
+                    div { class: "form-field recent-field",
+                        div { class: "form-label",
+                            span { class: "eyebrow", id: "recent-label", "Recent" }
+                        }
+                        div { class: "recents", role: "list", aria_labelledby: "recent-label",
+                            for (nth , entry) in recent.iter().enumerate() {
+                                // By position, because the list *is* an order: the
+                                // same invocation relaunched moves to the front.
+                                div { class: "recent-row", key: "{nth}", role: "listitem",
+                                    button {
+                                        class: "recent-label recall",
+                                        r#type: "button",
+                                        title: "Fill in the form with {invocation(entry)}",
+                                        onclick: {
+                                            let entry = entry.clone();
+                                            move |_| refill(&entry)
+                                        },
+                                        {running_label(entry)}
+                                    }
+                                    if let Some(under) = under(entry) {
+                                        span { class: "recent-when", title: "{under}", "{under}" }
+                                    }
+                                    button {
+                                        class: "btn btn-xs btn-quiet recent-launch",
+                                        "data-slot": "recent-launch",
+                                        r#type: "button",
+                                        aria_label: "Launch {invocation(entry)}",
+                                        title: "Launch {invocation(entry)}",
+                                        aria_disabled: launching.then_some("true"),
+                                        onclick: {
+                                            let entry = entry.clone();
+                                            move |_| {
+                                                if !launching && crate::mcp::attempt_launch() {
+                                                    clear_recall_confirmation();
+                                                    on_launch.call(entry.clone());
+                                                }
+                                            }
+                                        },
+                                        span { class: "disclosure-icon", aria_hidden: "true",
+                                            Icon { class: "icon", width: 16, height: 16, icon: LdPlay }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        p {
+                            class: "hint",
+                            "data-slot": "recall-confirmation",
+                            role: "status",
+                            aria_live: "polite",
+                            aria_atomic: "true",
+                            if let Some(message) = recall_confirmation() {
+                                "{message}"
+                            }
+                        }
+                    }
+                }
+
+                // Under the form and not on a row of the list, because it is about
+                // the launch that just worked rather than about any one invocation
+                // in it.
+                if let Some(reason) = &unsaved {
+                    p { class: "alert alert-warning", "data-slot": "unsaved", role: "status",
+                        "Launched, but not remembered for next time: {reason}."
+                    }
+                }
+            }
+
+            div { class: "dialog-foot",
+                p { id: "launch-reason", class: "hint",
+                    match reason {
+                        Some(reason) => rsx! { "{reason}" },
+                        None if running => rsx! { "Stops the running agent and starts this one. The trace is kept." },
+                        None => rsx! { "Starts the agent and opens a session." },
+                    }
+                }
+                button {
+                    class: "btn btn-md btn-quiet",
+                    r#type: "button",
+                    onclick: move |_| crate::connect::close(),
+                    "Cancel"
+                }
+                button {
+                    class: "btn btn-md btn-filled launch",
+                    "data-slot": "launch",
+                    r#type: "submit",
+                    aria_describedby: "launch-reason",
+                    // Launching: the handshake is in flight and a second one
+                    // would race it. Otherwise the button always answers, with
+                    // the reason in the line beside it when it cannot launch.
+                    aria_disabled: launching.then_some("true"),
+                    tabindex: launching.then_some("-1"),
+                    if launching { "Launching" } else if running { "Restart with these settings" } else { "Launch" }
+                }
             }
         }
     }
 }
 
+/// Moves focus to a control by id, once it is painted.
+fn focus(id: &'static str) {
+    document::eval(&format!(
+        "requestAnimationFrame(() => document.getElementById({id:?})?.focus());"
+    ));
+}
+
 /// The program a path names, without the directories that led to it.
 ///
 /// **The end of a command path is the identifying part of it**, and the end is
-/// what a line that runs out of room loses: `/home/laborant/…/.testy/bin/testy`
-/// truncates to `/home/laborant/dioxus-chat.orig/phoe…`, which is every
-/// invocation under one checkout drawn identically. The whole of it is on the
-/// row's tooltip, which is where a label keeps what it does not show.
+/// what a line that runs out of room loses. The whole of it is on the row's
+/// tooltip, which is where a label keeps what it does not show.
 fn program(command: &str) -> &str {
     let command = command.trim();
     command
@@ -271,8 +651,7 @@ fn program(command: &str) -> &str {
 ///
 /// Two segments and an ellipsis: enough to tell `…/phoenix/inspector` from
 /// `…/phoenix/bridge`, which is the question a working directory is read to
-/// answer. The elision is drawn, so nobody reads it as the whole path, and the
-/// tooltip carries what was elided.
+/// answer.
 fn tail(path: &str, segments: usize) -> String {
     let parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
     if parts.len() <= segments + 1 {
@@ -284,11 +663,7 @@ fn tail(path: &str, segments: usize) -> String {
 
 /// A remembered invocation on one line: the program and its arguments, the way
 /// it would read if it had been typed at a shell.
-///
-/// Joined with spaces and not quoted, because it is a label rather than
-/// something to paste: what the form is refilled with is the invocation itself,
-/// one argument per line, exactly as it was launched.
-fn invocation(command: &AgentCommand) -> String {
+pub(crate) fn invocation(command: &AgentCommand) -> String {
     std::iter::once(command.command.trim())
         .chain(command.arguments())
         .collect::<Vec<_>>()
@@ -309,13 +684,9 @@ fn running_label(command: &AgentCommand) -> String {
 ///
 /// The environment is counted rather than shown. Its values are where a token
 /// would be, and a list of invocations under a form is not the place to put one
-/// on screen — the fields it refills are, once the user has asked for it.
-///
-/// Counted by core's reading of the field ([`AgentCommand::variables`]), so what
-/// the row says is how many the agent would be given — a line that sets nothing
-/// is not a variable here for the same reason it is not one at the spawn. A
-/// blank working directory is likewise nothing to say: a remembered row says
-/// what is *different* about that invocation.
+/// on screen. Counted by core's reading of the field
+/// ([`AgentCommand::variables`]), so what the row says is how many the agent
+/// would be given.
 fn under(command: &AgentCommand) -> Option<String> {
     let variables = command.variables().count();
     let mut said = Vec::new();
@@ -333,10 +704,15 @@ fn under(command: &AgentCommand) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{any::Any, rc::Rc, sync::Arc, time::SystemTime};
+
+    use dioxus::core::{ElementId, Mutation, NoOpMutations};
+    use dioxus::html::{PlatformEventData, SerializedFormData, SerializedMouseData};
+
     use super::*;
 
     /// The form, rendered — the screen itself rather than a value on the way to
-    /// it, the way the Console's tests are, because what it draws is markup.
+    /// it, because what it draws is markup.
     fn shown() -> String {
         #[component]
         fn Host() -> Element {
@@ -353,142 +729,434 @@ mod tests {
 
         let mut dom = VirtualDom::new(Host);
         dom.rebuild_in_place();
+        settle(&mut dom);
         dioxus_ssr::render(&dom)
+    }
+
+    /// Lets effects run and what they set be drawn.
+    fn settle(dom: &mut VirtualDom) {
+        for _ in 0..3 {
+            dom.render_immediate(&mut NoOpMutations);
+        }
     }
 
     fn running() -> AgentCommand {
         command("npx", "@zed-industries/claude-code-acp", "", "/tmp")
     }
 
-    #[test]
-    fn nothing_here_folds_and_nothing_here_says_what_is_running() {
-        // Both were answers to being a permanent column of the window, and the
-        // dialog is a better answer to the same measurement: one that is not
-        // open takes no room at all. What is running belongs to the toolbar,
-        // which says it whatever else is on screen — a form that repeated it
-        // would be describing an agent nobody can see while it is shut.
-        let html = shown();
-        assert!(
-            html.contains(r#"placeholder="npx""#)
-                && html.contains(r#"placeholder="@zed-industries/claude-code-acp""#),
-            "the fields: {html}"
-        );
-        assert!(
-            !html.contains("aria-expanded") && !html.contains("collapse"),
-            "and nothing folds them: {html}"
-        );
-        assert!(
-            !html.contains(r#"data-slot="running""#),
-            "what is running is the toolbar's line: {html}"
-        );
+    fn mouse_event() -> Event<dyn Any> {
+        Event::new(
+            Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default())) as Rc<dyn Any>,
+            true,
+        )
+    }
+
+    fn form_event(value: &str) -> Event<dyn Any> {
+        Event::new(
+            Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+                value.to_owned(),
+                Vec::new(),
+            )))) as Rc<dyn Any>,
+            true,
+        )
+    }
+
+    fn target(edits: &[Mutation], attribute: &str, expected: &str) -> ElementId {
+        edits
+            .iter()
+            .rev()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name,
+                    value: dioxus::core::AttributeValue::Text(value),
+                    id,
+                    ..
+                } if *name == attribute && *value == expected => Some(*id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {attribute}={expected}"))
+    }
+
+    fn listeners(edits: &[Mutation], event: &str) -> Vec<ElementId> {
+        edits
+            .iter()
+            .filter_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == event => Some(*id),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn launch_fields_are_four_named_rows_of_the_dialog() {
-        // Four rows, each named twice: the key the value goes out under and a
-        // line saying what it is for. The grouping legends went with the
-        // fieldsets — a dialog whose whole subject is one launch does not need
-        // to tell the reader that the command and its arguments belong
-        // together.
+    fn launch_fields_are_four_labelled_fields_of_one_form() {
         let html = shown();
 
-        for component in [
-            r#"class="dialog-body" data-slot="spawn""#,
-            r#"class="form-field""#,
-            r#"class="input""#,
-            r#"class="textarea""#,
-            r#"class="btn btn-md btn-filled launch""#,
-        ] {
-            assert!(
-                html.contains(component),
-                "the launch workflow is drawn with {component}: {html}"
-            );
-        }
+        assert!(
+            html.contains(r#"data-slot="spawn-form""#) && html.contains("<form"),
+            "the fields are a form, so Enter launches: {html}"
+        );
         assert_eq!(
             html.matches(r#"class="form-field""#).count(),
             4,
-            "one row per field the transport takes: {html}"
+            "one field per value the transport takes: {html}"
         );
-        for (key, note) in [
-            ("cmd", "executable only"),
-            ("args", "arguments, one per line"),
-            ("env", "environment, KEY=value per line"),
-            ("cwd", "session working directory"),
+        for (id, label) in [
+            ("launch-command", "Command"),
+            ("launch-args", "Arguments"),
+            ("launch-env", "Environment"),
+            ("launch-cwd", "Working directory"),
         ] {
             assert!(
-                html.contains(&format!(r#"class="form-key">{key}<"#))
-                    && html.contains(&format!(r#"class="form-note">{note}<"#)),
-                "the {key} field is named by its key and by what it is for: {html}"
+                html.contains(&format!(r#"for="{id}" class="label">{label}</label>"#))
+                    && html.contains(&format!(r#"id="{id}""#)),
+                "the {label} control is named by its visible label: {html}"
             );
         }
         assert!(
-            !html.contains("card") && !html.contains("<fieldset"),
-            "the fields are flat content of the dialog rather than a nested card: {html}"
+            !html.contains(r#"aria-label="Command""#),
+            "the visible label is the accessible name, not a second one: {html}"
         );
-        for label in ["Command", "Arguments", "Environment", "Working directory"] {
-            assert!(
-                html.contains(&format!(r#"aria-label="{label}""#)),
-                "the {label} control keeps its accessible name: {html}"
-            );
-        }
         assert!(
             html.contains(r#"autofocus=true"#),
-            "and the platform puts the keyboard in Command each time the dialog is shown: {html}"
+            "the platform puts the keyboard in Command each time the dialog is shown: {html}"
+        );
+        assert!(
+            html.contains(r#"type="submit""#) && html.contains(">Launch</button>"),
+            "Launch submits the form: {html}"
+        );
+        assert!(
+            html.contains("Starts the agent and opens a session.")
+                || html.contains("Enter a command to launch."),
+            "the foot says what Launch does, or why it cannot: {html}"
+        );
+        assert!(
+            !html.contains("aria-invalid=\"true\"")
+                && !html.contains("Enter a command to launch.</div>"),
+            "nothing is wrong before the reader has done anything: {html}"
         );
     }
 
     #[test]
-    fn recent_commands_are_full_width_selectable_rows_that_refill_before_launch() {
+    fn the_mcp_editor_is_below_the_working_directory() {
+        #[derive(Clone, Props)]
+        struct Props {
+            inspector: acp_inspector_core::Inspector,
+        }
+        impl PartialEq for Props {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        fn host(props: Props) -> Element {
+            crate::mcp::provide(props.inspector);
+            rsx! {
+                SpawnForm {
+                    running: false,
+                    launching: false,
+                    recent: Vec::new(),
+                    unsaved: None,
+                    on_launch: move |_: AgentCommand| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new_with_props(
+            host,
+            Props {
+                inspector: acp_inspector_core::Inspector::new(),
+            },
+        );
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        let cwd = html.find(r#"id="launch-cwd""#).expect("cwd");
+        let mcp = html.find(r#"data-slot="mcp-editor""#).expect("mcp");
+        assert!(cwd < mcp, "the MCP disclosure follows the fields: {html}");
+        assert!(html.contains("MCP servers (0)"), "{html}");
+    }
+
+    #[test]
+    fn launching_with_no_command_says_so_on_the_field_and_does_not_launch() {
+        #[component]
+        fn Host() -> Element {
+            let mut launches = use_signal(|| 0);
+            rsx! {
+                SpawnForm {
+                    running: false,
+                    launching: false,
+                    recent: Vec::new(),
+                    unsaved: None,
+                    on_launch: move |_: AgentCommand| launches += 1,
+                }
+                span { "data-slot": "launch-count", "{launches}" }
+            }
+        }
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let submit = listeners(&edits, "submit")[0];
+        dom.runtime().handle_event("submit", form_event(""), submit);
+        settle(&mut dom);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="launch-count">0"#),
+            "nothing launches: {html}"
+        );
+        assert!(
+            html.contains("Enter a command to launch.") && html.contains(r#"aria-invalid="true""#),
+            "the reason is on the field and the field is marked: {html}"
+        );
+    }
+
+    #[test]
+    fn a_failed_launch_is_an_alert_inside_the_dialog() {
+        #[component]
+        fn Host(failure: LaunchFailure) -> Element {
+            rsx! {
+                SpawnForm {
+                    running: false,
+                    launching: false,
+                    recent: Vec::new(),
+                    unsaved: None,
+                    failure,
+                    on_launch: move |_: AgentCommand| {},
+                }
+            }
+        }
+        let failure = LaunchFailure {
+            headline: "Couldn't start the agent: No such file or directory (os error 2)".to_owned(),
+            detail: vec!["Command: claude-code-acp".to_owned()],
+            path: Some("/usr/bin:/bin".to_owned()),
+        };
+        let mut dom = VirtualDom::new_with_props(Host, HostProps { failure });
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"id="launch-failure""#)
+                && html.contains(r#"role="alert""#)
+                && html.contains(r#"tabindex="-1""#),
+            "the alert can be announced and focused: {html}"
+        );
+        assert!(
+            html.contains("Couldn&#39;t start the agent: No such file or directory")
+                && html.contains("Command: claude-code-acp")
+                && html.contains("Searched PATH:")
+                && html.contains("/usr/bin:/bin"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_spawn_that_failed_is_worded_as_one_with_the_path_it_searched() {
+        let lines = vec![Diagnostic {
+            at: SystemTime::UNIX_EPOCH,
+            kind: DiagnosticKind::SpawnFailed {
+                command: "claude-code-acp --stdio".to_owned(),
+                error: Arc::new(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            },
+        }];
+        let failure = launch_failure(
+            ConnectionStatus::FailedToStart,
+            Some(&CallError::Disconnected),
+            false,
+            &lines,
+            Some("/usr/bin:/bin"),
+        )
+        .expect("a failure");
+        assert!(
+            failure.headline.starts_with("Couldn't start the agent: "),
+            "{failure:?}"
+        );
+        assert!(!failure.headline.contains("connection to the agent is gone"));
+        assert_eq!(failure.path.as_deref(), Some("/usr/bin:/bin"));
+        assert_eq!(failure.detail, ["Command: claude-code-acp --stdio"]);
+
+        // A path that was not found was not looked up in PATH.
+        let lines = vec![Diagnostic {
+            at: SystemTime::UNIX_EPOCH,
+            kind: DiagnosticKind::SpawnFailed {
+                command: "/opt/agent".to_owned(),
+                error: Arc::new(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            },
+        }];
+        let failure = launch_failure(
+            ConnectionStatus::FailedToStart,
+            None,
+            false,
+            &lines,
+            Some("/bin"),
+        )
+        .unwrap();
+        assert_eq!(failure.path, None);
+
+        // An agent that described itself has not failed to launch.
+        assert_eq!(
+            launch_failure(
+                ConnectionStatus::Connected,
+                Some(&CallError::NoSession),
+                true,
+                &[],
+                None
+            ),
+            None
+        );
+        // Nor has a window that never launched.
+        assert_eq!(
+            launch_failure(ConnectionStatus::Disconnected, None, false, &[], None),
+            None
+        );
+    }
+
+    #[test]
+    fn an_agent_that_exits_before_answering_says_how_and_what_it_said_last() {
+        let lines = vec![
+            Diagnostic {
+                at: SystemTime::UNIX_EPOCH,
+                kind: DiagnosticKind::Stderr("error: missing API key".to_owned()),
+            },
+            Diagnostic {
+                at: SystemTime::UNIX_EPOCH,
+                kind: DiagnosticKind::Stderr("  ".to_owned()),
+            },
+        ];
+        let failure = launch_failure(
+            ConnectionStatus::Lost,
+            Some(&CallError::Disconnected),
+            false,
+            &lines,
+            None,
+        )
+        .unwrap();
+        assert_eq!(failure.headline, "The agent stopped before it answered.");
+        assert_eq!(failure.detail, ["Last output: error: missing API key"]);
+    }
+
+    #[test]
+    fn a_whole_command_line_in_command_is_offered_a_split() {
+        assert_eq!(command_line("npx"), None);
+        assert_eq!(
+            command_line("/Applications/My Agent.app/Contents/MacOS/agent"),
+            None,
+            "a path with a space in it is a path"
+        );
+        assert_eq!(
+            command_line("ACP_LOG=debug npx -y '@zed/claude code' --flag=\"a b\""),
+            Some(CommandLine {
+                env: vec!["ACP_LOG=debug".to_owned()],
+                program: "npx".to_owned(),
+                args: vec![
+                    "-y".to_owned(),
+                    "@zed/claude code".to_owned(),
+                    "--flag=a b".to_owned()
+                ],
+            })
+        );
+        assert_eq!(
+            command_line("/usr/local/bin/agent --stdio").map(|line| (line.program, line.args)),
+            Some((
+                "/usr/local/bin/agent".to_owned(),
+                vec!["--stdio".to_owned()]
+            ))
+        );
+        assert_eq!(words(r#"a\ b "c\"d" ''"#), ["a b", "c\"d", ""]);
+    }
+
+    #[test]
+    fn the_split_offer_is_drawn_and_moves_words_into_their_fields() {
         #[component]
         fn Host() -> Element {
             rsx! {
                 SpawnForm {
                     running: false,
                     launching: false,
-                    recent: vec![running()],
+                    recent: Vec::new(),
                     unsaved: None,
+                    launched: command("FOO=1 npx -y agent", "--verbose", "", ""),
                     on_launch: move |_: AgentCommand| {},
                 }
             }
         }
-
-        let html = dioxus_ssr::render_element(rsx! { Host {} });
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let mut edits = dom.rebuild_to_vec().edits;
+        for _ in 0..3 {
+            edits.extend(dom.render_immediate_to_vec().edits);
+        }
+        let html = dioxus_ssr::render(&dom);
         assert!(
-            html.contains(r#"class="recents"#)
-                && html.contains(r#"class="recent-row"#)
-                && html.contains(r#"class="recent-label recall"#),
-            "recent commands are full-width selectable rows: {html}"
-        );
-        assert!(
-            html.contains("Put this back in the form: npx @zed-industries/claude-code-acp"),
-            "selection remains a refill rather than a launch: {html}"
-        );
-        assert!(
-            html.contains("npx @zed-industries/claude-code-acp"),
+            html.contains(r#"data-slot="split-offer""#)
+                && html.contains("Split into command + arguments"),
             "{html}"
         );
-        assert!(
-            html.contains(r#"data-slot="recall-confirmation""#)
-                && html.contains(r#"role="status""#)
-                && html.contains(r#"aria-live="polite""#),
-            "Recent keeps a persistent polite confirmation region: {html}"
+        // Drive the split through whichever rendered button performs it.
+        let clicks = listeners(&edits, "click");
+        for id in clicks {
+            dom.runtime().handle_event("click", mouse_event(), id);
+            dom.render_immediate(&mut NoOpMutations);
+            let html = dioxus_ssr::render(&dom);
+            if html.contains(r#"value="npx""#) {
+                assert!(
+                    html.contains("-y\nagent\n--verbose") && html.contains(r#"value="FOO=1""#),
+                    "the words went to their fields: {html}"
+                );
+                return;
+            }
+        }
+        panic!("no control split the command line");
+    }
+
+    #[test]
+    fn env_lines_without_an_equals_sign_are_warned_about() {
+        assert_eq!(unset_lines("A=1\n\nHALF\n B=2 \nTOKEN"), [3, 5]);
+        assert_eq!(
+            unset_warning(&[3]),
+            "Line 3 has no \u{201c}=\u{201d}, so it sets nothing. Write it as NAME=value."
         );
+        assert!(unset_warning(&[3, 5, 7]).starts_with("Lines 3, 5 and 7 have no"));
+
+        #[component]
+        fn Host() -> Element {
+            rsx! {
+                SpawnForm {
+                    running: false,
+                    launching: false,
+                    recent: Vec::new(),
+                    unsaved: None,
+                    launched: command("npx", "", "ACP_LOG=debug\nHALF_TYPED", ""),
+                    on_launch: move |_: AgentCommand| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        let warning_id = html
+            .split(r#"data-slot="env-warning""#)
+            .next()
+            .and_then(|before| before.rsplit("id=\"").next())
+            .and_then(|id| id.split('"').next())
+            .expect("the warning has an id")
+            .to_owned();
         assert!(
-            !html.contains("Invocation refilled:"),
-            "nothing has been recalled yet: {html}"
+            html.contains("Line 2 has no"),
+            "the warning is drawn: {html}"
+        );
+        let env = html
+            .split(r#"id="launch-env""#)
+            .next()
+            .and_then(|before| before.rsplit("<textarea").next())
+            .expect("env textarea");
+        assert!(
+            env.contains(&warning_id),
+            "the env field is described by the warning ({warning_id}): {env}"
         );
     }
 
     #[test]
-    fn recall_refills_without_launching_and_confirmation_clears_on_edit_or_launch() {
-        use std::{any::Any, rc::Rc};
-
-        use dioxus::core::{ElementId, Mutation, NoOpMutations};
-        use dioxus::html::{PlatformEventData, SerializedFormData, SerializedMouseData};
-
+    fn recent_commands_refill_from_the_label_and_launch_from_the_play_button() {
         #[component]
         fn Host() -> Element {
-            let mut launches = use_signal(|| 0);
+            let mut launched = use_signal(Vec::<AgentCommand>::new);
             rsx! {
                 SpawnForm {
                     running: false,
@@ -500,47 +1168,44 @@ mod tests {
                         "/remembered/path",
                     )],
                     unsaved: None,
-                    on_launch: move |_: AgentCommand| launches += 1,
+                    on_launch: move |agent: AgentCommand| launched.write().push(agent),
                 }
-                span { "data-slot": "launch-count", "{launches}" }
+                span { "data-slot": "launches", "{launched.read().len()}" }
+                for agent in launched.read().iter() {
+                    span { "data-slot": "launched", "{agent.command}" }
+                }
             }
         }
 
         set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
-        let mouse_event = || {
-            Event::new(
-                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
-                    as Rc<dyn Any>,
-                true,
-            )
-        };
         let mut dom = VirtualDom::new(Host);
         let edits = dom.rebuild_to_vec().edits;
-        let click_listeners = edits
-            .iter()
-            .filter_map(|edit| match edit {
-                Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<ElementId>>();
-        let input_listeners = edits
-            .iter()
-            .filter_map(|edit| match edit {
-                Mutation::NewEventListener { name, id } if name == "input" => Some(*id),
-                _ => None,
-            })
-            .collect::<Vec<ElementId>>();
-        assert_eq!(
-            click_listeners.len(),
-            3,
-            "the remembered row, Cancel and Launch are the only click targets"
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"class="recent-label recall""#)
+                && html.contains("Fill in the form with bunx --flag agent-package")
+                && html.contains(r#"aria-label="Launch bunx --flag agent-package""#),
+            "each row refills and launches: {html}"
         );
-        assert_eq!(input_listeners.len(), 4, "each Launch field accepts input");
+        assert!(
+            !html.contains(">stdio<"),
+            "the one transport is not repeated on every row: {html}"
+        );
+        let clicks = listeners(&edits, "click");
+        assert_eq!(
+            clicks.len(),
+            3,
+            "the row's label and play button, and Cancel"
+        );
 
-        dom.runtime()
-            .handle_event("click", mouse_event(), click_listeners[0]);
-        dom.render_immediate(&mut NoOpMutations);
-
+        // The label refills without launching.
+        let recall = target(
+            &edits,
+            "title",
+            "Fill in the form with bunx --flag agent-package",
+        );
+        dom.runtime().handle_event("click", mouse_event(), recall);
+        settle(&mut dom);
         let html = dioxus_ssr::render(&dom);
         for refilled in [
             r#"value="bunx""#,
@@ -551,52 +1216,28 @@ agent-package""#,
         ] {
             assert!(html.contains(refilled), "{refilled} is refilled: {html}");
         }
+        assert!(html.contains(r#"data-slot="launches">0"#), "{html}");
         assert!(
-            html.contains(r#"data-slot="launch-count">0"#),
-            "recall never invokes Launch: {html}"
-        );
-        assert!(
-            html.contains(
-                "Invocation refilled: bunx --flag agent-package. Review the fields, then Launch."
-            ),
-            "recall confirms what changed and the next step: {html}"
+            html.contains("Filled in bunx --flag agent-package. Press Launch to start it."),
+            "{html}"
         );
 
-        for (field, input) in ["Command", "Arguments", "Working directory", "Environment"]
-            .into_iter()
-            .zip(input_listeners)
-        {
-            let input_event = Event::new(
-                Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
-                    format!("edited {field}"),
-                    Vec::new(),
-                )))) as Rc<dyn Any>,
-                true,
-            );
-            dom.runtime().handle_event("input", input_event, input);
-            dom.render_immediate(&mut NoOpMutations);
-            let html = dioxus_ssr::render(&dom);
-            assert!(
-                !html.contains("Invocation refilled:"),
-                "editing {field} clears the recall confirmation: {html}"
-            );
-
-            dom.runtime()
-                .handle_event("click", mouse_event(), click_listeners[0]);
-            dom.render_immediate(&mut NoOpMutations);
-        }
-
+        // Editing a field clears the confirmation.
+        let input = listeners(&edits, "input")[0];
         dom.runtime()
-            .handle_event("click", mouse_event(), click_listeners[2]);
-        dom.render_immediate(&mut NoOpMutations);
+            .handle_event("input", form_event("edited"), input);
+        settle(&mut dom);
+        assert!(!dioxus_ssr::render(&dom).contains("Filled in"));
+
+        // The play button launches that invocation directly.
+        let play = target(&edits, "aria-label", "Launch bunx --flag agent-package");
+        dom.runtime().handle_event("click", mouse_event(), play);
+        settle(&mut dom);
         let html = dioxus_ssr::render(&dom);
         assert!(
-            html.contains(r#"data-slot="launch-count">1"#),
-            "Launch is still a separate action after recall: {html}"
-        );
-        assert!(
-            !html.contains("Invocation refilled:"),
-            "Launch clears the recall confirmation: {html}"
+            html.contains(r#"data-slot="launches">1"#)
+                && html.contains(r#"data-slot="launched">bunx<"#),
+            "the remembered invocation, not the edited fields: {html}"
         );
     }
 
@@ -621,10 +1262,6 @@ agent-package""#,
                 && html.contains("Launched, but not remembered for next time: permission denied."),
             "the persistence warning remains explicit: {html}"
         );
-        assert!(
-            !html.contains("badge"),
-            "the warning does not become a badge: {html}"
-        );
     }
 
     #[test]
@@ -644,33 +1281,65 @@ agent-package""#,
 
         let html = dioxus_ssr::render_element(rsx! { Host {} });
         assert!(
-            html.contains("Launching"),
+            html.contains("Launching") && html.contains("Starting the agent"),
             "loading is explicit in words: {html}"
         );
+        let launch = html
+            .split("<button")
+            .find(|button| button.contains(r#"data-slot="launch""#))
+            .expect("the launch button");
         assert!(
-            html.contains(r#"aria-disabled="true""#)
-                && html.contains(r#"tabindex="-1""#)
-                && !html.contains("disabled=true"),
-            "a launch cannot be repeated without replacing the focused button: {html}"
+            launch.contains(r#"aria-disabled="true""#)
+                && launch.contains(r#"tabindex="-1""#)
+                && !launch.contains("disabled=true"),
+            "a launch cannot be repeated without replacing the focused button: {launch}"
         );
     }
 
     #[test]
-    fn a_remembered_row_says_only_what_is_different_about_that_invocation() {
-        // A blank working directory is nothing to say about a remembered
-        // invocation: it ran wherever this window runs, which is true of every
-        // row and so distinguishes none of them.
-        assert_eq!(under(&command("npx", "", "", "")), None);
+    fn a_dialog_over_a_running_agent_offers_a_restart_with_its_settings() {
+        #[component]
+        fn Host() -> Element {
+            rsx! {
+                SpawnForm {
+                    running: true,
+                    launching: false,
+                    recent: Vec::new(),
+                    unsaved: None,
+                    launched: running(),
+                    on_launch: move |_: AgentCommand| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(">Restart with these settings</button>") && !html.contains(">Running<"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"value="npx""#),
+            "the fields hold what is running: {html}"
+        );
+    }
 
-        // What is said is said as a place rather than as a bare path, and
-        // elided from the front because the end of a directory is what tells
-        // two of them apart.
+    #[test]
+    fn a_path_is_shortened_at_home() {
+        assert_eq!(
+            abbreviate_path("/Users/me/.cargo/bin:/usr/bin:/Users/me", Some("/Users/me")),
+            "~/.cargo/bin:/usr/bin:~"
+        );
+        assert_eq!(abbreviate_path("/usr/bin", None), "/usr/bin");
+    }
+
+    #[test]
+    fn a_remembered_row_says_only_what_is_different_about_that_invocation() {
+        assert_eq!(under(&command("npx", "", "", "")), None);
         let somewhere = under(&command("npx", "", "", "/home/laborant/phoenix/inspector"))
             .expect("a directory that was typed is a difference worth naming");
         assert_eq!(somewhere, "in …/phoenix/inspector");
-
-        // And the environment is counted rather than shown, because its values
-        // are where a token would be.
         let carrying = under(&command("npx", "", "TOKEN=secret\nACP_LOG=debug", ""))
             .expect("variables are a difference too");
         assert_eq!(carrying, "2 variables");
@@ -698,25 +1367,10 @@ agent-package""#,
 
     #[test]
     fn what_is_under_it_says_where_and_how_many_never_what() {
-        assert_eq!(under(&command("npx", "", "", "")), None);
-        // Said as a place, and elided from the front where a path is long
-        // enough to need it: the end of a directory is what tells two of them
-        // apart, and it is the end a row runs out of room for.
         assert_eq!(
             under(&command("npx", "", "", "/tmp")),
             Some("in /tmp".to_owned())
         );
-        assert_eq!(
-            under(&command(
-                "npx",
-                "",
-                "",
-                "/home/somebody/work/phoenix/inspector"
-            )),
-            Some("in …/phoenix/inspector".to_owned())
-        );
-        // The values stay off the row: `ANTHROPIC_API_KEY=sk-...` is exactly the
-        // shape of the second line of somebody's spawn form.
         let secrets = command(
             "npx",
             "",
@@ -726,9 +1380,6 @@ agent-package""#,
         let said = under(&secrets).expect("a line under it");
         assert_eq!(said, "in /tmp · 2 variables");
         assert!(!said.contains("sk-secret"), "{said}");
-
-        // And it counts what the agent would be given, not lines: a half-typed
-        // variable sets nothing at the spawn and is nothing here (`command.rs`).
         assert_eq!(
             under(&command("npx", "", "ACP_LOG=debug\nHALF_TYPED", "")),
             Some("1 variable".to_owned())

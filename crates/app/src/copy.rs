@@ -30,7 +30,7 @@
 //! the button pretending.
 
 use dioxus::prelude::*;
-use dioxus_free_icons::{Icon, icons::hi_outline_icons::HiClipboardCopy};
+use dioxus_free_icons::{Icon, icons::ld_icons::LdCopy};
 
 use crate::toast;
 
@@ -148,7 +148,7 @@ pub fn Copy(
             // this one as the last text control among glyphs. What it is called
             // is unchanged and is where it always was, on the control.
             span { class: "disclosure-icon", aria_hidden: "true",
-                Icon { class: "icon", icon: HiClipboardCopy }
+                Icon { class: "icon", width: 16, height: 16, icon: LdCopy }
             }
         }
     }

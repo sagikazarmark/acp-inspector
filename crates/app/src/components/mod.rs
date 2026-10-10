@@ -7,3 +7,4 @@ pub mod native_select;
 pub mod radio_group;
 pub mod schemaform_daisyui;
 pub mod select;
+pub mod textarea;

@@ -174,7 +174,7 @@ async fn layout_preserves_prompt_and_attachment_but_session_changes_reset_them()
     let edits = dom.rebuild_to_vec().edits;
     input(&mut dom, listener(&edits, "input"), "Keep this prompt");
     attach(&mut dom, &edits).await;
-    click(&mut dom, target(&edits, "aria-label", "JSON-RPC full"));
+    click(&mut dom, target(&edits, "aria-label", "Trace only"));
     let hidden = dioxus_ssr::render(&dom);
     assert!(
         hidden.contains("class=\"split spine-wire\""),
@@ -205,7 +205,7 @@ async fn layout_preserves_prompt_and_attachment_but_session_changes_reset_them()
     );
 
     // Both reset paths matter: a different id, and reopening the same Session.
-    let wire = target(&edits, "aria-label", "JSON-RPC full");
+    let wire = target(&edits, "aria-label", "Trace only");
     let split = target(&edits, "aria-label", "Split");
     let resets =
         ["Switch Session", "Reopen Session"].map(|name| (name, target(&edits, "aria-label", name)));
@@ -266,7 +266,7 @@ async fn layout_preserves_elicitation_form_raw_and_resolved_values() {
     let field = target(&edits, "data-schemaform-control", "string");
     input(&mut dom, field, "Edited form");
     assert!(dioxus_ssr::render(&dom).contains("value=\"Edited form\""));
-    let wire = target(&edits, "aria-label", "JSON-RPC full");
+    let wire = target(&edits, "aria-label", "Trace only");
     let split = target(&edits, "aria-label", "Split");
     click(&mut dom, wire);
     click(&mut dom, split);

@@ -159,3 +159,14 @@ test('a dialog prevents focus theft, and absent destinations stop after 60 paint
   await missing;
   assert.deepEqual(h.effects, []);
 });
+
+test('a launch hands focus to the prompt once it is enabled', async () => {
+  const h = mount();
+  const key = '[data-slot="composer"] textarea:not([disabled])';
+  const pending = h.request({ kind: 'prompt' });
+  await h.paint();
+  assert.deepEqual(h.effects, [], 'nothing to focus while the session is opening');
+  h.node(key);
+  await h.paint(); await pending;
+  assert.deepEqual(h.effects, [['focus', key]]);
+});
