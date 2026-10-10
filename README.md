@@ -78,9 +78,12 @@ The image also holds `THIRD_PARTY_LICENSES.html`, the notices for every dependen
   directory you are prepared to have changed.
 - **Disconnect ends the agent's process group, not every descendant.** A process the agent starts
   that leaves the group (a daemon, a `setsid` child) keeps running after disconnect.
-- **Remembered invocations include their environment.** The spawn form's recent commands are saved
-  with the environment you entered, API keys included, in plaintext in `recent.json` under the
-  platform's state directory (`0600` on Unix). See [where it is kept](#remembered-commands).
+- **Remembered environment values are plaintext, when you ask for them.** The spawn form's recent
+  commands keep only the *names* of the variables you set, unless you tick **Remember values** for
+  that launch; then the values, API keys included, are saved in plaintext in `recent.json` under
+  the platform's state directory (`0600` on Unix). Lists written by earlier versions kept values
+  for every launch and still do until you press **Forget saved values** on the row. See
+  [where it is kept](#remembered-commands).
 - **ACP v1 as of `agent-client-protocol-schema` 1.7.** Messages added to the stable schema later
   are shown raw, as unrecognized traffic, rather than decoded.
 - **One agent and one live session at a time**, over stdio only.
@@ -194,14 +197,18 @@ background, showing pending status and then the path or failure.
 
 The spawn form remembers what answered. An invocation whose agent described itself — a session
 opened, or an agent that wants a login before it will open one — joins a short list under the
-form: newest first, ten of them, one click to put one back in the four fields, and the Launch
-button that was always there to run it. A command that never started said nothing and is not
-remembered, because that is a typo and it is still in the fields. It is a convenience and stays one
+form and on the first-run card: newest first, ten of them, one click to put one back in the
+fields, a play button to launch it directly, and a button to remove it. A command that never
+started said nothing and is not remembered, because that is a typo and it is still in the fields.
+Environment variables are remembered by name only unless **Remember values** was ticked for that
+launch; a row whose values were not kept fills the form in with empty values to complete rather
+than launching with them blank. It is a convenience and stays one
 ([§1.1](docs/architecture.md#11-what-is-deliberately-not-built)): nothing to name, edit,
 import or export, and the persistent agent catalog is still deferred. The list lives in one JSON
 file under the platform's own state directory — `~/.local/state/acp-inspector/recent.json` on
 Linux, `~/Library/Application Support/acp-inspector/` on macOS, `%APPDATA%\acp-inspector\` on
-Windows, `0600` on Unix because a remembered invocation carries its environment. What it holds and
+Windows, `0600` on Unix because a remembered invocation can carry its environment's values. A file
+that cannot be read is moved aside as `recent.json.bak` and the window says so. What it holds and
 why is [§15 q6](docs/architecture.md#15-open-questions--validation-gaps).
 
 ### Appearance
@@ -536,6 +543,22 @@ just bundle-macos "Developer ID Application: Name (TEAMID)" notary   # + notariz
 
 Bump the version in `crates/app/Cargo.toml` and `crates/core/Cargo.toml`, move the CHANGELOG's
 Unreleased entries under the new version, and build one image per architecture.
+
+**Linux and Windows archives** come from [cargo-dist](https://opensource.axo.dev/cargo-dist/)
+(`dist`, in the devenv shell), configured in `dist-workspace.toml`: a `.tar.xz` of the binary for
+x86_64 and aarch64 Linux and a `.zip` for x86_64 Windows, with the README, licences and CHANGELOG.
+They are **not built or tested on CI**, and nothing uploads them — the configuration generates no
+release workflow. Build each on the platform it is for (`dx` and `dist` do not cross-compile the
+WebView stack), with the Linux packages from [Quick start](#quick-start) or the MSVC toolchain on
+Windows, and put `just licenses` output beside it:
+
+```sh
+just dist-plan     # what would be built; builds nothing
+just dist-build    # this machine's archive, into target/distrib/
+```
+
+The binary needs WebKitGTK 4.1 at run time on Linux, and WebView2 on Windows (part of current
+Windows 10 and 11).
 
 ## License
 
