@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
-# Two crates, split by layer and not by renderer (docs/architecture.md §3,
+# Split by layer and not by renderer (docs/architecture.md §3,
 # docs/adr/0011-one-ui-crate-a-feature-per-renderer.md): `core` is everything
 # that is not a screen, `app` is the screens and the one binary, with the
-# renderer chosen by a Cargo feature.
-members = ["crates/core", "crates/app"]
+# renderer chosen by a Cargo feature. `cli` is a second, headless surface over
+# the same core — no renderer at all, for scripts and CI (release plan F10).
+members = ["crates/core", "crates/app", "crates/cli"]
 
 [workspace.package]
 edition = "2024"

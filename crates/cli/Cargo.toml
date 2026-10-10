@@ -1,0 +1,28 @@
+[package]
+name = "acp-inspector-cli"
+version = "0.1.0"
+description = "The ACP Inspector without a window: drive an agent over stdio, answer its permission requests by policy, export the trace, and exit with a code CI can read"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "acp-inspector-cli"
+path = "src/main.rs"
+
+# Core's public API and nothing above it: no renderer, no Dioxus
+# (`tests/headless.rs` holds that line against the resolved graph), and no
+# argument-parsing crate — the grammar is small enough to read in one file.
+[dependencies]
+acp-inspector-core.workspace = true
+# The JSON summary (`--json`), the wire spelling of the protocol values it
+# names, and the reader `inspect` uses on an export. Both already in the graph.
+serde.workspace = true
+serde_json.workspace = true
+# The runtime core's pumps run on. One thread: an agent is one pipe, and the
+# order the stores see frames in is the order they were read. `signal` is for
+# Ctrl-C, which stops the agent gracefully and still writes the export; it
+# adds nothing to the graph that tokio's `process` feature has not.
+tokio = { workspace = true, features = ["rt", "macros", "time", "signal"] }
