@@ -9,6 +9,10 @@
 
 use acp_inspector_core::Appearance;
 use dioxus::prelude::*;
+use dioxus_free_icons::{
+    Icon,
+    icons::ld_icons::{LdMoon, LdSun},
+};
 
 /// Marks the document element with an explicit choice, or unmarks it for
 /// `System` so the stylesheet's `prefers-color-scheme` rules answer again.
@@ -78,13 +82,14 @@ pub fn AppearanceControl(chosen: Appearance, on_choose: EventHandler<Appearance>
     }
 }
 
-/// What each choice is drawn as: the two schemes get the sky they are, and
-/// System gets the word, because *follow the desktop* is not a picture.
-fn glyph(appearance: Appearance) -> &'static str {
+/// What each choice is drawn as: the two schemes get the sky they are, as
+/// icons from the window's one set (D8), and System gets the word, because
+/// *follow the desktop* is not a picture.
+fn glyph(appearance: Appearance) -> Element {
     match appearance {
-        Appearance::Light => "☀",
-        Appearance::Dark => "☾",
-        Appearance::System => "auto",
+        Appearance::Light => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSun } },
+        Appearance::Dark => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdMoon } },
+        Appearance::System => rsx! { "Auto" },
     }
 }
 
@@ -143,10 +148,14 @@ mod tests {
             1,
             "exactly one answer is on: {html}"
         );
-        // And the glyphs are decoration the name does not depend on.
+        // And the icons are decoration the name does not depend on, drawn from
+        // the icon set rather than from whatever font has a sun in it.
         assert!(
-            html.contains(r#"<span aria-hidden="true">☀</span>"#)
-                && html.contains(r#"<span aria-hidden="true">☾</span>"#),
+            html.matches(r#"<span aria-hidden="true"><svg class="icon" height="16" width="16""#)
+                .count()
+                == 2
+                && !html.contains('☀')
+                && !html.contains('☾'),
             "the two schemes are drawn as the sky they are: {html}"
         );
     }
