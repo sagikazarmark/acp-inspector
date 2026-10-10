@@ -1,11 +1,15 @@
 //! Real controls over App's shared navigation seam, with both evidence surfaces.
 use std::{any::Any, rc::Rc, time::SystemTime};
 
-use acp_inspector_core::{Direction, EntryId, EntryKind, Frame, Recorded};
+use acp_inspector_core::{
+    Appearance, ConnectionStatus, Direction, EntryId, EntryKind, Frame, Recorded, SessionSettings,
+    TimelineEntry, TracedFrame, TurnState,
+};
 use dioxus::core::{AttributeValue, ElementId, Mutation};
 use dioxus::html::{PlatformEventData, SerializedMouseData};
 
 use super::*;
+use crate::app::commands::commands;
 
 fn host() -> Element {
     let nav = navigation::use_navigation();

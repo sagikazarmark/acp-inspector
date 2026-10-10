@@ -41,11 +41,12 @@ use acp_inspector_core::{
 };
 use dioxus::prelude::*;
 
+use crate::app::bar::TopBar;
 use crate::connect;
 use crate::console::{Console, Tab};
 use crate::rail::Rail;
 use crate::timeline::Timeline;
-use crate::{Focus, Spine, TopBar, rail, style};
+use crate::{Focus, Spine, rail, style};
 
 /// When the fixture traffic crossed. Fixed, so two renders of the same screen
 /// are the same bytes and a diff between them is a change somebody made.
@@ -661,7 +662,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
             // the state a visual pass should be looking at, since it is what
             // every screen under this bar is drawn from (§8).
             indentation: Indentation::Wire,
-            subject: crate::subject(
+            subject: crate::app::bar::subject(
                 live.then(described).as_ref(),
                 live.then(launched).as_ref(),
             ),
@@ -713,7 +714,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                     problem: None,
                     // The same call the window makes, so the fixture draws the
                     // composer's mode control where the window has one.
-                    mode: crate::cycle(&configured(), live),
+                    mode: crate::app::settings::cycle(&configured(), live),
                     on_prompt: move |_| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
@@ -755,7 +756,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         // The way between the three regions on a window too narrow for them,
         // which the stylesheet draws only below the width where they stop
         // fitting.
-        crate::RegionBar { selected: Focus::Turn, on_select: move |_| {} }
+        crate::app::layout::RegionBar { selected: Focus::Turn, on_select: move |_| {} }
 
         crate::session::Sessions { claims: claims.clone() }
         rail::CapabilitiesSheet { claims }
@@ -764,7 +765,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         // the fixture draws the surface rather than a hand-written stand-in for
         // it, so a capture of the palette is a capture of what is there.
         crate::palette::Palette {
-            commands: crate::commands(crate::PaletteWiring {
+            commands: crate::app::commands::commands(crate::app::commands::PaletteWiring {
                 connected: live,
                 described: live,
                 traced: live,

@@ -485,7 +485,7 @@ fn connection(
     let (tone, said) = if stopping && !connected {
         ("idle", "stopping\u{2026}")
     } else {
-        crate::connection_state(status)
+        crate::app::bar::connection_state(status)
     };
     let endpoint = launched.map(invocation).filter(|said| !said.is_empty());
     let cwd = launched

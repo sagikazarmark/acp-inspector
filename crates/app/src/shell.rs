@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn every_menu_id_is_matched_by_the_window() {
-        let answered = include_str!("main.rs");
+        let answered = include_str!("app/menu.rs");
         let declared = include_str!("shell.rs")
             .split_once("pub mod command {")
             .expect("the commands are a module")
