@@ -106,7 +106,7 @@ impl Imported {
         let (_, first) = lines
             .next()
             .ok_or_else(|| ImportError::NotATrace("the file is empty".to_owned()))?;
-        let header: Value = serde_json::from_str(first).map_err(|error| {
+        let header = crate::decode::frame_value(first).map_err(|error| {
             ImportError::NotATrace(format!("the first line is not JSON: {error}"))
         })?;
         if header.get("type").and_then(Value::as_str) != Some("header")
@@ -136,8 +136,8 @@ impl Imported {
                 line: number,
                 problem,
             };
-            let record: Value =
-                serde_json::from_str(line).map_err(|error| bad(format!("not JSON: {error}")))?;
+            let record: Value = crate::decode::frame_value(line)
+                .map_err(|error| bad(format!("not JSON: {error}")))?;
             let field = |name: &str| {
                 record
                     .get(name)
@@ -229,7 +229,7 @@ impl Imported {
         let dropped = claimed_dropped.saturating_sub(placeholders);
         let (timeline, agent) = replay(&frames, dropped);
         Ok(Self {
-            trace: Trace::rebuilt(frames, dropped),
+            trace: Trace::from_records(frames, dropped),
             timeline,
             stderr,
             agent,
@@ -390,13 +390,15 @@ async fn resolve(stores: &Stores, frame: &Frame) {
         let answered = result.and_then(|result| {
             crate::decode::from_value::<v1::RequestPermissionResponse>(result).ok()
         });
-        let _ = match answered.map(|response| response.outcome) {
+        match answered.map(|response| response.outcome) {
             Some(v1::RequestPermissionOutcome::Selected(selected)) => {
-                request.select(&selected.option_id).await
+                let _ = request.select(&selected.option_id).await;
             }
-            Some(v1::RequestPermissionOutcome::Cancelled) => request.cancelled().await,
-            _ => Ok(request.abandoned()),
-        };
+            Some(v1::RequestPermissionOutcome::Cancelled) => {
+                let _ = request.cancelled().await;
+            }
+            _ => request.abandoned(),
+        }
         return;
     }
     if let Some(request) = stores
@@ -409,7 +411,7 @@ async fn resolve(stores: &Stores, frame: &Frame) {
             .as_ref()
             .and_then(|result| result.get("action"))
             .and_then(Value::as_str);
-        let _ = match action {
+        let answered = match action {
             Some("accept") => {
                 let content = result
                     .as_ref()
@@ -420,8 +422,11 @@ async fn resolve(stores: &Stores, frame: &Frame) {
             }
             Some("decline") => request.decline().await,
             Some("cancel") => request.cancel().await,
-            _ => Ok(request.abandoned()),
+            _ => Err(CallError::NotWaiting),
         };
+        if answered.is_err() {
+            request.abandoned();
+        }
     }
 }
 
@@ -448,7 +453,7 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
         } as u32)
     }
     let bytes = text.trim().as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
@@ -463,7 +468,7 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
             n |= digit << (18 - 6 * i);
         }
         let decoded = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        out.extend_from_slice(&decoded[..3 - padding]);
+        out.extend(decoded.iter().take(3 - padding));
     }
     Some(out)
 }

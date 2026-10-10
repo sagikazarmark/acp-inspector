@@ -318,12 +318,13 @@ impl Trace {
         }
     }
 
-    /// A trace rebuilt from frames read back out of an export, numbered from
+    /// A trace made of frames already captured — read back out of an export
+    /// ([`Imported`](crate::Imported)), or drawn by a test — numbered from
     /// `dropped` as they were when they were captured, and paired again.
     ///
     /// Nothing taps it: it is a record of a connection that is over. Pairs are
     /// timed from the frames' own stamps, which are the only clock a file has.
-    pub(crate) fn rebuilt(frames: Vec<TracedFrame>, dropped: usize) -> Self {
+    pub fn from_records(frames: Vec<TracedFrame>, dropped: usize) -> Self {
         let trace = Self::default();
         trace.entries.forgotten(dropped);
         let connections = frames.iter().map(|traced| traced.connection).max();
