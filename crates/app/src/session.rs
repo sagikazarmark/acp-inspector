@@ -59,6 +59,7 @@ pub fn Sessions(claims: Claims) -> Element {
             id: DIALOG,
             class: "modal sessions-dialog",
             "data-slot": "session-manager",
+            aria_labelledby: "sessions-title",
             // **Focus lands on the dialog and not on a control.** `showModal`
             // gives the keyboard to the first focusable thing it finds, which
             // here was the close button — so opening the surface lit a ring on
@@ -72,7 +73,7 @@ pub fn Sessions(claims: Claims) -> Element {
                 tabindex: "-1",
                 autofocus: true,
                 header { class: "dialog-head",
-                    h2 { "Sessions" }
+                    h2 { id: "sessions-title", "Sessions" }
                     // The agent's own count, kept at nought: a nought here is
                     // what the agent answered rather than an empty surface
                     // (ADR 0006).
@@ -104,8 +105,9 @@ pub fn Sessions(claims: Claims) -> Element {
             }
 
             // The click outside, which `showModal` does not give (`connect.rs`).
+            // Out of the Tab order: Escape and Close are the keyboard's ways out.
             form { method: "dialog", class: "modal-backdrop",
-                button { "data-slot": "dismiss", "close" }
+                button { "data-slot": "dismiss", tabindex: "-1", "close" }
             }
         }
     }
@@ -189,6 +191,12 @@ mod tests {
             html.contains(r#"<form method="dialog" class="modal-backdrop">"#)
                 && html.contains(r#"data-slot="dismiss""#),
             "the click outside is a form that closes the dialog: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-labelledby="sessions-title""#)
+                && html.contains(r#"id="sessions-title""#)
+                && html.contains(r#"data-slot="dismiss" tabindex="-1""#),
+            "the dialog is named by its heading and the backdrop is not a Tab stop: {html}"
         );
 
         // And the keyboard arrives at the dialog rather than on its Close

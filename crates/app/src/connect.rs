@@ -186,5 +186,16 @@ mod tests {
             html.contains(r#"data-slot="close-connect""#),
             "and a way out that is not the keyboard: {html}"
         );
+        assert!(
+            html.contains(r#"aria-labelledby="connect-title""#)
+                && html.contains(r#"<h2 id="connect-title">Connect to an agent</h2>"#)
+                && html.contains(r#"data-slot="dismiss" tabindex="-1""#),
+            "the dialog is named by its heading and the backdrop is not a Tab stop: {html}"
+        );
+        assert!(
+            failure_focus().contains("launch-failure")
+                && failure_focus().contains("launch-command"),
+            "a failed launch takes focus to its alert, or to Command"
+        );
     }
 }
