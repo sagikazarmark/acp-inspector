@@ -40,8 +40,9 @@ use std::path::PathBuf;
 use acp_inspector_core::{Direction, Frame, FrameKind, Indentation, TracedFrame};
 use dioxus::prelude::*;
 
-use crate::console::{matching, narrowed};
+use crate::console::{Directions, contains_folded, narrowed};
 use crate::copy::Copy;
+use crate::disclosure::{Role, icon};
 use crate::json;
 use crate::time::stamp;
 
@@ -161,10 +162,14 @@ pub fn TraceView(
     saved: Option<Result<PathBuf, String>>,
     /// What the Console's bar is narrowing this surface to. Presentation only:
     /// the Trace goes on capturing, counting and exporting everything.
+    /// `method:NAME` and `id:N` match those envelope fields; the rest is text.
     filter: String,
     /// And which envelope shapes it is showing, from the chips beside the
     /// filter.
     kinds: Kinds,
+    /// And which directions (F8).
+    #[props(default)]
+    directions: Directions,
     /// The frames a Timeline entry was made of, sent here by a reader who was
     /// reading that entry (§9's two screens, asked to point at each other).
     /// Marked and scrolled to; nothing is filtered away, because what a reader
@@ -182,6 +187,10 @@ pub fn TraceView(
     on_choose: EventHandler<u64>,
     /// A row's frame, on its way back to the entry it became.
     on_seek: EventHandler<u64>,
+    /// A narrowing the pane offers ("only this method", "only this id"), on
+    /// its way to the Console's filter box.
+    #[props(default)]
+    on_filter: Option<EventHandler<String>>,
 ) -> Element {
     let mut anchor = use_signal(|| revealed.read().first().copied());
     use_effect(move || {
@@ -189,31 +198,57 @@ pub fn TraceView(
             anchor.set(Some(first));
         }
     });
+    // What every render would otherwise work out again from every frame: which
+    // call each answer answers, and which frames match the filter (L1). Grown
+    // as frames arrive rather than rebuilt.
+    let index = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(Index::default())));
     let held_frames = frames.read();
     let empty = held_frames.is_empty();
     let held = held_frames.len();
-    // The frame as the wire had it, which is what the row's preview draws and
-    // what an export writes — so what the reader types is matched against the
-    // same bytes they are looking at, `method`, `id`, session and all.
-    let rows = rows(held_frames.clone());
-    // Which rows survive the two narrowings, by their place in the list.
-    // Computed once: the list pages them, and the pane reads the newest on that page
-    // — a pane reading a frame the reader has hidden would be the one surface
-    // answering a narrowing with the row it just took away.
-    let visible: Vec<usize> = rows
+    let query = Query::parse(&filter);
+    let mut indexed = index.borrow_mut();
+    indexed.update(&held_frames, dropped, &query);
+    // Which rows survive the three narrowings, by their place in the list.
+    // Computed once: the list pages them, and the pane reads the newest on that
+    // page — a pane reading a frame the reader has hidden would be the one
+    // surface answering a narrowing with the row it just took away.
+    let visible: Vec<usize> = held_frames
         .iter()
         .enumerate()
-        .filter(|(_, row)| kinds.shows(row.entry.frame.summary().kind))
-        .filter(|(_, row)| filter.trim().is_empty() || matching(row.entry.frame.as_str(), &filter))
+        .filter(|(_, traced)| kinds.shows(traced.frame.summary().kind))
+        .filter(|(_, traced)| directions.shows(traced.direction))
+        .filter(|(position, traced)| indexed.matches(((dropped + position) as u64, traced), &query))
         .map(|(position, _)| position)
         .collect();
+    drop(indexed);
+    let indexed = index.borrow();
     let shown = visible.len();
     let ordinals: Vec<_> = visible.iter().map(|p| (dropped + p) as u64).collect();
     let range = crate::page::range(&ordinals, anchor());
     // What the surface is hiding, said where the rows it hid would have been —
     // whether the narrowing was typed or pressed, because a chip that is off
     // takes rows away exactly as a filter does.
-    let narrowing = !filter.trim().is_empty() || kinds != Kinds::default();
+    let narrowing = !filter.trim().is_empty()
+        || kinds != Kinds::default()
+        || directions != Directions::default();
+    // Connection ordinals only count from one agent to the next, so a trace of
+    // one agent has nothing to tell its rows apart by (D11).
+    let several = held_frames
+        .first()
+        .zip(held_frames.last())
+        .is_some_and(|(first, last)| first.connection != last.connection);
+    let page = &visible[range.clone()];
+    // The list's one Tab stop (A4): the row the reader last focused while it
+    // is on the page, then the one the pane reads, then the newest.
+    let focused = use_signal(|| None::<u64>);
+    let on_page = |ordinal: u64| {
+        page.iter()
+            .any(|position| (dropped + position) as u64 == ordinal)
+    };
+    let current = focused()
+        .filter(|ordinal| on_page(*ordinal))
+        .or(selected.filter(|ordinal| on_page(*ordinal)))
+        .or_else(|| page.last().map(|position| (dropped + position) as u64));
 
     rsx! {
         div { class: "trace", "data-slot": "trace",
@@ -237,6 +272,11 @@ pub fn TraceView(
             } else {
                 ol { class: "wire-rows", "data-tail": FRAMES,
                     "data-page-latest": "{range.end == ordinals.len()}",
+                    onmounted: move |_| crate::console::rove(
+                        &format!(r#"[data-tail="{FRAMES}"]"#),
+                        "button.frame-row",
+                        None,
+                    ),
                     // Newest first in the DOM, oldest first on screen: the list
                     // is laid out bottom-up, which is what keeps a live trace
                     // showing its latest frame without a scroll script — and
@@ -248,13 +288,20 @@ pub fn TraceView(
                     // shifts every position by one, and a row keyed by position
                     // would hand whatever the reader had selected to whichever
                     // frame landed there next.
-                    for position in visible[range.clone()].iter().copied().rev() {
+                    for position in page.iter().copied().rev() {
                         {frame_row(
-                            &rows[position],
-                            (dropped + position) as u64,
+                            &held_frames[position],
+                            Shown {
+                                ordinal: (dropped + position) as u64,
+                                starts: position > 0 && held_frames[position - 1].connection != held_frames[position].connection,
+                                several,
+                                answering: indexed.answering(&held_frames[position]),
+                                current: current == Some((dropped + position) as u64),
+                            },
                             revealed,
                             decoded,
                             selected,
+                            focused,
                             on_choose,
                             on_seek,
                         )}
@@ -265,66 +312,92 @@ pub fn TraceView(
                 // And the one the reader is reading. Always drawn while there
                 // are frames, because a pane that came and went would move the
                 // list under the click that selected a row in it.
-                {reading(&rows, &visible[range.clone()], dropped, selected)}
+                {reading(&held_frames, page, dropped, selected, &indexed, on_filter)}
             }
         }
     }
 }
 
-/// One frame, as the row that selects it.
-fn frame_row(
-    row: &Row,
+/// What a row is drawn with besides its frame.
+struct Shown<'a> {
     ordinal: u64,
+    /// Whether the frame before it crossed a *different* connection — the
+    /// handover from one agent to the next, seen. False for the oldest frame
+    /// held, which has no frame before it to have changed from.
+    starts: bool,
+    /// Whether the trace holds more than one connection's traffic.
+    several: bool,
+    /// For an answer, the method of the call it answers, where that call is
+    /// still known.
+    answering: Option<&'a str>,
+    /// Whether this row is the list's Tab stop.
+    current: bool,
+}
+
+/// One frame, as the row that selects it.
+#[allow(clippy::too_many_arguments)]
+fn frame_row(
+    entry: &TracedFrame,
+    shown: Shown<'_>,
     revealed: ReadSignal<Vec<u64>>,
     decoded: ReadSignal<HashSet<u64>>,
     selected: Option<u64>,
+    mut focused: Signal<Option<u64>>,
     on_choose: EventHandler<u64>,
     on_seek: EventHandler<u64>,
 ) -> Element {
-    let entry = &row.entry;
+    let Shown {
+        ordinal,
+        starts,
+        several,
+        answering,
+        current,
+    } = shown;
     let way = way(entry.direction);
     let summary = entry.frame.summary();
     let kind = summary.kind;
     let marked = revealed().contains(&ordinal);
     let chosen = selected == Some(ordinal);
+    let tabindex = if current { "0" } else { "-1" };
 
     rsx! {
         li {
             key: "{ordinal}",
             "data-frame": "{ordinal}",
+            "data-kind": kind_tone(kind),
+            "data-direction": way.tone,
             // The row where an agent gave way to the next one draws the
             // boundary: the ordinal on every row says whose traffic each is,
             // and this says where the conversation changed.
-            "data-switched": "{row.starts}",
-            div { class: if row.starts { "frame-line switched" } else { "frame-line" },
+            "data-switched": "{starts}",
+            div { class: if starts { "frame-line switched" } else { "frame-line" },
                 button {
                     class: if marked { "frame-row revealed" } else { "frame-row" },
                     // `aria-current`, not `aria-selected`: this is the row the
                     // pane below is reading, which is the one thing a reader can
                     // point at rather than a selection in a listbox.
                     aria_current: chosen.then_some("true"),
+                    tabindex,
                     "data-revealed": "{marked}",
-                    aria_label: frame_name(ordinal, entry),
+                    aria_label: frame_name(entry, answering, several),
                     title: "Read frame {ordinal} in the pane below",
                     onclick: move |_| on_choose.call(ordinal),
-                    // Which pipe it crossed, on every frame and exactly as the
-                    // trace recorded it — the same ordinal the JSONL export
-                    // writes, so the screen and a file taken from it agree.
-                    span {
-                        class: "frame-crossing",
-                        "data-slot": "crossing",
-                        title: "connection {entry.connection}, counting from the first agent this window launched",
-                        "#{entry.connection}"
+                    onfocus: move |_| focused.set(Some(ordinal)),
+                    // Which pipe it crossed, where there is more than one to
+                    // tell apart — the same ordinal the JSONL export writes.
+                    if several {
+                        span {
+                            class: "frame-crossing",
+                            "data-slot": "crossing",
+                            title: "Connection {entry.connection}, counting from the first agent this window launched",
+                            "#{entry.connection}"
+                        }
                     }
                     span { class: "frame-at", "{stamp(entry.at)}" }
-                    span { class: "frame-arrow {way.tone}", title: "{way.whence}", "{way.arrow}" }
+                    span { class: "frame-arrow {way.tone}", title: "{way.whence}", {icon(way.role)} }
                     // What the envelope says this frame is, in front of the
-                    // bytes and never instead of them (`Frame::summary`). A
-                    // column of identical prefixes is not a column: every row
-                    // began `{"jsonrpc":"2.0","id":` — forty characters of the
-                    // same nine bytes before the one word that says which call
-                    // this is.
-                    {summarised(&entry.frame)}
+                    // bytes and never instead of them (`Frame::summary`).
+                    {summarised(&entry.frame, answering)}
                     // One line of the frame, as the frame has it. The wire's own
                     // line whatever the indentation switch says: a preview is one
                     // line by construction, and the first line of an indented
@@ -333,23 +406,19 @@ fn frame_row(
                     span { class: "frame-kind {kind_tone(kind)}", "{named_kind(kind)}" }
                 }
                 // The row's own control sits beside it and never inside it, so
-                // either has one unambiguous job.
-                //
-                // **Copying is the pane's**, which is where the frame is: what a
-                // row draws is the head of a payload with the rest cut off, and
-                // a copy beside it either takes bytes the reader cannot see or
-                // takes what they can and is not the frame. Pressing the row
-                // reads it whole below, and that is where it is taken from.
+                // either has one unambiguous job. A Tab stop only on the
+                // list's current row, which is where Tab from the row lands.
                 span { class: "controls",
                     if decoded().contains(&ordinal) {
                         button {
                             class: "btn btn-xs btn-quiet",
                             "data-slot": "reach",
                             r#type: "button",
+                            tabindex,
                             title: "Show what the timeline made of this frame",
                             aria_label: "Show Timeline entry for Frame {ordinal}",
                             onclick: move |_| on_seek.call(ordinal),
-                            "turn"
+                            "Timeline"
                         }
                     }
                 }
@@ -364,27 +433,37 @@ fn frame_row(
 /// live trace is looking at anyway — and because a pane that is empty until
 /// something is clicked spends two fifths of the Console saying *click
 /// something*.
-fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64>) -> Element {
+fn reading(
+    frames: &[TracedFrame],
+    visible: &[usize],
+    dropped: usize,
+    selected: Option<u64>,
+    index: &Index,
+    on_filter: Option<EventHandler<String>>,
+) -> Element {
     let found = selected
         .and_then(|ordinal| {
             let position = usize::try_from(ordinal).ok()?.checked_sub(dropped)?;
-            rows.get(position).map(|row| (ordinal, row))
+            frames.get(position).map(|entry| (ordinal, entry))
         })
         .or_else(|| {
             // The newest frame the reader can *see*: a pane reading one they
             // narrowed away would be the surface answering the chip with the
             // row it just hid.
             let position = visible.last().copied()?;
-            Some(((dropped + position) as u64, rows.get(position)?))
+            Some(((dropped + position) as u64, frames.get(position)?))
         });
 
-    let Some((ordinal, row)) = found else {
+    let Some((ordinal, entry)) = found else {
         return rsx! {};
     };
-    let entry = &row.entry;
     let way = way(entry.direction);
     let summary = entry.frame.summary();
-    let label = envelope_preview(summary.label().unwrap_or("unreadable envelope"));
+    let answering = index.answering(entry);
+    let label = match answering {
+        Some(method) => envelope_preview(method).into_owned(),
+        None => envelope_preview(summary.label().unwrap_or("unreadable envelope")).into_owned(),
+    };
     let outside_page = selected == Some(ordinal)
         && !visible
             .iter()
@@ -399,6 +478,13 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
             .draw(entry.frame.as_str())
             .into_owned()
     };
+    // The narrowings this frame offers: its method, and its id.
+    let method = summary
+        .method
+        .clone()
+        .or(answering.map(str::to_owned))
+        .filter(|method| method.len() <= 512);
+    let id = summary.id.clone().filter(|id| id.len() <= 512);
 
     rsx! {
         aside {
@@ -406,15 +492,40 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
             "data-slot": "frame-detail",
             aria_label: "The selected frame",
             header { class: "frame-pane-head",
-                span { class: "frame-arrow {way.tone}", title: "{way.whence}", "{way.arrow}" }
-                span { class: "frame-method", "{label}" }
+                span { class: "frame-arrow {way.tone}", title: "{way.whence}", {icon(way.role)} }
+                span { class: "frame-method",
+                    if answering.is_some() { span { aria_hidden: "true", "↳ " } span { class: "sr-only", "response to " } }
+                    "{label}"
+                }
                 span { class: "frame-pane-meta",
                     "{named_kind(summary.kind)} · #{ordinal} · {stamp(entry.at)}"
+                }
+                if let Some(narrow) = on_filter {
+                    if let Some(method) = method {
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            "data-slot": "filter-method",
+                            r#type: "button",
+                            title: "Show only frames for {method}",
+                            onclick: move |_| narrow.call(format!("method:{method}")),
+                            "Only this method"
+                        }
+                    }
+                    if let Some(id) = id {
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            "data-slot": "filter-id",
+                            r#type: "button",
+                            title: "Show only the call with id {id} and its answer",
+                            onclick: move |_| narrow.call(format!("id:{id}")),
+                            "Only this id"
+                        }
+                    }
                 }
                 Copy { frame: entry.frame.clone(), what: "this frame" }
             }
             if outside_page {
-                p { class: "narrowed", "Selected Frame (outside this page)" }
+                p { class: "narrowed", "Selected frame (outside this page)" }
             }
             if large {
                 crate::page::RawFrame { key: "{ordinal}", frame: entry.frame.clone() }
@@ -431,19 +542,25 @@ fn reading(rows: &[Row], visible: &[usize], dropped: usize, selected: Option<u64
 ///
 /// Core reads the envelope ([`Frame::summary`]); this decides what a row does
 /// with the answer, which is one word and, where there is one, the id under
-/// which its answer will come back. Nothing is drawn for a frame the envelope
-/// could not be read out of — the row is the bytes then, which is what every
-/// row was before this existed.
-fn summarised(frame: &Frame) -> Element {
+/// which its answer will come back. An answer whose call is still held says
+/// which call it answers, `↳ initialize`, rather than the word `result` (D11).
+/// Nothing is drawn for a frame the envelope could not be read out of — the row
+/// is the bytes then, which is what every row was before this existed.
+fn summarised(frame: &Frame, answering: Option<&str>) -> Element {
     let summary = frame.summary();
-    let Some(label) = summary.label() else {
+    let Some(label) = answering.or(summary.label()) else {
         return rsx! {};
     };
     let label = envelope_preview(label);
     let id = summary.id.as_deref().map(envelope_preview);
 
     rsx! {
-        span { class: "frame-method", "data-slot": "envelope", "{label}" }
+        span { class: "frame-method", "data-slot": "envelope",
+            if answering.is_some() {
+                span { class: "frame-answers", aria_hidden: "true", "↳ " }
+            }
+            "{label}"
+        }
         if let Some(id) = id {
             span { class: "frame-id", title: "JSON-RPC id {id}", "#{id}" }
         }
@@ -461,43 +578,147 @@ fn envelope_preview(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// One frame as the view draws it: the frame, and whether the connection
-/// changed at it.
-struct Row {
-    entry: TracedFrame,
-    /// Whether the frame before it crossed a *different* connection — the
-    /// handover from one agent to the next, seen.
-    ///
-    /// False for the oldest frame the trace still holds, which has no frame
-    /// before it to have changed from: the trace is a ring that drops its
-    /// oldest, so the top of the list is where the record begins and not
-    /// necessarily where the connection did.
-    starts: bool,
+/// An envelope field as part of a name read aloud: shorter than a preview,
+/// because a row's accessible name is heard whole on every visit.
+fn spoken(text: &str) -> std::borrow::Cow<'_, str> {
+    let prefix = crate::page::prefix(text, 80);
+    if prefix.len() == text.len() {
+        prefix.into()
+    } else {
+        format!("{prefix}…").into()
+    }
 }
 
-/// Marks where one connection's traffic gave way to the next.
-///
-/// The trace outlives any one agent (`Trace::tap`), so a trace can hold two
-/// agents' frames and every agent's JSON-RPC ids start again at 1. The ordinal
-/// on each row says whose a frame is; this says where one agent stopped
-/// speaking and the next started.
-fn rows(frames: Vec<TracedFrame>) -> Vec<Row> {
-    let mut previous = None;
-    frames
-        .into_iter()
-        .map(|entry| {
-            let starts = previous
-                .replace(entry.connection)
-                .is_some_and(|before| before != entry.connection);
-            Row { entry, starts }
-        })
-        .collect()
+/// What the Trace filter box asked for (F8): `method:NAME` and `id:N` match
+/// those envelope fields, and every other word is text the frame must contain.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Query {
+    method: Option<String>,
+    id: Option<String>,
+    /// The free text, lowercased once.
+    text: String,
+}
+
+impl Query {
+    fn parse(filter: &str) -> Self {
+        let mut query = Self::default();
+        let mut text = Vec::new();
+        for word in filter.split_whitespace() {
+            if let Some(method) = word.strip_prefix("method:").filter(|rest| !rest.is_empty()) {
+                query.method = Some(method.to_lowercase());
+            } else if let Some(id) = word.strip_prefix("id:").filter(|rest| !rest.is_empty()) {
+                query.id = Some(id.trim_matches('"').to_owned());
+            } else {
+                text.push(word);
+            }
+        }
+        query.text = text.join(" ").to_lowercase();
+        query
+    }
+}
+
+/// What the Trace remembers between renders (L1): which method each call
+/// carried, so an answer can name its call, and which frames matched the text
+/// of the current filter.
+#[derive(Default)]
+struct Index {
+    /// The first ordinal not yet read for calls.
+    next: u64,
+    /// Calls by (connection, whether it was sent to the agent, id).
+    calls: std::collections::HashMap<(u64, bool, String), String>,
+    /// The filter text the matches below are for.
+    text: String,
+    matches: std::collections::HashMap<u64, bool>,
+}
+
+impl Index {
+    /// Reads the frames that arrived since the last render, and forgets what
+    /// the filter matched when the filter changed or frames aged out.
+    fn update(&mut self, frames: &[TracedFrame], dropped: usize, query: &Query) {
+        let first = dropped as u64;
+        if self.next < first {
+            // Cleared or aged out past what was read: start again from what is
+            // held. Calls already read stay known, since an answer still held
+            // can outlive its call.
+            self.next = first;
+            self.matches.retain(|ordinal, _| *ordinal >= first);
+        }
+        for (position, traced) in frames.iter().enumerate() {
+            let ordinal = first + position as u64;
+            if ordinal < self.next {
+                continue;
+            }
+            let summary = traced.frame.summary();
+            if let (FrameKind::Call, Some(method), Some(id)) =
+                (summary.kind, summary.method.as_ref(), summary.id.as_ref())
+            {
+                self.calls.insert(
+                    (
+                        traced.connection,
+                        traced.direction == Direction::ToAgent,
+                        id.clone(),
+                    ),
+                    method.clone(),
+                );
+            }
+        }
+        self.next = first + frames.len() as u64;
+        if self.text != query.text {
+            self.text.clone_from(&query.text);
+            self.matches.clear();
+        }
+    }
+
+    /// The method of the call an answer answers, where that call was seen.
+    fn answering(&self, traced: &TracedFrame) -> Option<&str> {
+        let summary = traced.frame.summary();
+        if !matches!(summary.kind, FrameKind::Result | FrameKind::Error) || summary.method.is_some()
+        {
+            return None;
+        }
+        let id = summary.id.as_ref()?;
+        // An answer crosses the other way from its call.
+        self.calls
+            .get(&(
+                traced.connection,
+                traced.direction != Direction::ToAgent,
+                id.clone(),
+            ))
+            .map(String::as_str)
+    }
+
+    /// Whether a frame survives the query, remembering the text match.
+    fn matches(&mut self, (ordinal, traced): (u64, &TracedFrame), query: &Query) -> bool {
+        let summary = traced.frame.summary();
+        if let Some(method) = &query.method {
+            let named = summary
+                .method
+                .as_deref()
+                .or_else(|| self.answering(traced))
+                .unwrap_or_default();
+            if !contains_folded(named, method) {
+                return false;
+            }
+        }
+        if let Some(id) = &query.id
+            && summary.id.as_deref().map(|own| own.trim_matches('"')) != Some(id.as_str())
+        {
+            return false;
+        }
+        if query.text.is_empty() {
+            return true;
+        }
+        *self
+            .matches
+            .entry(ordinal)
+            .or_insert_with(|| contains_folded(traced.frame.as_str(), &query.text))
+    }
 }
 
 /// How a direction reads: the inspector is always one end of it (`CONTEXT.md`,
 /// *Connection*), so both of them are its own.
 struct Way {
-    arrow: &'static str,
+    role: Role,
     whence: &'static str,
     tone: &'static str,
 }
@@ -505,23 +726,43 @@ struct Way {
 fn way(direction: Direction) -> Way {
     match direction {
         Direction::ToAgent => Way {
-            arrow: "→",
+            role: Role::Outgoing,
             whence: "sent to the agent",
             tone: "out",
         },
         Direction::FromAgent => Way {
-            arrow: "←",
+            role: Role::Incoming,
             whence: "received from the agent",
             tone: "in",
         },
     }
 }
 
-fn frame_name(ordinal: u64, frame: &TracedFrame) -> String {
+/// A row's accessible name (A1): what the frame is — method, kind and id —
+/// which way it went, and when; the connection only where there are several.
+/// "initialize request #1, sent to the agent, 21:20:24.000".
+fn frame_name(frame: &TracedFrame, answering: Option<&str>, several: bool) -> String {
+    let summary = frame.frame.summary();
+    let kind = named_kind(summary.kind);
+    let what = match (summary.method.as_deref(), answering) {
+        (Some(method), _) => format!("{} {kind}", spoken(method)),
+        (None, Some(call)) => format!("{kind} to {}", spoken(call)),
+        (None, None) if summary.kind == FrameKind::Unreadable => "unreadable frame".to_owned(),
+        (None, None) => kind.to_owned(),
+    };
+    let id = summary
+        .id
+        .as_deref()
+        .map(|id| format!(" #{}", spoken(id)))
+        .unwrap_or_default();
+    let connection = if several {
+        format!(", connection {}", frame.connection)
+    } else {
+        String::new()
+    };
     format!(
-        "Frame {ordinal}, {}, connection {}, {}. Read it in the pane below",
+        "{what}{id}, {}{connection}, {}",
         way(frame.direction).whence,
-        frame.connection,
         stamp(frame.at),
     )
 }
@@ -550,7 +791,7 @@ mod tests {
             let detail = pane(&html).unwrap();
             if selected.is_some() {
                 assert!(detail.contains("· #999 ·"));
-                assert!(detail.contains("Selected Frame (outside this page)"));
+                assert!(detail.contains("Selected frame (outside this page)"));
             } else {
                 assert!(detail.contains("· #799 ·"));
             }
@@ -727,6 +968,7 @@ mod tests {
         dropped: usize,
         filter: String,
         kinds: Kinds,
+        directions: Directions,
         revealed: Vec<u64>,
         decoded: Vec<u64>,
         selected: Option<u64>,
@@ -739,6 +981,7 @@ mod tests {
                 dropped: 0,
                 filter: String::new(),
                 kinds: Kinds::default(),
+                directions: Directions::default(),
                 revealed: Vec::new(),
                 decoded: Vec::new(),
                 selected: None,
@@ -765,6 +1008,7 @@ mod tests {
                     saved: None,
                     filter: screen.filter.clone(),
                     kinds: screen.kinds,
+                    directions: screen.directions,
                     revealed,
                     decoded,
                     selected: screen.selected,
@@ -815,10 +1059,102 @@ mod tests {
                 "the row is numbered from what the trace has let go: {html}"
             );
         }
+        // One agent's traffic has nothing to tell its rows apart by (D11).
         assert!(
-            html.contains(r#"data-slot="crossing""#) && html.contains("#1"),
-            "and every row says whose traffic it is: {html}"
+            !html.contains(r#"data-slot="crossing""#),
+            "a single connection draws no ordinal: {html}"
         );
+
+        let mut two = traffic();
+        two.push(crossed(
+            2,
+            Direction::ToAgent,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+        ));
+        let html = shown(Screen {
+            frames: two,
+            ..Screen::default()
+        });
+        assert!(
+            html.contains(r#"data-slot="crossing""#)
+                && html.contains("#1")
+                && html.contains("#2")
+                && html.contains(", connection 2,"),
+            "and with several, every row says whose traffic it is: {html}"
+        );
+    }
+
+    #[test]
+    fn a_row_is_named_by_what_it_is_and_an_answer_by_its_call() {
+        // A1: method, kind and id lead the accessible name; D11: an answer
+        // says which call it answers.
+        let html = shown(Screen::default());
+        assert!(
+            html.contains(r#"aria-label="initialize request #1, sent to the agent, "#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="response to initialize #1, received from the agent, "#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="session/update notif, received from the agent, "#),
+            "{html}"
+        );
+        let answer = rows_of(&html)
+            .into_iter()
+            .find(|row| row.contains(r#"data-kind="result""#))
+            .expect("the answer row");
+        assert!(
+            answer.contains("↳ </span>initialize</span>") && !answer.contains(">result<"),
+            "{answer}"
+        );
+        assert!(
+            !html.contains(", connection 1,"),
+            "one connection is not named: {html}"
+        );
+    }
+
+    #[test]
+    fn the_filter_matches_method_and_id_fields_and_directions_narrow_too() {
+        let by_method = shown(Screen {
+            filter: "method:initialize".to_owned(),
+            ..Screen::default()
+        });
+        assert!(
+            by_method.contains("2 of 3 frames"),
+            "the call and its answer: {by_method}"
+        );
+        let by_id = shown(Screen {
+            filter: "id:1".to_owned(),
+            ..Screen::default()
+        });
+        assert!(by_id.contains("2 of 3 frames"), "{by_id}");
+        let received = shown(Screen {
+            directions: Directions::default().toggled(Direction::ToAgent),
+            ..Screen::default()
+        });
+        assert!(
+            received.contains("2 of 3 frames") && !received.contains(r#"data-direction="out""#),
+            "{received}"
+        );
+        assert!(
+            Query::parse("method:Session/Prompt hello")
+                .method
+                .as_deref()
+                == Some("session/prompt")
+        );
+    }
+
+    #[test]
+    fn the_list_is_one_tab_stop() {
+        let html = shown(Screen::default());
+        assert_eq!(
+            html.matches(r#"tabindex="0""#).count(),
+            1,
+            "one row is the list's Tab stop: {html}"
+        );
+        assert_eq!(html.matches(r#"tabindex="-1""#).count(), 2, "{html}");
     }
 
     #[test]

@@ -482,7 +482,7 @@ impl Advertiser {
             Self::Client => rsx! {
                 "In every "
                 code { "initialize" }
-                " request this tool sends, fixed and not configurable. What this client does not claim, a conformant agent must not send — so an offer that differs from the one another client gets is an answer to this."
+                " request this tool sends. Fixed. Agents may offer different options to clients with different capabilities."
             },
         }
     }
@@ -811,12 +811,12 @@ fn shaped(shape: Shape) -> &'static str {
 /// non-visual reader composes the row's text.
 fn came_back(fourth: &Fourth) -> Element {
     match fourth {
-        Fourth::Outcome(Driven::Unasked) => rsx! { " not driven" },
-        Fourth::Outcome(Driven::Answered) => rsx! { " driven and answered" },
-        Fourth::Outcome(Driven::Refused(error)) => rsx! { " driven and refused: {error}" },
+        Fourth::Outcome(Driven::Unasked) => rsx! { " not called" },
+        Fourth::Outcome(Driven::Answered) => rsx! { " called · OK" },
+        Fourth::Outcome(Driven::Refused(error)) => rsx! { " called · refused: {error}" },
         // `Driven` is non-exhaustive, and an outcome this window has not been
         // taught must not be drawn as one it has.
-        Fourth::Outcome(_) => rsx! { " driven, with an outcome this window has no rendering for" },
+        Fourth::Outcome(_) => rsx! { " called, with an outcome this window has no rendering for" },
         Fourth::Unreached(why) => rsx! { "{why.said()}" },
     }
 }
@@ -1405,28 +1405,7 @@ fn login(
         div { class: "rail-group authentication", "data-claim": "authentication",
             div { class: "rail-group",
                 if auth.needs_login() {
-                    // Neutral, and deliberately: an agent that wants a login is
-                    // in an ordinary protocol state rather than a broken one,
-                    // and a warning here would be this window grading an agent
-                    // for asking (§7.1).
-                    div { class: "alert login",
-                        div {
-                            strong { "The agent wants a login." }
-                            {outcome(auth)}
-                            p {
-                                {match named_methods(methods) {
-                                    // Which is a finding: the agent asked for a login
-                                    // and named no way to do one.
-                                    None => rsx! { "It advertised no way to do it." },
-                                    Some(named) => rsx! { "It advertised {named}." },
-                                }}
-                            }
-                            p {
-                                "Run the agent's own login in your own terminal — the inspector has none to run it in and never will — then launch it again. Sending "
-                                code { "authenticate" }
-                                " below tells the agent which method you used; it does not perform one."
-                            }
-                        }}
+                    {wants_login(methods, auth)}
                 } else {
                     {outcome(auth)}
                 }
@@ -1456,43 +1435,7 @@ fn login(
                 // words §7.7 gives every other claim, and a sentence here
                 // saying it again was the same fact drawn twice on one screen.
                 if !methods.is_empty() {
-                    // **Not daisyUI's list.** `list-row` is a grid of its own,
-                    // and a row that had been made a flex of *here is a login,
-                    // here is the call that uses it* became one grid item in
-                    // its first track: the name and the button shrink-wrapped
-                    // together at the near edge with nine hundred pixels of
-                    // nothing after them. What this list needs from a component
-                    // library is nothing — the rows are two facts and a call —
-                    // so it takes nothing and states its own.
-                    ul { class: "methods",
-                        for method in methods {
-                            li { key: "{method.id()}", class: "auth-method",
-                                    div {
-                                        strong { "{method.name()}" }
-                                        div { class: "hint mono", "{method.id()}" }
-                                        if let Some(description) = method.description() {
-                                            div { class: "hint", "{description}" }
-                                        }
-                                    }
-                                    button {
-                                        class: "btn btn-xs btn-quiet authenticate",
-                                        r#type: "button",
-                                        aria_label: "Authenticate with {method.name()} ({method.id()})",
-                                        aria_busy: pending.iter().any(|call| matches!(call, AuthenticationCall::Authenticate(id) if id == method.id())),
-                                        disabled: !connected,
-                                        onclick: {
-                                            let id = method.id().clone();
-                                            move |_| on_authenticate.call(id.clone())
-                                        },
-                                        if pending.iter().any(|call| matches!(call, AuthenticationCall::Authenticate(id) if id == method.id())) {
-                                            "Authenticating"
-                                        } else {
-                                            "Authenticate"
-                                        }
-                                    }
-                            }
-                        }
-                    }
+                    {method_rows(methods, pending, connected, on_authenticate)}
                 }
 
                 // The other half of what the agent's auth block claims, and the
@@ -1543,7 +1486,7 @@ fn login(
                                 if pending.contains(&AuthenticationCall::Logout) {
                                     "Logging out"
                                 } else {
-                                    "Logout"
+                                    "Log out"
                                 }
                             }
                     }
@@ -1559,6 +1502,111 @@ fn login(
             }
         }
     }
+}
+
+/// What to do about a login the agent asked for: its own words, the methods it
+/// named, and the two ways through.
+///
+/// **`authenticate` is a way through, not a label.** For a method of the
+/// default `agent` type the agent runs the login itself when it is called —
+/// that is what the method type means in the ACP schema — so sending it is
+/// how a reader logs in from here. An agent whose login is a command of its
+/// own is logged into from a terminal and restarted.
+///
+/// Neutral, and deliberately: an agent that wants a login is in an ordinary
+/// protocol state rather than a broken one (§7.1).
+fn wants_login(methods: &[v1::AuthMethod], auth: &AuthState) -> Element {
+    rsx! {
+        div { class: "alert login", "data-slot": "login-guidance",
+            div {
+                strong { "The agent wants a login." }
+                {outcome(auth)}
+                p {
+                    {match named_methods(methods) {
+                        // Which is a finding: the agent asked for a login and
+                        // named no way to do one.
+                        None => rsx! { "It advertised no way to do it." },
+                        Some(named) => rsx! { "It advertised {named}." },
+                    }}
+                }
+                p {
+                    if methods.is_empty() {
+                        "Log in with the agent's own login command in a terminal, then restart the agent."
+                    } else {
+                        "Choose a method below to send "
+                        code { "authenticate" }
+                        ": for a method the agent handles, that is the login. Or log in with the agent's own login command in a terminal, then restart the agent."
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The advertised methods, each with the call that uses it.
+fn method_rows(
+    methods: &[v1::AuthMethod],
+    pending: &[AuthenticationCall],
+    connected: bool,
+    on_authenticate: EventHandler<v1::AuthMethodId>,
+) -> Element {
+    rsx! {
+        // **Not daisyUI's list.** `list-row` is a grid of its own, and these
+        // rows are two facts and a call, so the list states its own layout.
+        ul { class: "methods",
+            for method in methods {
+                li { key: "{method.id()}", class: "auth-method",
+                    div {
+                        strong { "{method.name()}" }
+                        div { class: "hint mono", "{method.id()}" }
+                        if let Some(description) = method.description() {
+                            div { class: "hint", "{description}" }
+                        }
+                    }
+                    button {
+                        class: "btn btn-xs btn-quiet authenticate",
+                        r#type: "button",
+                        title: "authenticate",
+                        aria_label: "Authenticate with {method.name()} ({method.id()})",
+                        aria_busy: pending.iter().any(|call| matches!(call, AuthenticationCall::Authenticate(id) if id == method.id())),
+                        disabled: !connected,
+                        onclick: {
+                            let id = method.id().clone();
+                            move |_| on_authenticate.call(id.clone())
+                        },
+                        if pending.iter().any(|call| matches!(call, AuthenticationCall::Authenticate(id) if id == method.id())) {
+                            "Authenticating"
+                        } else {
+                            "Authenticate"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The login guidance and its Authenticate actions, for a screen other than
+/// the Capabilities surface to show — or `None` while the agent has not asked
+/// for a login (X5). The Timeline's empty state is the caller: a session/new
+/// refused for want of a login leaves it with nothing else to say. `main.rs`
+/// passes it as the Timeline's `login`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn login_guidance(
+    methods: &[v1::AuthMethod],
+    auth: &AuthState,
+    pending: &[AuthenticationCall],
+    connected: bool,
+    on_authenticate: EventHandler<v1::AuthMethodId>,
+) -> Option<Element> {
+    auth.needs_login().then(|| {
+        rsx! {
+            {wants_login(methods, auth)}
+            if !methods.is_empty() {
+                {method_rows(methods, pending, connected, on_authenticate)}
+            }
+        }
+    })
 }
 
 /// The advertised methods, by the names the agent gave them, or `None` when it
@@ -1718,9 +1766,10 @@ pub(crate) fn sessions(
             if !connected {
                 p {
                     class: "hint availability",
+                    id: UNAVAILABLE,
                     "data-slot": "availability",
                     role: "status",
-                    "The connection has ended. These are the sessions the last agent reported; nothing here can be sent until another agent is running."
+                    "Disconnected. These are the sessions the last agent reported; start an agent to act on them."
                 }
             }
 
@@ -1750,16 +1799,14 @@ pub(crate) fn sessions(
                         button {
                             class: "btn btn-xs btn-quiet",
                             r#type: "button",
-                            disabled: !connected,
-                            onclick: move |_| on_list.call(None),
-                            // Beside the method's own name and never instead of
-                            // it: what a control sends is the label (§7.5), and
-                            // the glyph is what makes *ask again* findable in a
-                            // row of words that are all method names.
+                            title: "session/list",
+                            aria_disabled: (!connected).then_some("true"),
+                            aria_describedby: (!connected).then_some(UNAVAILABLE),
+                            onclick: move |_| if connected { on_list.call(None) },
                             span { class: "disclosure-icon", aria_hidden: "true",
                                 Icon { class: "icon", icon: HiRefresh }
                             }
-                            "session/list"
+                            "List sessions"
                         }
                     }
                     {listed(&listing, &others, connected)}
@@ -1785,24 +1832,21 @@ pub(crate) fn sessions(
                     button {
                         class: "btn btn-sm btn-filled",
                         r#type: "button",
-                        disabled: !connected,
+                        aria_disabled: (!connected).then_some("true"),
                         // What pressing it costs, on the control rather than
-                        // under it: the consequence of a button read by
-                        // everyone who opens this and needed by a reader once.
-                        // The words are unchanged and still in the
-                        // accessibility tree, described by the paragraph below
-                        // rather than merely near it.
-                        title: SESSION_NEW_COSTS,
-                        aria_describedby: "session-new-costs",
+                        // under it, with the method it sends: the label is the
+                        // verb, and the wire name is the tooltip (D7).
+                        title: "{v1::AGENT_METHOD_NAMES.session_new}: {SESSION_NEW_COSTS}",
+                        aria_describedby: if connected { "session-new-costs".to_owned() } else { format!("session-new-costs {UNAVAILABLE}") },
                         // `None` where the agent advertised no control, so that a click
                         // says *no roots were asked for* rather than *the empty control
                         // was*: for a session that does not exist yet the two ask for
                         // the same thing, and only one of them is true.
-                        onclick: move |_| on_new_session.call(roots.then(|| Roots::supplied(creating()))),
+                        onclick: move |_| if connected { on_new_session.call(roots.then(|| Roots::supplied(creating()))) },
                         span { class: "disclosure-icon", aria_hidden: "true",
                             Icon { class: "icon", icon: HiPlus }
                         }
-                        "session/new"
+                        "New session"
                     }
 
                     // Said once for every roots control in this block — the one
@@ -1936,34 +1980,115 @@ fn session_row(
                 // be read is a list that cannot be read at a glance. `btn-xs`
                 // against the reopen's `btn-sm` is the difference that was
                 // meant all along.
+                // **One disabled pattern, with its reason** (A5): unavailable
+                // controls stay focusable and say why through the availability
+                // line, rather than dropping out of the Tab order unexplained.
                 if closes {
                     button {
                         class: "btn btn-xs btn-quiet session-end",
                         r#type: "button",
-                        aria_label: "session/close session {id}",
-                        aria_describedby: ENDING,
-                        disabled: !connected,
+                        title: "{v1::AGENT_METHOD_NAMES.session_close}",
+                        aria_label: "Close session {id}",
+                        aria_describedby: described_unless(connected, ENDING),
+                        aria_disabled: (!connected).then_some("true"),
                         onclick: {
                             let id = id.clone();
-                            move |_| on_close.call(id.clone())
+                            move |_| if connected { on_close.call(id.clone()) }
                         },
-                        "session/close"
+                        "Close"
                     }
                 }
                 if deletes {
-                    button {
-                        class: "btn btn-xs btn-quiet btn-bad session-end",
-                        r#type: "button",
-                        aria_label: "session/delete session {id}",
-                        aria_describedby: ENDING,
-                        disabled: !connected,
-                        onclick: {
-                            let id = id.clone();
-                            move |_| on_delete.call(id.clone())
-                        },
-                        "session/delete"
-                    }
+                    DeleteSession { id: id.clone(), connected, on_delete }
                 }
+                }
+            }
+        }
+    }
+}
+
+/// The id of the line that says why the dialog's controls are unavailable.
+const UNAVAILABLE: &str = "sessions-unavailable";
+
+/// What a session control is described by: its consequence, and while there is
+/// no agent, why it cannot be used.
+fn described_unless(connected: bool, consequence: &str) -> String {
+    if connected {
+        consequence.to_owned()
+    } else {
+        format!("{consequence} {UNAVAILABLE}")
+    }
+}
+
+/// How long an armed delete waits for its confirmation before it disarms.
+const CONFIRM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// `session/delete`, confirmed in two steps (B6).
+///
+/// **Delete, then Confirm delete.** It is the one call in the dialog that
+/// cannot be taken back, and it sat beside Close at the same size. The first
+/// press arms it, the second sends; Cancel, Escape, or a few seconds of
+/// nothing disarm it. The label changes on the same button, so focus stays
+/// where the reader pressed.
+#[component]
+fn DeleteSession(
+    id: v1::SessionId,
+    connected: bool,
+    on_delete: EventHandler<v1::SessionId>,
+) -> Element {
+    let mut armed = use_signal(|| false);
+    // Which arming the timer belongs to, so an old timer cannot disarm a
+    // newer press.
+    let mut arming = use_signal(|| 0_u64);
+    let mut arm = move || {
+        armed.set(true);
+        let this = arming() + 1;
+        arming.set(this);
+        spawn(async move {
+            tokio::time::sleep(CONFIRM_FOR).await;
+            if arming() == this {
+                armed.set(false);
+            }
+        });
+    };
+    let deleting = id.clone();
+
+    rsx! {
+        span { class: "session-delete", "data-slot": "session-delete", "data-armed": "{armed()}",
+            onkeydown: move |event| {
+                if event.key() == Key::Escape && armed() {
+                    event.stop_propagation();
+                    armed.set(false);
+                }
+            },
+            button {
+                class: if armed() { "btn btn-xs btn-filled btn-bad session-end confirm" } else { "btn btn-xs btn-quiet btn-bad session-end" },
+                r#type: "button",
+                title: "{v1::AGENT_METHOD_NAMES.session_delete}",
+                aria_label: if armed() { format!("Confirm delete session {id}") } else { format!("Delete session {id}") },
+                aria_describedby: described_unless(connected, ENDING),
+                aria_disabled: (!connected).then_some("true"),
+                onclick: move |_| {
+                    if !connected {
+                        return;
+                    }
+                    if armed() {
+                        armed.set(false);
+                        on_delete.call(deleting.clone());
+                    } else {
+                        arm();
+                    }
+                },
+                if armed() { "Confirm delete" } else { "Delete" }
+            }
+            if armed() {
+                button {
+                    class: "btn btn-xs btn-quiet",
+                    r#type: "button",
+                    "data-slot": "cancel-delete",
+                    aria_label: "Keep session {id}",
+                    onclick: move |_| armed.set(false),
+                    "Cancel"
                 }
             }
         }
@@ -2038,7 +2163,7 @@ fn listed(sessions: &Listing<'_>, others: &[&v1::SessionInfo], connected: bool) 
                 span { class: "status status-info", aria_hidden: "true" }
                 "Loading sessions."
                 if answered.is_some() {
-                    " Previous Session rows are stale and hidden; the prior count and any paging remain visible until the agent answers."
+                    " Previous rows are hidden until the agent answers."
                 }
             }
         } else { match answered {
@@ -2107,9 +2232,10 @@ fn SessionPaging(available: bool, connected: bool, on_next: EventHandler<()>) ->
                 button {
                     class: "btn btn-xs btn-quiet next-page",
                     r#type: "button",
+                    title: "session/list",
                     aria_label: "Ask the agent for the next page of sessions",
-                    disabled: !connected,
-                    onclick: move |_| on_next.call(()),
+                    aria_disabled: (!connected).then_some("true"),
+                    onclick: move |_| if connected { on_next.call(()) },
                     "Next page"
                 }
             }
@@ -2162,7 +2288,12 @@ fn Reopen(
     let reported = Roots::reported(&session.additional_directories);
     let supplying = use_signal(|| reported.text().to_owned());
     let session_id = session.session_id.to_string();
-    let open_label = format!("{} session {session_id}", how.method());
+    let verb = match how.method() {
+        "session/load" => "Load",
+        "session/resume" => "Resume",
+        _ => "Open",
+    };
+    let open_label = format!("{verb} session {session_id}");
     let roots_label = format!("Edit additionalDirectories for session {session_id}");
     let field_label = format!("additionalDirectories for session {session_id}");
     let opened = session.clone();
@@ -2178,19 +2309,21 @@ fn Reopen(
         button {
             class: "btn btn-xs btn-quiet btn-go reopen",
             r#type: "button",
+            title: "{how.method()}",
             aria_label: "{open_label}",
             // What pressing it costs, on the control rather than above the
             // list of them (`OPENING`).
-            aria_describedby: OPENING,
-            disabled: !connected,
+            aria_describedby: described_unless(connected, OPENING),
+            aria_disabled: (!connected).then_some("true"),
             onclick: move |_| {
-                on_open
-                    .call(Opening {
+                if connected {
+                    on_open.call(Opening {
                         session: opened.clone(),
                         roots: asking(roots, &supplying(), &reported),
                     })
+                }
             },
-            "{how.method()}"
+            "{verb}"
         }
         if roots {
             // **Under the call rather than in front of it.** These are what the
@@ -2319,7 +2452,7 @@ fn roots_field(mut roots: Signal<String>, named: bool, field_label: String) -> E
 pub(crate) const SESSION_NEW_COSTS: &str = "Opens and switches to a new session. A turn still running is cancelled first; the trace keeps every frame.";
 
 /// What `logout` costs, and the id the button points at for it.
-const LOGOUT: &str = "Asks the agent to give back what it accepted. It carries no session id and leaves the live session alone — what the agent does with a session it has logged out of is the thing to watch.";
+const LOGOUT: &str = "Sends logout. The open session is left as is.";
 const LOGOUT_COSTS: &str = "logout-costs";
 
 fn roots_rule() -> Element {
@@ -2389,10 +2522,10 @@ fn opening(restores: Option<Restore>) -> Element {
                 },
                 Some(how) => rsx! {
                     "Opening one makes it the live session. "
-                    strong { "This agent does not support viewing previous messages" }
-                    " — it advertised "
+                    strong { "This agent can't replay earlier messages" }
+                    ": "
                     code { "{how.method()}" }
-                    ", which restores a session without replaying it, so the timeline stays empty. That is correct, not a failure."
+                    " reopens a session without them, so the timeline starts empty."
                 },
             }}
         }
@@ -2433,8 +2566,8 @@ fn ending(closes: bool, deletes: bool) -> Element {
     rsx! {
         p { class: "sr-only", id: ENDING,
             code { "{named}" }
-            " went out because the agent advertised it, whatever state the session is in. The listing is asked for again afterwards, because what the agent still claims to hold is the thing worth seeing."
-            " Ending the live session is allowed and leaves no session open — the timeline goes with it, and the trace keeps every frame."
+            " is sent whatever state the session is in, and the list is refreshed afterwards."
+            " Ending the live session leaves no session open; the trace keeps every frame."
         }
     }
 }
@@ -2444,6 +2577,135 @@ mod tests {
     use acp_inspector_core::ProtocolVersion;
 
     use super::*;
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_a_second_press_and_can_be_called_off() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::{AttributeValue, Mutation, NoOpMutations};
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut deleted = use_signal(|| 0);
+            rsx! {
+                DeleteSession {
+                    id: v1::SessionId::new("sess-1"),
+                    connected: true,
+                    on_delete: move |_| deleted += 1,
+                }
+                span { "data-slot": "deleted", "{deleted}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let click = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            )
+        };
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let delete = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(text),
+                    id,
+                    ..
+                } if text == "Delete session sess-1" => Some(*id),
+                _ => None,
+            })
+            .expect("the delete control");
+
+        dom.runtime().handle_event("click", click(), delete);
+        let edits = dom.render_immediate_to_vec().edits;
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(">Confirm delete</button>")
+                && html.contains(r#"data-slot="cancel-delete""#)
+                && html.contains(r#"data-slot="deleted">0"#),
+            "the first press only arms it: {html}"
+        );
+
+        // Cancel calls it off, and nothing was sent.
+        let cancel = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "click" && *id != delete => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .expect("the cancel control");
+        dom.runtime().handle_event("click", click(), cancel);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(">Delete</button>") && html.contains(r#"data-slot="deleted">0"#),
+            "{html}"
+        );
+
+        // Two presses send it, once.
+        dom.runtime().handle_event("click", click(), delete);
+        dom.render_immediate(&mut NoOpMutations);
+        dom.runtime().handle_event("click", click(), delete);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="deleted">1"#) && html.contains(">Delete</button>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_login_the_agent_asked_for_can_be_drawn_on_another_screen() {
+        #[component]
+        fn Host(needs: bool) -> Element {
+            let error = v1::Error::auth_required();
+            let auth = if needs {
+                AuthState::Required(error)
+            } else {
+                AuthState::default()
+            };
+            let methods = vec![v1::AuthMethod::Agent(v1::AuthMethodAgent::new(
+                "browser",
+                "Log in with the browser",
+            ))];
+            match login_guidance(&methods, &auth, &[], true, EventHandler::new(|_| {})) {
+                Some(guidance) => guidance,
+                None => rsx! { "nothing" },
+            }
+        }
+        let shown = |needs| {
+            let mut dom = VirtualDom::new_with_props(Host, HostProps { needs });
+            dom.rebuild_in_place();
+            dioxus_ssr::render(&dom)
+        };
+        let html = shown(true);
+        assert!(
+            html.contains(r#"data-slot="login-guidance""#)
+                && html.contains("Authenticate with Log in with the browser (browser)")
+                && html.contains("for a method the agent handles, that is the login")
+                && !html.contains("does not perform one"),
+            "{html}"
+        );
+        assert_eq!(shown(false), "nothing");
+    }
+
+    /// The verb a session control is labelled with, for the method it sends.
+    fn verb(method: &str) -> &'static str {
+        match method {
+            "session/load" => "Load",
+            "session/resume" => "Resume",
+            "session/close" => "Close",
+            "session/delete" => "Delete",
+            other => panic!("no verb for {other}"),
+        }
+    }
 
     /// An agent that described itself as `capabilities` say and offered no way
     /// to log in.
@@ -3045,7 +3307,7 @@ mod tests {
 
             for (row, session) in rows_shown(&listed).into_iter().zip(["sess-1", "sess-2"]) {
                 for affordance in [opening, "session/close", "session/delete"] {
-                    let name = format!(r#"aria-label="{affordance} session {session}""#);
+                    let name = format!(r#"aria-label="{} session {session}""#, verb(affordance));
                     assert!(
                         row.contains(&name),
                         "{affordance} identifies {session}: {row}"
@@ -3127,7 +3389,7 @@ mod tests {
         );
         let row = rows_shown(&panel)[0];
         for affordance in ["session/load", "session/close", "session/delete"] {
-            let name = format!(r#"aria-label="{affordance} session sess-1""#);
+            let name = format!(r#"aria-label="{} session sess-1""#, verb(affordance));
             assert!(
                 row.contains(&name),
                 "long content does not cost the target-specific {affordance} name: {row}"
@@ -3176,10 +3438,10 @@ mod tests {
         // the other two do not — and the destructive one is the only one drawn
         // in the failure hue.
         for (class, method) in [
-            ("btn btn-sm btn-filled", "session/new"),
-            ("btn btn-xs btn-quiet btn-go reopen", "session/load"),
-            ("btn btn-xs btn-quiet session-end", "session/close"),
-            ("btn btn-xs btn-quiet btn-bad session-end", "session/delete"),
+            ("btn btn-sm btn-filled", "New session"),
+            ("btn btn-xs btn-quiet btn-go reopen", "Load"),
+            ("btn btn-xs btn-quiet session-end", "Close"),
+            ("btn btn-xs btn-quiet btn-bad session-end", "Delete"),
         ] {
             let before = lifecycle
                 .split_once(&format!(">{method}</button>"))
@@ -3224,8 +3486,8 @@ mod tests {
             loading.contains(
                 r#"class="alert" data-slot="session-list-status" role="status" aria-live="polite""#
             ) && loading.contains("Loading sessions.")
-                && loading.contains("Previous Session rows are stale and hidden")
-                && loading.contains("the prior count and any paging remain visible"),
+                && loading.contains("Previous rows are hidden")
+                && loading.contains("until the agent answers"),
             "an in-flight listing is an accessible daisyUI status: {loading}"
         );
         let listed_while_loading = loading
@@ -3282,7 +3544,7 @@ mod tests {
         let unavailable = dioxus_ssr::render(&dom);
         assert!(
             unavailable.contains("Next page is unavailable while disconnected.")
-                && unavailable.contains("disabled=true"),
+                && unavailable.contains(r#"aria-disabled="true""#),
             "paging availability is stated in words rather than by dimness alone: {unavailable}"
         );
     }
@@ -3328,7 +3590,7 @@ mod tests {
         assert!(
             panel.contains(r#"aria-label="Authenticate with Log in with the browser (browser)""#)
                 && panel.contains(">Authenticate</button>")
-                && panel.contains(">Logout</button>"),
+                && panel.contains(">Log out</button>"),
             "consequential authentication actions keep visible labels and identify their target: {panel}"
         );
 
@@ -3539,7 +3801,7 @@ mod tests {
         ));
         assert!(
             gone.contains(r#"data-slot="availability""#)
-                && gone.contains("The connection has ended"),
+                && gone.contains("Disconnected. These are the sessions"),
             "a dialog full of inert controls says why: {gone}"
         );
         assert!(
@@ -3762,10 +4024,10 @@ mod tests {
     /// included: a row that leaked *that* onto an unreached row would be
     /// reporting an outcome as surely as the three named ones.
     const OUTCOMES: [&str; 4] = [
-        " not driven",
-        " driven and answered",
-        " driven and refused",
-        " driven, with an outcome",
+        " not called",
+        " called · OK",
+        " called · refused",
+        " called, with an outcome",
     ];
 
     /// The capability row naming `capability`, out of the agent's own block.
@@ -3794,9 +4056,9 @@ mod tests {
         // thing whatever the record held would pass a test that only ever asked
         // about one of them.
         for (driven, says, and_not) in [
-            (Driven::Unasked, " not driven", " driven and"),
-            (Driven::Answered, " driven and answered", " not driven"),
-            (turned_down(), " driven and refused", " driven and answered"),
+            (Driven::Unasked, " not called", " called ·"),
+            (Driven::Answered, " called · OK", " not called"),
+            (turned_down(), " called · refused", " called · OK"),
         ] {
             let row = load_row(&rendered_driven(record(driven)));
 
@@ -3947,7 +4209,7 @@ mod tests {
 
         let row = row_for(&panel, "session/resume");
         assert!(
-            row.contains(&format!(r#"{DRIVEN} driven and refused"#))
+            row.contains(&format!(r#"{DRIVEN} called · refused"#))
                 && row.contains("Method not found"),
             "what became of driving it, in the agent's own words: {row}"
         );
@@ -4022,12 +4284,12 @@ mod tests {
 
         let closed = row_for(&panel, "session/close");
         assert!(
-            closed.contains(&format!(r#"{DRIVEN} driven and refused"#)),
+            closed.contains(&format!(r#"{DRIVEN} called · refused"#)),
             "what became of driving it: {closed}"
         );
         let deleted = row_for(&panel, "session/delete");
         assert!(
-            deleted.contains(&format!(r#"{DRIVEN} not driven"#)),
+            deleted.contains(&format!(r#"{DRIVEN} not called"#)),
             "and the one nobody drove says that: {deleted}"
         );
         for row in [&closed, &deleted] {
@@ -4138,14 +4400,14 @@ mod tests {
 
             let row = row_for(&panel, capability);
             assert!(
-                row.contains(&format!(r#"{DRIVEN} driven and refused"#))
+                row.contains(&format!(r#"{DRIVEN} called · refused"#))
                     && row.contains("Method not found"),
                 "{capability} says what became of driving it, in the agent's own words: {row}"
             );
             for (other, _) in REACHED.iter().filter(|(other, _)| *other != capability) {
                 let row = row_for(&panel, other);
                 assert!(
-                    row.contains(&format!(r#"{DRIVEN} not driven"#)),
+                    row.contains(&format!(r#"{DRIVEN} not called"#)),
                     "and {other} is a row nobody drove: {row}"
                 );
             }
@@ -4263,7 +4525,7 @@ mod tests {
 
     /// The button that sends `logout`, as it is drawn — never the capability row
     /// of the same name, which is a claim to read rather than a thing to click.
-    const LOGOUT: &str = ">Logout</button>";
+    const LOGOUT: &str = ">Log out</button>";
 
     #[test]
     fn the_logout_button_sits_with_the_auth_methods_and_not_among_the_session_controls() {
@@ -4345,14 +4607,14 @@ mod tests {
         // them whatever the state held would pass a test that only ever asked
         // about one.
         for (auth, says) in [
-            (AuthState::Unasked, " not driven"),
-            (AuthState::Authenticated(browser()), " driven and answered"),
+            (AuthState::Unasked, " not called"),
+            (AuthState::Authenticated(browser()), " called · OK"),
             (
                 AuthState::Refused {
                     method: browser(),
                     error: CallError::Disconnected,
                 },
-                " driven and refused",
+                " called · refused",
             ),
         ] {
             let row = row_for(&rendered_auth(everything(), auth.clone()), "authenticate");
@@ -4373,7 +4635,7 @@ mod tests {
             "authenticate",
         );
         assert!(
-            driven.contains(&format!(r#"{DRIVEN} not driven"#)),
+            driven.contains(&format!(r#"{DRIVEN} not called"#)),
             "the record has no say over this row: {driven}"
         );
     }
@@ -4400,7 +4662,7 @@ mod tests {
         );
         let row = row_for(&panel, "authenticate");
         assert!(
-            row.contains(" driven and refused") && row.contains(said),
+            row.contains(" called · refused") && row.contains(said),
             "and the row says the same thing about it: {row}"
         );
     }
@@ -4427,7 +4689,7 @@ mod tests {
         );
         let row = row_for(&panel, "authenticate");
         assert!(
-            row.contains(&format!(r#"{DRIVEN} not driven"#)),
+            row.contains(&format!(r#"{DRIVEN} not called"#)),
             "and the row says nobody has answered it: {row}"
         );
     }
@@ -4445,7 +4707,7 @@ mod tests {
         );
 
         assert!(
-            row.contains(&format!(r#"{DRIVEN} not driven"#)),
+            row.contains(&format!(r#"{DRIVEN} not called"#)),
             "the acceptance the agent took back is not still on the row: {row}"
         );
         // And the row that *is* about the logout says what became of driving it,
@@ -4458,7 +4720,7 @@ mod tests {
             "logout",
         );
         assert!(
-            logged_out.contains(&format!(r#"{DRIVEN} driven and answered"#)),
+            logged_out.contains(&format!(r#"{DRIVEN} called · OK"#)),
             "out of the record, where the call that was made is: {logged_out}"
         );
     }
@@ -4513,8 +4775,7 @@ mod tests {
     /// call. The ways *out* are not counted here — close and delete are two
     /// operations, and a row may carry both.
     fn ways_in(row: &str) -> usize {
-        row.matches(">session/load</button>").count()
-            + row.matches(">session/resume</button>").count()
+        row.matches(">Load</button>").count() + row.matches(">Resume</button>").count()
     }
 
     /// The affordances at the bottom of the panel, apart from the capability
@@ -4664,11 +4925,11 @@ mod tests {
         let resuming = listing_for(Some(Restore::Resume));
 
         assert!(
-            resuming.contains("does not support viewing previous messages"),
+            resuming.contains("replay earlier messages"),
             "it says so plainly: {resuming}"
         );
         assert!(
-            resuming.contains("correct, not a failure"),
+            resuming.contains("the timeline starts empty"),
             "and says what the empty timeline means: {resuming}"
         );
 

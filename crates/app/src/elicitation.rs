@@ -130,11 +130,30 @@ pub fn Panel(
         ))
     });
     let mut problem = use_signal(|| None::<String>);
+    // How many findings the form is showing, reported up by the fields so
+    // Accept can say it sends anyway.
+    let mut findings = use_signal(|| 0_usize);
+    let id = use_hook(|| {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "elicitation-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
     let waiting = state == ElicitationState::Waiting;
     let shown = answering.read().shown;
     let sending = answering.read().content();
     let unusable = sending.clone().err();
     let available = waiting && unusable.is_none();
+    let accept_label = match findings() {
+        count if waiting && shown == Surface::Form && request.form().is_some() && count > 0 => {
+            format!(
+                "Accept anyway ({count} finding{})",
+                if count == 1 { "" } else { "s" }
+            )
+        }
+        _ => "Accept".to_owned(),
+    };
     let accept = {
         let request = request.clone();
         let engine = engine.clone();
@@ -189,7 +208,7 @@ pub fn Panel(
                 span { class: "eyebrow", "{v1::CLIENT_METHOD_NAMES.elicitation_create}",
                     if request.form().is_some() { " · form" } else { " · url" }
                 }
-                span { class: "blocking-wait", if waiting { "awaiting client input" } else { "resolved" } }
+                span { class: "blocking-wait", if waiting { "Waiting for you" } else { "Resolved" } }
             }
             div { class: "blocking-body",
                 p { class: "blocking-title", "{request.message()}" }
@@ -197,7 +216,7 @@ pub fn Panel(
                 {scope(&request)}
                 if request.form().is_some() {
                     div { class: "elicitation-form", "data-slot": "form",
-                        {tabs(shown, {
+                        {tabs(&id, shown, {
                             let engine = engine.clone();
                             move |chosen| {
                                 let mut state = answering.write();
@@ -209,38 +228,44 @@ pub fn Panel(
                             }
                         })}
                         // Keep the engine mounted so edits, touched state and
-                        // findings survive a visit to Raw.
-                        div { hidden: shown != Surface::Form,
+                        // findings survive a visit to Raw. Enter in a field
+                        // never answers: Accept is the only way to send.
+                        div {
+                            id: "{id}-panel-{Surface::Form.label()}",
+                            role: "tabpanel",
+                            aria_labelledby: "{id}-tab-{Surface::Form.label()}",
+                            hidden: shown != Surface::Form,
                             if let Some(raw_schema) = request.raw_form() {
                                 EngineFields {
                                     raw_schema: raw_schema.to_owned(), waiting,
                                     on_ready: move |form| *engine.borrow_mut() = Some(form),
                                     on_problem: move |error| problem.set(Some(error)),
-                                    on_accept: {
-                                        let request = request.clone();
-                                        move |content| { if waiting && shown == Surface::Form {
-                                            on_answer.call(Answer { request: request.clone(), reply: Reply::Accept(content) });
-                                        } }
-                                    },
+                                    on_findings: move |count| findings.set(count),
                                 }
                             }
                         }
-                        if shown == Surface::Raw {
-                            textarea { class: "textarea", "data-slot": "raw-content",
-                                aria_label: "The content this answer will send", rows: 8,
-                                value: "{answering.read().written}", readonly: !waiting,
-                                oninput: move |event| { if waiting { answering.write().raw(event.value()); } },
+                        div {
+                            id: "{id}-panel-{Surface::Raw.label()}",
+                            role: "tabpanel",
+                            aria_labelledby: "{id}-tab-{Surface::Raw.label()}",
+                            hidden: shown != Surface::Raw,
+                            if shown == Surface::Raw {
+                                textarea { class: "textarea", "data-slot": "raw-content",
+                                    aria_label: "Content to send", rows: 8,
+                                    value: "{answering.read().written}", readonly: !waiting,
+                                    oninput: move |event| { if waiting { answering.write().raw(event.value()); } },
+                                }
                             }
                         }
-                        p { class: "hint", "data-slot": "sends", "Accepting sends what the {shown.label()} tab holds." }
+                        p { class: "hint", "data-slot": "sends", "Accept sends what the {shown.label()} tab holds." }
                         if let Some(error) = unusable { p { class: "detail detail-warn", "data-slot": "unusable", "{error}" } }
                         if let Some(error) = problem.read().clone() { p { class: "detail detail-warn", role: "status", "{error}" } }
                     }
-                } else if let Some(url) = request.url() { {target(url, completed)} }
+                } else if let Some(url) = request.url() { {target(url, completed, &state)} }
                 else { p { class: "unnamed", "A mode this window has no rendering for. What arrived is below, as it arrived." } }
                 {said(&state, completed, request.url().is_some())}
                 div { class: "answers",
-                    {answer("accept", "Accept", "btn-filled", available, accept, &state)}
+                    {answer("accept", accept_label, "btn-filled", available, accept, &state)}
                     {answer("decline", "Decline", "btn-quiet btn-bad", waiting, reply(Reply::Decline), &state)}
                     {answer("cancel", "Cancel", "btn-quiet", waiting, reply(Reply::Cancel), &state)}
                 }
@@ -284,18 +309,24 @@ fn EngineFields(
     waiting: bool,
     on_ready: EventHandler<schemaform_dioxus::FormHandle>,
     on_problem: EventHandler<String>,
-    on_accept: EventHandler<Option<Map<String, Value>>>,
+    #[props(default)] on_findings: EventHandler<usize>,
 ) -> Element {
     let prepared =
         use_hook(|| crate::elicitation_schema::prepare(&raw_schema).map(std::rc::Rc::new));
     match prepared {
         Ok(prepared) => rsx! {
-            BoundFields { prepared: PreparedForm(prepared.clone()), waiting, on_ready, on_problem, on_accept }
+            BoundFields { prepared: PreparedForm(prepared.clone()), waiting, on_ready, on_problem, on_findings }
             for (name, schema) in &prepared.unrendered {
                 div { class: "field", "data-field": "{name}", "data-slot": "unrenderable",
+                    "data-required": prepared.required_unrendered.contains(name).to_string(),
                     strong { "{name}" }
+                    // The engine is not told this one is required — it cannot
+                    // draw it — so the mark is the host's to keep.
+                    if prepared.required_unrendered.contains(name) {
+                        span { class: "required-mark", "data-slot": "required", " Required" }
+                    }
                     p { class: "hint", "No control for this property type. Use Raw to fill it." }
-                pre { class: "raw", "{schema}" }
+                    pre { class: "raw", "{schema}" }
                 }
             }
         },
@@ -309,7 +340,7 @@ fn BoundFields(
     waiting: bool,
     on_ready: EventHandler<schemaform_dioxus::FormHandle>,
     on_problem: EventHandler<String>,
-    on_accept: EventHandler<Option<Map<String, Value>>>,
+    on_findings: EventHandler<usize>,
 ) -> Element {
     use crate::components::schemaform_daisyui as daisy;
     use schemaform_dioxus::{
@@ -324,9 +355,12 @@ fn BoundFields(
         Ok(form) => form,
         Err(error) => return form_problem(&error.to_string()),
     };
+    let booleans = prepared.0.booleans.clone();
     let bound = use_hook(|| {
         RenderConfiguration::builder()
-            .localizer(std::sync::Arc::new(crate::elicitation_words::FindingWords))
+            .localizer(std::sync::Arc::new(
+                crate::elicitation_words::FindingWords { booleans },
+            ))
             .controls(daisy::controls_with_density(
                 daisy::Appearance::None,
                 daisy::Density::Compact,
@@ -356,12 +390,35 @@ fn BoundFields(
         )
     });
     let freezing_id = id.clone();
+    // The findings on screen, read so this re-renders as they change, and
+    // reported up for Accept's label.
+    let visible = form
+        .reader()
+        .read()
+        .map(|projection| {
+            projection
+                .findings
+                .iter()
+                .filter(|finding| {
+                    matches!(
+                        finding,
+                        schemaform_dioxus::FindingProjection::Validation { .. }
+                            | schemaform_dioxus::FindingProjection::Parse { .. }
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    use_effect(use_reactive!(|visible| on_findings.call(visible)));
     rsx! {
         div { id, class: "elicitation-fields", "data-resolved": (!waiting).to_string(),
             onmounted: move |_| { let freezing = document::eval(FREEZE_FORM); let _ = freezing.send(freezing_id.clone()); },
             SchemaForm { form: bound, submission_mode: SubmissionMode::Advisory,
                 on_submit: |_| {},
-                on_advisory_submit: move |submission: schemaform::AdvisorySubmission| { if waiting { on_accept.call(advisory_content(&submission)); } },
+                // Enter in a single-field form submits it natively. That is
+                // not an answer: Accept is the one way to send, whatever the
+                // number of fields (FM3).
+                on_advisory_submit: |_| {},
                 on_error: move |error: schemaform_dioxus::HandleError| on_problem.call(error.to_string()),
             }
         }
@@ -399,48 +456,134 @@ fn scope(request: &ElicitationRequest) -> Element {
                 button { class: "btn btn-ghost btn-xs reach", "data-slot": "reach-tool-call",
                     title: "Move focus to the tool call this question came from",
                     onclick: move |_| { let focusing = document::eval(FOCUS_TOOL_CALL); let _ = focusing.send(id.clone()); },
-                    "go to it"
+                    "Go to tool call"
                 }
             }
         }
     }
 }
 
-fn tabs(surface: Surface, on_choose: impl FnMut(Surface) + Clone + 'static) -> Element {
+/// The Form/Raw switch, as a tablist whose tabs control the two panels in
+/// [`Panel`]. One Tab stop: the arrows, Home and End move between the tabs and
+/// select as they go.
+fn tabs(id: &str, surface: Surface, on_choose: impl FnMut(Surface) + Clone + 'static) -> Element {
+    const ORDER: [Surface; 2] = [Surface::Form, Surface::Raw];
     rsx! { div { class: "form-tabs seg", role: "tablist", aria_label: "How to answer",
-        for choice in [Surface::Form, Surface::Raw] {
+        for choice in ORDER {
             button { key: "{choice.label()}", class: "seg-item seg-word", r#type: "button", role: "tab",
+                id: "{id}-tab-{choice.label()}",
+                aria_controls: "{id}-panel-{choice.label()}",
+                tabindex: if choice == surface { "0" } else { "-1" },
                 "data-slot": "surface", "data-surface": "{choice.label()}", aria_selected: choice == surface,
                 onclick: { let mut on_choose = on_choose.clone(); move |_| on_choose(choice) },
+                onkeydown: {
+                    let mut on_choose = on_choose.clone();
+                    let id = id.to_owned();
+                    move |event: Event<KeyboardData>| {
+                        let at = ORDER.iter().position(|each| *each == choice).unwrap_or(0);
+                        let Some(next) = crate::console::step(ORDER.len(), at, &event.key(), crate::console::Axis::Horizontal) else {
+                            return;
+                        };
+                        event.prevent_default();
+                        let next = ORDER[next];
+                        on_choose(next);
+                        crate::console::focus_id(&format!("{id}-tab-{}", next.label()));
+                    }
+                },
                 "{choice.label()}"
             }
         }
     } }
 }
 
-fn target(url: &str, completed: bool) -> Element {
+/// Where a URL-mode request wants the reader to go.
+///
+/// **Only an http(s) link with a host is ever a link** (S1). The text is
+/// parsed rather than split, and the host shown is the one the browser would
+/// open: `https://trusted.example@evil.example` is a link to `evil.example`
+/// with `trusted.example` as a user name, and it says so. Anything else is
+/// drawn as text. A request that can no longer be acted on stops being a
+/// link too; one that was accepted and not yet completed keeps it, because
+/// visiting the page is what accepting consented to.
+fn target(url: &str, completed: bool, state: &ElicitationState) -> Element {
+    let live = match state {
+        ElicitationState::Waiting | ElicitationState::Answering => true,
+        ElicitationState::Answered(ElicitationAnswer::Accepted(_)) => !completed,
+        _ => false,
+    };
+    let parsed = Destination::of(url);
     rsx! { div { class: "elicitation-url", "data-slot": "url",
-        p { class: "hint",
-            if let Some(host) = host(url) { "It wants you to visit " strong { class: "host", "{host}" } }
-            else { "It wants you to visit a URL this window cannot read a host out of." }
+        match &parsed {
+            Destination::Web { host, credentials, .. } => rsx! {
+                p { class: "hint", "It wants you to visit " strong { class: "host", "{host}" } }
+                if *credentials {
+                    p { class: "detail detail-warn", "data-slot": "url-credentials",
+                        "This link has a user name or password before the host. The page it opens is on "
+                        strong { "{host}" }
+                        ", whatever the text before the "
+                        code { "@" }
+                        " says."
+                    }
+                }
+            },
+            Destination::Inert => rsx! {
+                p { class: "detail detail-warn", "data-slot": "url-inert",
+                    "Not a web link (only http and https are opened), so it is shown as text."
+                }
+            },
         }
-        a { class: "url-target", "data-slot": "url-target", href: "{url}", "{url}" }
-        p { class: "hint", "Opens in your browser. This window never loads it, and never fetches it before you ask." }
+        if let (Destination::Web { href, host, .. }, true) = (&parsed, live) {
+            a { class: "url-target", "data-slot": "url-target", href: "{href}", title: "Open {host} in your browser", "{url}" }
+            p { class: "hint", "Opens in your browser. This window never loads or fetches it." }
+        } else {
+            code { class: "url-target mono", "data-slot": "url-text", "{url}" }
+            if matches!(parsed, Destination::Web { .. }) {
+                p { class: "hint", "data-slot": "url-closed", "No longer a link: this request is over." }
+            }
+        }
         if completed { p { class: "detail", "data-slot": "completed", "The agent says the interaction finished." } }
     } }
 }
 
-fn host(url: &str) -> Option<String> {
-    let host = url.split_once("://")?.1.split(['/', '?', '#']).next()?;
-    (!host.is_empty()).then(|| host.to_owned())
+/// What a URL-mode request's text turned out to be.
+#[derive(Debug, PartialEq)]
+enum Destination {
+    /// An http(s) URL with a host: the normalized link, the host the browser
+    /// would open, and whether a user name or password sits in front of it.
+    Web {
+        href: String,
+        host: String,
+        credentials: bool,
+    },
+    /// Anything else, which is never made a link.
+    Inert,
+}
+
+impl Destination {
+    fn of(text: &str) -> Self {
+        let Ok(url) = url::Url::parse(text.trim()) else {
+            return Self::Inert;
+        };
+        if !matches!(url.scheme(), "http" | "https") {
+            return Self::Inert;
+        }
+        let Some(host) = url.host_str().filter(|host| !host.is_empty()) else {
+            return Self::Inert;
+        };
+        Self::Web {
+            host: host.to_owned(),
+            credentials: !url.username().is_empty() || url.password().is_some(),
+            href: url.as_str().to_owned(),
+        }
+    }
 }
 
 fn said(state: &ElicitationState, completed: bool, url: bool) -> Element {
     match state {
         ElicitationState::Waiting => {
-            rsx! { p { class: "detail detail-live", "The agent is waiting here until you answer." } }
+            rsx! { p { class: "detail detail-live", "The agent is waiting for your answer." } }
         }
-        ElicitationState::Answering => rsx! { p { class: "detail", "Sending the answer..." } },
+        ElicitationState::Answering => rsx! { p { class: "detail", "Sending…" } },
         ElicitationState::Answered(ElicitationAnswer::Accepted(content)) => rsx! {
             p { class: "detail", "Sent " code { "accept" }
                 if let Some(content) = content { " with {content.len()} fields" } else { " with no content" }
@@ -449,13 +592,13 @@ fn said(state: &ElicitationState, completed: bool, url: bool) -> Element {
             }
         },
         ElicitationState::Answered(ElicitationAnswer::Declined) => {
-            rsx! { p { class: "detail", "Sent " code { "decline" } ". The agent was told no." } }
+            rsx! { p { class: "detail", "Sent " code { "decline" } "." } }
         }
         ElicitationState::Answered(ElicitationAnswer::Cancelled) => {
-            rsx! { p { class: "detail detail-warn", "Sent " code { "cancel" } ". A dismissed question, or the answer a client owes everything it leaves waiting." } }
+            rsx! { p { class: "detail detail-warn", "Sent " code { "cancel" } "." } }
         }
         ElicitationState::Abandoned => {
-            rsx! { p { class: "detail detail-warn", "Nobody answered this, and nobody can now. The turn ended, the agent went away, or an answer could not be sent." } }
+            rsx! { p { class: "detail detail-warn", "Can no longer be answered: the turn ended or the agent disconnected." } }
         }
         _ => rsx! { p { class: "detail", "A state this window has no rendering for." } },
     }
@@ -463,7 +606,7 @@ fn said(state: &ElicitationState, completed: bool, url: bool) -> Element {
 
 fn answer(
     slot: &'static str,
-    label: &'static str,
+    label: impl std::fmt::Display,
     variant: &'static str,
     available: bool,
     on_click: impl FnMut(Event<MouseData>) + 'static,
@@ -568,6 +711,55 @@ mod tests {
                 true,
             )
         };
+
+        // Both surfaces are tabpanels their tabs control, and only one is shown.
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(html.matches(r#"role="tabpanel""#).count(), 2, "{html}");
+        assert!(
+            html.contains(r#"aria-controls="elicitation-"#)
+                && html.contains(r#"tabindex="0""#)
+                && html.contains(r#"tabindex="-1""#),
+            "{html}"
+        );
+
+        // Enter in a one-field form submits it natively. That is not an
+        // answer: Accept is the only way to send (FM3).
+        let form = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "submit" => Some(*id),
+                _ => None,
+            })
+            .expect("the engine's form listens for submit");
+        dom.runtime().handle_event(
+            "submit",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(
+                    dioxus::html::SerializedFormData::new(String::new(), vec![]),
+                ))) as Rc<dyn Any>,
+                true,
+            ),
+            form,
+        );
+        dom.render_immediate(&mut NoOpMutations);
+        // The count reaches Accept through an effect, which runs on the next
+        // turn of the scheduler.
+        for _ in 0..3 {
+            let _ = tokio::time::timeout(Duration::from_millis(50), dom.wait_for_work()).await;
+            dom.render_immediate(&mut NoOpMutations);
+        }
+        assert!(
+            replies.borrow().is_empty(),
+            "submitting the form sends nothing"
+        );
+        // Submitting did reveal the finding, and Accept now says what it is
+        // about to send past.
+        assert!(
+            dioxus_ssr::render(&dom).contains("Accept anyway (1 finding)"),
+            "{}",
+            dioxus_ssr::render(&dom)
+        );
+
         dom.runtime().handle_event("click", click(), accept);
         let answer = replies.borrow_mut().pop().unwrap();
         let Reply::Accept(data) = answer.reply else {
@@ -636,7 +828,7 @@ mod tests {
     fn form_of(schema: Value) -> String {
         #[component]
         fn Host(schema: Value) -> Element {
-            rsx! { EngineFields { raw_schema: schema.to_string(), waiting: true, on_ready: |_| {}, on_problem: |_| {}, on_accept: |_| {} } }
+            rsx! { EngineFields { raw_schema: schema.to_string(), waiting: true, on_ready: |_| {}, on_problem: |_| {} } }
         }
         let mut dom = VirtualDom::new_with_props(Host, HostProps { schema });
         dom.rebuild_in_place();
@@ -669,6 +861,42 @@ mod tests {
     }
 
     #[test]
+    fn a_required_property_without_a_control_keeps_its_required_mark() {
+        let html = form_of(json!({"type":"object","properties":{
+            "future":{"type":"future"},"later":{"type":"later"}},"required":["future"]}));
+        let row = |name: &str| {
+            html.split(r#"data-slot="unrenderable""#)
+                .find(|row| row.contains(&format!("<strong>{name}</strong>")))
+                .unwrap_or_else(|| panic!("the {name} row: {html}"))
+                .to_owned()
+        };
+        assert!(row("future").contains(r#"data-slot="required""#), "{html}");
+        assert!(!row("later").contains(r#"data-slot="required""#), "{html}");
+    }
+
+    #[test]
+    fn a_required_boolean_left_unset_is_not_called_false() {
+        fn host() -> Element {
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","required":["agree","name"],"properties":{
+                    "agree":{"type":"boolean"},"name":{"type":"string"}}}).to_string(),
+                waiting: true,
+                on_ready: |form: schemaform_dioxus::FormHandle| { form.prepare_advisory_submission().unwrap(); },
+                on_problem: |_| {},
+            } }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("Required, not set (unchecked is not false)."),
+            "{html}"
+        );
+        assert!(html.contains("Required, nothing filled in."), "{html}");
+    }
+
+    #[test]
     fn a_default_beyond_engine_limits_keeps_the_raw_fallback_local() {
         let html = form_of(
             json!({"type":"object","properties":{"name":{"type":"string","default":"x".repeat(262_145)}}}),
@@ -691,7 +919,7 @@ mod tests {
         fn host(props: HostProps) -> Element {
             rsx! { EngineFields {
                 raw_schema: r#"{"type":"object","properties":{"age":{"type":"integer","title":"Age","maximum":120,"default":999},"confidence":{"type":"number","title":"Confidence","maximum":1,"default":2},"name":{"type":"string","title":"Name"}},"required":["name"]}"#.to_owned(),
-                waiting: true, on_ready: move |form| *props.engine.borrow_mut() = Some(form), on_problem: |_| {}, on_accept: |_| {},
+                waiting: true, on_ready: move |form| *props.engine.borrow_mut() = Some(form), on_problem: |_| {},
             } }
         }
         let engine = Rc::new(RefCell::new(None));
@@ -793,7 +1021,7 @@ mod tests {
                     "tags":{"type":"array","minItems":1,"maxItems":2,"items":{"type":"string","enum":["a","b","c"]}},
                     "required":{"type":"string"}
                 }}).to_string(), waiting: true,
-                on_ready: move |form| *props.engine.borrow_mut() = Some(form), on_problem: |_| {}, on_accept: |_| {},
+                on_ready: move |form| *props.engine.borrow_mut() = Some(form), on_problem: |_| {},
             } }
         }
         let engine = Rc::new(RefCell::new(None));
@@ -980,7 +1208,7 @@ mod tests {
             rsx! { EngineFields {
                 raw_schema: json!({"type":"object","properties":{"name":{"type":"string","default":"b","pattern":format!("^{}$", "a".repeat(4200))}}}).to_string(),
                 waiting:true, on_ready: |form: schemaform_dioxus::FormHandle| { form.prepare_advisory_submission().unwrap(); },
-                on_problem: |_| {}, on_accept: |_| {},
+                on_problem: |_| {},
             } }
         }
         let mut dom = VirtualDom::new(host);
@@ -990,15 +1218,86 @@ mod tests {
         assert!(!html.contains("pattern null"));
     }
 
+    fn url_card(url: &str, state: ElicitationState, completed: bool) -> String {
+        dioxus_ssr::render_element(target(url, completed, &state))
+    }
+
+    #[test]
+    fn only_an_http_link_is_a_link_and_it_names_the_host_it_opens() {
+        let html = url_card(
+            "https://example.com/x?y#z",
+            ElicitationState::Waiting,
+            false,
+        );
+        assert!(
+            html.contains(r#"href="https://example.com/x?y#z""#)
+                && html.contains(r#"<strong class="host">example.com</strong>"#)
+                && html.contains("Opens in your browser"),
+            "{html}"
+        );
+        assert!(!html.contains("url-credentials"), "{html}");
+
+        // A user name in front of the host is the oldest spoof there is: the
+        // host shown is the one the browser opens, and the card says why.
+        let spoof = url_card(
+            "https://trusted.example@evil.example/login",
+            ElicitationState::Waiting,
+            false,
+        );
+        assert!(
+            spoof.contains(r#"<strong class="host">evil.example</strong>"#)
+                && !spoof.contains(r#"<strong class="host">trusted.example"#)
+                && spoof.contains(r#"data-slot="url-credentials""#),
+            "{spoof}"
+        );
+        let password = url_card(
+            "http://user:secret@example.com",
+            ElicitationState::Waiting,
+            false,
+        );
+        assert!(password.contains("url-credentials"), "{password}");
+
+        // Every other scheme, and text that is no URL at all, stays text.
+        for inert in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<b>hi</b>",
+            "dioxus://index.html",
+            "mailto:someone@example.com",
+            "not a url",
+            "https://",
+        ] {
+            let html = url_card(inert, ElicitationState::Waiting, false);
+            assert!(
+                !html.contains("<a ") && html.contains(r#"data-slot="url-text""#),
+                "{inert} is not a link: {html}"
+            );
+            assert!(html.contains(r#"data-slot="url-inert""#), "{html}");
+        }
+    }
+
+    #[test]
+    fn a_url_stops_being_a_link_once_the_request_is_over() {
+        for state in [
+            ElicitationState::Answered(ElicitationAnswer::Declined),
+            ElicitationState::Answered(ElicitationAnswer::Cancelled),
+            ElicitationState::Abandoned,
+        ] {
+            let html = url_card("https://example.com", state, false);
+            assert!(
+                !html.contains("<a ") && html.contains(r#"data-slot="url-closed""#),
+                "{html}"
+            );
+        }
+        // Accepted is consent to visit it, so the link stays until the agent
+        // says the interaction finished.
+        let accepted = || ElicitationState::Answered(ElicitationAnswer::Accepted(None));
+        assert!(url_card("https://example.com", accepted(), false).contains("<a "));
+        assert!(!url_card("https://example.com", accepted(), true).contains("<a "));
+    }
+
     #[test]
     fn url_consent_is_separate_from_completion() {
-        assert_eq!(
-            host("https://example.com/x?y#z").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(host("not a url"), None);
-        let html = dioxus_ssr::render_element(target("https://example.com/x", false));
-        assert!(html.contains("https://example.com/x") && html.contains("Opens in your browser"));
         let state = ElicitationState::Answered(ElicitationAnswer::Accepted(None));
         assert!(dioxus_ssr::render_element(said(&state, false, true)).contains("not completion"));
         assert!(!dioxus_ssr::render_element(said(&state, true, true)).contains("not completion"));

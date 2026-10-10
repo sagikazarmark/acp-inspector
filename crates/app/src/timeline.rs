@@ -110,6 +110,17 @@ pub fn Timeline(
     /// Its own handler rather than one widened callback: the two answers are
     /// different sentences and core takes them by different methods.
     on_elicit: EventHandler<elicitation::Answer>,
+    /// The agent's login guidance and its Authenticate actions, when it has
+    /// said it wants a login (X5). Drawn by the Capabilities surface's own
+    /// function (`agent::login_guidance`) so the two places say the same
+    /// thing; shown here in the empty state, because a session/new refused
+    /// for want of a login leaves this screen with nothing else to say.
+    #[props(default)]
+    login: Option<Element>,
+    /// Recent invocations, each a way to launch again, for the first-run
+    /// card (D10). The launcher owns the list; `None` draws the card without.
+    #[props(default)]
+    recent: Option<Element>,
 ) -> Element {
     let blocks = blocks(entries());
     let count = blocks.len();
@@ -120,6 +131,38 @@ pub fn Timeline(
         reveal: on_reveal,
         held: (held_frames.start, held_frames.end),
     };
+
+    // The rows, a page at a time (L1): a long session is thousands of rows,
+    // and each of them is laid out again whenever the agent streams. Row
+    // positions are the ordinals, which is what `crate::page` pages by.
+    let mut anchor = use_signal(|| None::<u64>);
+    let positions: Vec<u64> = (0..rows.len() as u64).collect();
+    let total_rows = rows.len();
+    // Arriving from the Console names a frame; the page that holds its row is
+    // the one to show. Keyed on what was asked for, so paging away afterwards
+    // is not undone by the next render.
+    let sought_row = sought.and_then(|ordinal| rows.iter().position(|row| row.holds(ordinal)));
+    use_effect(use_reactive!(|sought| {
+        if sought.is_some()
+            && let Some(row) = sought_row
+        {
+            anchor.set(Some(page_start(row, total_rows)));
+        }
+    }));
+    let range = crate::page::range(&positions, anchor());
+
+    // Which row is the list's one Tab stop (A4): the one the reader last
+    // focused while it is still on the page, and the newest otherwise.
+    let focused = use_signal(|| None::<String>);
+    let page: Vec<&Row> = rows[range.clone()].iter().collect();
+    let current = focused()
+        .filter(|key| page.iter().any(|row| row.is_block() && row.key() == *key))
+        .or_else(|| {
+            page.iter()
+                .rev()
+                .find(|row| row.is_block())
+                .map(|row| row.key())
+        });
 
     // Where the tool stopped, if it has. Read off the rows rather than from
     // `blocked`, because what this reaches is a row: the flag says a request is
@@ -137,121 +180,107 @@ pub fn Timeline(
                 .and_then(|entry| entry.frames.iter().find_map(|recorded| recorded.captured))
         })
         .flatten();
+    // And the page it is on, so going to it can turn to that page first.
+    let waiting_page = waiting.and_then(|ordinal| {
+        rows.iter()
+            .position(|row| row.holds(ordinal))
+            .map(|row| page_start(row, rows.len()))
+    });
+    let total = rows.len();
+    let latest_page = range.end == total;
 
     rsx! {
         main { class: "turns",
             id: "timeline",
             tabindex: "-1",
             header { class: "pane-head",
-                h2 { class: "pane-title", "Session" }
-                // Which call the rows under this belong to, in the protocol's
-                // own words: a reader who has scrolled back through four turns
-                // is reading a screen that says which one is current.
+                h2 { class: "pane-title", "Timeline" }
+                // Which turn the rows under this belong to, and once it is over,
+                // that it is: a header still naming the prompt call after the
+                // answer came back reads as a turn that is still running.
                 if let Some(turn) = turns.last() {
-                    span { class: "pane-scope", "{v1::AGENT_METHOD_NAMES.session_prompt} · turn {turn.id}" }
+                    span { class: "pane-scope", "data-slot": "turn-scope",
+                        title: "{v1::AGENT_METHOD_NAMES.session_prompt}",
+                        if turn.outcome.is_some() { "turn {turn.id} · {over(turn)}" } else { "turn {turn.id}" }
+                    }
                 }
                 // **The session is named where the session is drawn**, which is
-                // the rail: its id whole, the way to another, and the way to the
-                // ones the agent is holding (`crate::rail`). It was named here
-                // too and drawn as a control, so the header of the screen the
-                // session is *read* on carried the acts on it — a switcher, a
-                // copy and a chevron between the region's name and its state,
-                // which is three controls in the one place the drawing keeps
-                // clear.
-                //
-                // Where the turn stands, at the far end of the region's own
-                // header, which is where a desktop application puts the state of
-                // the thing a region is showing. The *sentence* explaining it
-                // stays above the composer, so no word is drawn twice.
+                // the rail (`crate::rail`); this header names the screen and
+                // says where the turn stands, at the far end where a desktop
+                // application puts the state of what a region is showing.
                 span { class: "grow" }
                 {composer::badge(&composer::presented(&turn, blocked, problem.as_ref(), connected && session.is_some(), connected))}
             }
 
             if retention.entries > 0 || retention.turns > 0 {
                 p { class: "narrowed", "data-slot": "timeline-retention",
-                    "Timeline retention: {retention.entries} entries, {retention.frames} raw Frames ({retention.bytes} bytes), and {retention.turns} Turn records no longer held. Gaps may occur between retained entries. Trace has its own retention budget. Pending Blocking Requests remain answerable."
+                    "Older timeline items were removed to save memory ({retention.entries} entries, {retention.frames} frames). The trace keeps its own history."
                 }
             }
             if count == 0 {
                 div { class: "empty", "data-slot": "timeline-empty",
-                    // Two empties, and they are not the same news. A session
-                    // with nothing said in it yet is waiting for the agent; no
-                    // session at all is where closing or deleting the live one
-                    // leaves this (§7.5), and a screen that said the same thing
-                    // about both would have the reader waiting for an agent
-                    // that has nothing to talk in. Where the record went is said
-                    // with it, because the timeline is the only thing a switch
-                    // costs.
-                    // **And the one thing that resolves it, where the state is
-                    // said.** An empty screen that names a state and offers
-                    // nothing is a screen that has told the reader to go and
-                    // find the control themselves — on a window where the
-                    // control is a rail away and, in the disconnected case,
-                    // four fields deep. Two of the three states have such a
-                    // thing; the third is waiting on the agent, and an offer
-                    // there would be a button for *be patient*.
-                    if session.is_none() && connected {
-                        h3 { "No session is open" }
-                        p { "Traffic from closed, deleted or switched-away Sessions remains in Trace." }
+                    // Each empty state says what it is and offers the one thing
+                    // that resolves it, where there is one. Waiting on the agent
+                    // offers nothing: a button there would be a button for *be
+                    // patient*.
+                    if let Some(login) = login.filter(|_| session.is_none()) {
+                        // The agent refused to open a session until somebody
+                        // logs in. Saying "no session" here would send the
+                        // reader to a button that will be refused again.
+                        h3 { "Log in to continue" }
+                        div { class: "empty-login", "data-slot": "empty-login", {login} }
+                    } else if session.is_none() && connected {
+                        h3 { "No session open" }
+                        p { "Open a new session to start prompting." }
                         if let Some(open) = on_new_session {
                             button {
                                 class: "btn btn-md btn-filled",
                                 "data-slot": "empty-action",
                                 r#type: "button",
-                                title: "Open a new session on the running agent",
+                                title: "{v1::AGENT_METHOD_NAMES.session_new}",
                                 onclick: move |_| open.call(()),
-                                "session/new"
+                                "New session"
                             }
                         }
                     } else if session.is_some() {
-                        h3 { "Waiting for session updates" }
-                        p {
-                            code { "session/update" }
-                            " entries appear here, decoded where v1 names them and raw otherwise."
-                        }
+                        h3 { "Session open" }
+                        p { "Send a prompt below. Agent updates appear here." }
                     } else {
-                        h3 { "No session updates yet" }
-                        p { "Launch an Agent to open a Session and watch its updates here." }
-                        // The one thing an empty screen with no agent behind it
-                        // can offer. It opens the fields rather than filling
-                        // them: nothing is typed for the reader and nothing is
-                        // spawned — the offer is *here is where you start*.
-                        //
-                        // **Which is why it stopped saying `Launch an agent`.**
-                        // The comment above is what the control does and the
-                        // label was what it does not: it opens a form, and
-                        // launching is the button *inside* that form. It was
-                        // also the third word this window used for one act —
-                        // `Connect…` in the bar, `Connect to an agent` on the
-                        // dialog, `Launch an agent` here — with two of the three
-                        // on screen together, both opening the same dialog, so
-                        // a reader had to press one to find out they were the
-                        // same offer. One flow, one word, and `Launch` is left
-                        // to the control that does it.
-                        button {
-                            class: "btn btn-md btn-filled",
-                            "data-slot": "empty-action",
-                            r#type: "button",
-                            title: "Open the launch fields",
-                            onclick: move |_| crate::connect::open(),
-                            "Connect…"
-                        }
+                        {onboarding(recent)}
                     }
                 }
             } else {
+                {crate::page::controls(&positions, range.clone(), anchor, ENTRIES)}
                 div { class: "tailing",
                 div { class: "turn-stream", "data-tail": ENTRIES,
+                    "data-page-latest": "{latest_page}",
                 ol { class: "stream",
+                    // One Tab stop for the list (A4): ↑/↓/Home/End move
+                    // between rows and Enter shows a row's frames.
+                    onmounted: move |_| crate::console::rove(
+                        &format!(r#"[data-tail="{ENTRIES}"] .stream"#),
+                        "article.row",
+                        Some(r#"[data-slot="reach"]"#),
+                    ),
                     // Newest first in the DOM, oldest first on screen, like the
                     // trace and the console: the list is laid out bottom-up, so
                     // a turn streaming into it stays in view without a scroll
                     // script, and stays where the reader put it once they
                     // scroll back.
-                    for row in rows.into_iter().rev() {
+                    for row in page.into_iter().rev() {
                         li {
                             key: "{row.key()}",
-                            match &row {
-                                Row::Block(block) => block.render(on_answer, on_elicit, crossing),
+                            match row {
+                                Row::Block(block) => block.render(
+                                    on_answer,
+                                    on_elicit,
+                                    crossing,
+                                    Roving {
+                                        current: current.as_deref() == Some(row.key().as_str()),
+                                        key: row.key(),
+                                        focused,
+                                    },
+                                ),
                                 Row::Ended(turn) => ended(turn),
                                 Row::Outside => outside(),
                             }
@@ -261,7 +290,7 @@ pub fn Timeline(
                 }
                 // Beside the list and not in it: a control inside the scroller
                 // is a row of it, and this is about the list rather than in it.
-                {crate::tail::to_latest(ENTRIES, "entry", None)}
+                {crate::tail::to_latest(ENTRIES, "entry", Some(anchor))}
                 }
             }
 
@@ -270,16 +299,7 @@ pub fn Timeline(
             //
             // **The region is always here, and mostly empty.** An announcement
             // is made by text *changing* inside a live region, so one that
-            // appeared along with its sentence would announce nothing at all —
-            // which is the whole of what this is for on the one surface where
-            // the tool has stopped and is waiting to be told what to do.
-            //
-            // It is not a badge and does not grade anything (§9): a blocking
-            // request is the agent's turn stopping, not a fault of the agent's,
-            // and what this says is where it stopped and how to get there. The
-            // entry list has no scroll script by design — it stays where the
-            // reader put it — so a request that arrives while they are reading
-            // further back arrives off screen, and this is the way to it.
+            // appeared along with its sentence would announce nothing at all.
             div { class: "waiting", "data-slot": "waiting", role: "status", aria_live: "polite",
                 if blocked {
                     span { "The agent is waiting on you." }
@@ -288,32 +308,21 @@ pub fn Timeline(
                             class: "btn btn-xs btn-quiet",
                             "data-slot": "reach-request",
                             title: "Move focus to the request the agent is waiting on",
-                            onclick: move |_| focus_entry(ordinal),
-                            "go to it"
+                            onclick: move |_| {
+                                if let Some(start) = waiting_page {
+                                    anchor.set((start as usize + crate::page::SIZE < total).then_some(start));
+                                }
+                                focus_entry(ordinal);
+                            },
+                            "Go to request"
                         }
                     }
                 }
             }
 
             // The composer belongs to the turn, so it is drawn where the turn
-            // is. The Connection's own Stop is in the toolbar and never moves.
-            //
-            // **And it is drawn where there is a turn to have.** A disabled
-            // prompt box is a control, and a control that cannot be used says
-            // *this is how you drive this window* to a reader who cannot drive
-            // it — so with no Session open it was a hundred and thirty pixels of
-            // dead chrome carrying a placeholder that named the two calls which
-            // open one. Every word of that is already on the empty screen
-            // directly above it, in a heading and a sentence rather than in grey
-            // text inside a box nobody can type in, and *with the control that
-            // resolves it* — `session/new` where there is an agent, `Connect…`
-            // where there is not. The screen said it better and the box said it
-            // second.
-            //
-            // The exception is the whole reason it is a condition rather than
-            // `ready`: a handshake that failed has no Session and its own
-            // account of why, and this is the surface that draws it. A launch
-            // that never reached a Session must not fail silently.
+            // is — and only where there is a turn to have, or a failed
+            // handshake whose reason it is the surface for.
             if session.is_some() || problem.is_some() {
                 Composer {
                     key: "{prompt_epoch}-{session:?}",
@@ -333,6 +342,85 @@ pub fn Timeline(
                 }
             }
         }
+    }
+}
+
+/// The first page start that shows `row`, in a list of `total` rows paged by
+/// [`crate::page::SIZE`] — the same arithmetic `crate::page::range` clamps to.
+fn page_start(row: usize, total: usize) -> u64 {
+    let size = crate::page::SIZE;
+    (row.saturating_sub(size / 2)).min(total.saturating_sub(size)) as u64
+}
+
+/// How a turn that is over came out, in the header's few words.
+fn over(turn: &Turn) -> &'static str {
+    match &turn.outcome {
+        Some(TurnOutcome::Ended(v1::StopReason::EndTurn)) => "done",
+        Some(TurnOutcome::Ended(v1::StopReason::Cancelled)) => "cancelled",
+        Some(TurnOutcome::Ended(_)) => "stopped",
+        Some(TurnOutcome::Failed(_)) => "failed",
+        _ => "over",
+    }
+}
+
+/// The first-run card (D10): what this window is for, and the one way to
+/// start.
+///
+/// The button opens the launch fields rather than filling them: nothing is
+/// typed for the reader and nothing is spawned. It says `Connect…`, the bar's
+/// word for the same dialog, so the two offers read as one.
+///
+/// `recent` is the launcher's list of recent invocations, drawn under the
+/// actions where the window has one to pass (`main.rs` owns that list).
+fn onboarding(recent: Option<Element>) -> Element {
+    let palette = if cfg!(target_os = "macos") {
+        "⌘K"
+    } else {
+        "Ctrl K"
+    };
+    rsx! {
+        div { class: "onboarding", "data-slot": "onboarding",
+            span { class: "onboarding-icon", {crate::disclosure::icon(crate::disclosure::Role::Start)} }
+            h3 { "Inspect an ACP agent" }
+            p { "Start your agent to see the conversation here." }
+            div { class: "onboarding-actions",
+                button {
+                    class: "btn btn-md btn-filled",
+                    "data-slot": "empty-action",
+                    r#type: "button",
+                    title: "Open the launch fields",
+                    onclick: move |_| crate::connect::open(),
+                    "Connect…"
+                }
+                span { class: "hint", "data-slot": "palette-hint",
+                    "or press "
+                    kbd { "{palette}" }
+                    " for every command"
+                }
+            }
+            if let Some(recent) = recent {
+                div { class: "onboarding-recent", "data-slot": "onboarding-recent",
+                    h4 { "Recent" }
+                    {recent}
+                }
+            }
+        }
+    }
+}
+
+/// What a row needs to be the list's one Tab stop or one of the others (A4).
+#[derive(Clone)]
+struct Roving {
+    /// Whether this row is the list's Tab stop.
+    current: bool,
+    /// The row's own name, which is what the list remembers as focused.
+    key: String,
+    focused: Signal<Option<String>>,
+}
+
+impl Roving {
+    fn tabindex(&self) -> &'static str {
+        if self.current { "0" } else { "-1" }
     }
 }
 
@@ -552,6 +640,24 @@ fn rows(blocks: Vec<Block>, turns: &[Turn]) -> Vec<Row> {
 }
 
 impl Row {
+    /// Whether this row is something said, which is what the list's keyboard
+    /// moves between; the turn lines are read past.
+    fn is_block(&self) -> bool {
+        matches!(self, Self::Block(_))
+    }
+
+    /// Whether the frame captured under `ordinal` is one this row was made of.
+    fn holds(&self, ordinal: u64) -> bool {
+        let Self::Block(block) = self else {
+            return false;
+        };
+        let entries = match block {
+            Block::Speech { entries, .. } => entries.as_slice(),
+            Block::One(entry) => std::slice::from_ref(entry),
+        };
+        Crossing::ordinals(entries).contains(&ordinal)
+    }
+
     /// Which row this is, for the list that renders it.
     fn key(&self) -> String {
         match self {
@@ -582,10 +688,11 @@ impl Block {
         on_answer: EventHandler<Answer>,
         on_elicit: EventHandler<elicitation::Answer>,
         crossing: Crossing,
+        roving: Roving,
     ) -> Element {
         match self {
-            Self::Speech { voice, entries, .. } => said(*voice, entries, crossing),
-            Self::One(entry) => happened(entry, on_answer, on_elicit, crossing),
+            Self::Speech { voice, entries, .. } => said(*voice, entries, crossing, roving),
+            Self::One(entry) => happened(entry, on_answer, on_elicit, crossing, roving),
         }
     }
 
@@ -631,7 +738,7 @@ fn named(id: &EntryId) -> String {
 }
 
 /// A message, from however many chunks it arrived in.
-fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing) -> Element {
+fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing, roving: Roving) -> Element {
     let (label, tone) = voice.told();
     let ordinals = Crossing::ordinals(entries);
     let at = entries.first().map(|entry| entry.at);
@@ -646,23 +753,24 @@ fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing) -> Element 
     let linking = crossing.linking(&ordinals);
     let linked = linking.clone();
 
+    let tabindex = roving.tabindex();
+    let mut focused = roving.focused;
+    let key = roving.key.clone();
+
     rsx! {
         article {
             class: "{drawn_as(tone, crossing.found(&ordinals), !linking.is_empty())}",
-            tabindex: "-1",
+            tabindex,
             "data-entry": "{tone}",
             // Every ordinal this row was made of, so the Console can name one
             // and the row can be found by it. A list, because a streamed
             // message is one row and as many frames as it arrived in.
             "data-frames": frames_attribute(&ordinals),
+            onfocus: move |_| focused.set(Some(key.clone())),
             // **The row is the way to the frames it was made of**, which is how
             // the drawing links the two screens: pressing a message shows the
             // traffic it came from, rather than a chip on the row saying so.
-            onclick: move |_| {
-                if !linked.is_empty() {
-                    crossing.reveal.call(linked.clone());
-                }
-            },
+            onclick: move |event| pressed(&event, crossing, linked.clone()),
             {marked(tone)}
             div { class: "row-body",
                 {kind_said(label, at)}
@@ -674,10 +782,43 @@ fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing) -> Element 
                         span { key: "{position}", {update::content(block)} }
                     }
                 }
-                {reach(&linking, crossing)}
+                {reach(&linking, crossing, roving.current)}
             }
         }
     }
+}
+
+/// Whether a click on a row is a press of the row (B1).
+///
+/// Controls inside a row stop their own clicks, but a row also holds controls
+/// this file does not draw, and text a reader is selecting. So the click is
+/// checked where it landed: on a control, or with text selected, it is not a
+/// press. The point goes to the script as data.
+const ROW_PRESS: &str = r#"
+const [x, y] = await dioxus.recv();
+const selection = window.getSelection();
+if (selection && !selection.isCollapsed && selection.toString().trim() !== "") return false;
+const hit = document.elementFromPoint(x, y);
+return !(hit && hit.closest("button, a, summary, input, textarea, select, label, [role=button], [role=tab], [contenteditable=true]"));
+"#;
+
+/// A click on a row: reveal its frames, unless the click was on a control or
+/// ended a text selection. Where the check cannot run, the click counts.
+fn pressed(event: &Event<MouseData>, crossing: Crossing, linked: Vec<u64>) {
+    if linked.is_empty() {
+        return;
+    }
+    let point = event.client_coordinates();
+    spawn(async move {
+        let checking = document::eval(ROW_PRESS);
+        let press = match checking.send((point.x, point.y)) {
+            Ok(()) => checking.join::<bool>().await.unwrap_or(true),
+            Err(_) => true,
+        };
+        if press {
+            crossing.reveal.call(linked);
+        }
+    });
 }
 
 /// The line under a turn that is over, saying what it came to.
@@ -732,8 +873,8 @@ fn ended(turn: &Turn) -> Element {
 fn outside() -> Element {
     rsx! {
         div { class: "boundary outside", "data-slot": "outside-turn",
-            span { class: "eyebrow", "Outside any turn" }
-            span { "the agent said this with no prompt open" }
+            span { class: "eyebrow", "Outside a turn" }
+            span { "sent while no prompt was running" }
         }
     }
 }
@@ -758,6 +899,7 @@ fn happened(
     on_answer: EventHandler<Answer>,
     on_elicit: EventHandler<elicitation::Answer>,
     crossing: Crossing,
+    roving: Roving,
 ) -> Element {
     // Whether this window has a rendering is what decides everything about the
     // row, the disclosure included: an entry it cannot name shows its JSON
@@ -813,19 +955,19 @@ fn happened(
     // them and the wire log draws them whole, which is the arrangement §9 asks
     // the two screens for.
     let shows_frames = evidence(entry, named);
+    let tabindex = roving.tabindex();
+    let mut focused = roving.focused;
+    let key = roving.key.clone();
 
     rsx! {
         article {
             class: "{drawn_as(tone, crossing.found(&ordinals), !linking.is_empty())}",
-            tabindex: "-1",
+            tabindex,
             "data-entry": "{tone}",
             "data-tool-call": tool_call,
             "data-frames": frames_attribute(&ordinals),
-            onclick: move |_| {
-                if !linked.is_empty() {
-                    crossing.reveal.call(linked.clone());
-                }
-            },
+            onfocus: move |_| focused.set(Some(key.clone())),
+            onclick: move |event| pressed(&event, crossing, linked.clone()),
             {marked(tone)}
             div { class: "row-body",
                 {kind_said(label, Some(entry.at))}
@@ -833,7 +975,7 @@ fn happened(
                 if shows_frames {
                     {frames_of(entries)}
                 }
-                {reach(&linking, crossing)}
+                {reach(&linking, crossing, roving.current)}
             }
         }
     }
@@ -859,22 +1001,23 @@ fn drawn_as(tone: &str, sought: bool, linked: bool) -> String {
 /// the tone is what one row shares with another of its sort, which is exactly
 /// what a column of marks is for.
 fn marked(tone: &str) -> Element {
-    let glyph = match tone {
-        "user" => "›",
-        "agent" => "◆",
-        "thought" => "~",
-        "tool" => "⌘",
-        "plan" => "≡",
-        "ask" => "!",
-        "spec" => "§",
-        "unnamed" => "?",
-        // `note` and anything a later ring adds: a dot is what a row with no
-        // sort of its own is worth, and never a glyph invented for it.
-        _ => "·",
+    use crate::disclosure::{Role, icon};
+
+    let role = match tone {
+        "user" => Role::User,
+        "agent" => Role::Agent,
+        "thought" => Role::Thought,
+        "tool" => Role::Tool,
+        "plan" => Role::Plan,
+        "ask" => Role::Ask,
+        "spec" => Role::Spec,
+        "unnamed" => Role::Unnamed,
+        // `note` and anything a later ring adds.
+        _ => Role::Note,
     };
 
     rsx! {
-        span { class: "row-mark", aria_hidden: "true", "{glyph}" }
+        span { class: "row-mark", aria_hidden: "true", {icon(role)} }
     }
 }
 
@@ -917,7 +1060,7 @@ fn unnamed(kind: &EntryKind) -> Element {
                 EntryKind::Unrecognized(Unrecognized::NotServiced { method }) => rsx! {
                     "The agent called "
                     code { "{method}" }
-                    ", which this client does not service — it advertised no capability for it, and answered method-not-found."
+                    ". This client advertised no capability for it, so it answered method-not-found."
                 },
                 EntryKind::Unrecognized(Unrecognized::Undecodable { method, problem }) => rsx! {
                     if let Some(method) = method {
@@ -1044,7 +1187,10 @@ fn frames_of(entries: &[TimelineEntry]) -> Element {
 /// Nothing at all where the trace no longer holds the frames: a bounded store
 /// drops its oldest rows, and a control that led nowhere would be worse than
 /// none.
-fn reach(ordinals: &[u64], crossing: Crossing) -> Element {
+///
+/// It is a Tab stop only on the row that is the list's own (A4), so a reader
+/// tabs from the row into it; Enter on the row does the same.
+fn reach(ordinals: &[u64], crossing: Crossing, current: bool) -> Element {
     let reach = ordinals.to_vec();
     let count = reach.len();
 
@@ -1054,9 +1200,15 @@ fn reach(ordinals: &[u64], crossing: Crossing) -> Element {
                 class: "btn btn-xs btn-quiet reach",
                 "data-slot": "reach",
                 r#type: "button",
+                tabindex: if current { "0" } else { "-1" },
+                // `navigation_tests.rs` finds the control by this title.
                 title: if count == 1 { "Find this frame in the wire log" } else { "Find these frames in the wire log" },
-                onclick: move |_| crossing.reveal.call(reach.clone()),
-                if count == 1 { "in the wire log" } else { "{count} frames in the wire log" }
+                onclick: move |event| {
+                    // The row's own press would reveal the same frames again.
+                    event.stop_propagation();
+                    crossing.reveal.call(reach.clone());
+                },
+                if count == 1 { "Show frame" } else { "Show {count} frames" }
             }
         }
     }
@@ -1645,21 +1797,149 @@ mod tests {
         let ended = nothing_open(true);
 
         assert!(
-            ended.contains("<h3>No session is open</h3>") && ended.contains("remains in Trace"),
-            "it says there is no Session and where its record remains: {ended}"
+            ended.contains("<h3>No session open</h3>")
+                && ended.contains("Open a new session to start prompting."),
+            "it says there is no session and what to do about it: {ended}"
         );
         assert!(
-            !ended.contains("Launch an Agent"),
-            "and not to launch an agent, which is right there: {ended}"
+            !ended.contains("Start your agent"),
+            "and not to start an agent, which is right there: {ended}"
         );
 
         // The other side of the same sentence: before a launch there is nothing
-        // to open a session *on*, and that is what to do about it.
+        // to open a session *on*, and that is what to do about it — on the
+        // first-run card, with the palette's shortcut beside it.
         let unlaunched = nothing_open(false);
         assert!(
-            unlaunched.contains("<h3>No session updates yet</h3>")
-                && unlaunched.contains("Launch an Agent"),
+            unlaunched.contains(r#"data-slot="onboarding""#)
+                && unlaunched.contains("Start your agent to see the conversation here.")
+                && unlaunched.contains(r#"data-slot="palette-hint""#)
+                && unlaunched.contains("<kbd>"),
             "an agent that was never started is a different absence: {unlaunched}"
+        );
+        assert!(
+            unlaunched.contains(r#"data-icon="Start""#),
+            "the card leads with an icon, not a glyph: {unlaunched}"
+        );
+
+        // And a session that is open and quiet says so.
+        let waiting = waiting_on_the_agent();
+        assert!(
+            waiting.contains("<h3>Session open</h3>")
+                && waiting.contains("Send a prompt below. Agent updates appear here."),
+            "{waiting}"
+        );
+    }
+
+    #[test]
+    fn a_login_the_agent_asked_for_is_offered_where_the_session_would_be() {
+        // X5: a session/new refused for want of a login leaves the timeline
+        // empty, and "no session" there would send the reader to a button
+        // that is refused again.
+        #[component]
+        fn Host() -> Element {
+            let entries = use_signal(Vec::<TimelineEntry>::new);
+            rsx! {
+                Timeline {
+                    entries,
+                    turn: TurnState::Idle,
+                    session: None,
+                    connected: true,
+                    held_frames: 0..u64::MAX,
+                    blocked: false,
+                    problem: None,
+                    mode: None,
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_answer: move |_: Answer| {},
+                    on_elicit: move |_: elicitation::Answer| {},
+                    sought: None,
+                    on_reveal: move |_: Vec<u64>| {},
+                    described: true,
+                    turns: Vec::new(),
+                    on_new_session: Some(EventHandler::new(move |()| {})),
+                    login: Some(rsx! { button { "data-slot": "authenticate", "Authenticate" } }),
+                }
+            }
+        }
+
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="empty-login""#)
+                && html.contains(r#"data-slot="authenticate""#)
+                && !html.contains("No session open"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_header_says_a_finished_turn_is_done() {
+        #[component]
+        fn Host(outcome: Option<TurnOutcome>) -> Element {
+            let entries = use_signal(|| vec![spoke("hello", None)]);
+            rsx! {
+                Timeline {
+                    entries,
+                    turn: TurnState::Idle,
+                    session: Some(v1::SessionId::new("s1")),
+                    connected: true,
+                    held_frames: 0..u64::MAX,
+                    blocked: false,
+                    problem: None,
+                    mode: None,
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_answer: move |_: Answer| {},
+                    on_elicit: move |_: elicitation::Answer| {},
+                    sought: None,
+                    on_reveal: move |_: Vec<u64>| {},
+                    described: true,
+                    turns: vec![turn_record(2, outcome.clone())],
+                }
+            }
+        }
+        let scope = |outcome| {
+            let mut dom = VirtualDom::new_with_props(Host, HostProps { outcome });
+            dom.rebuild_in_place();
+            let html = dioxus_ssr::render(&dom);
+            html.split_once(r#"data-slot="turn-scope""#)
+                .and_then(|(_, rest)| rest.split_once('>'))
+                .and_then(|(_, rest)| rest.split_once('<'))
+                .map(|(scope, _)| scope.to_owned())
+                .expect("the header names the turn")
+        };
+        assert_eq!(scope(None), "turn 2");
+        assert_eq!(
+            scope(Some(TurnOutcome::Ended(v1::StopReason::EndTurn))),
+            "turn 2 · done"
+        );
+        assert_eq!(
+            scope(Some(TurnOutcome::Failed(CallError::Disconnected))),
+            "turn 2 · failed"
+        );
+    }
+
+    #[test]
+    fn a_long_timeline_is_drawn_a_page_at_a_time() {
+        let rows: Vec<Vec<Option<u64>>> = (0..450).map(|n| vec![Some(n)]).collect();
+        let html = screen(rows.clone(), false, None);
+        assert_eq!(
+            html.matches("<article").count(),
+            crate::page::SIZE,
+            "only the newest page is drawn"
+        );
+        assert!(html.contains(r#"data-frames="449""#) && !html.contains(r#"data-frames="0""#));
+        assert!(html.contains("251–450 of 450 retained rows"), "{html}");
+        // Exactly one row is the list's Tab stop.
+        assert_eq!(
+            html.matches(r#"<article class="row linked agent" tabindex="0""#)
+                .count(),
+            1,
+            "one Tab stop for the list"
         );
     }
 
@@ -1696,7 +1976,7 @@ mod tests {
             .expect("the Timeline's own header");
 
         assert!(
-            header.contains(r#"<h2 class="pane-title">Session</h2>"#),
+            header.contains(r#"<h2 class="pane-title">Timeline</h2>"#),
             "the screen names itself: {header}"
         );
         assert!(
@@ -1954,7 +2234,7 @@ mod tests {
         let html = screen(vec![vec![Some(4), Some(5)]], false, None);
 
         assert!(
-            html.contains(r#"data-frames="4 5""#) && html.contains(r#"tabindex="-1""#),
+            html.contains(r#"data-frames="4 5""#) && html.contains(r#"tabindex="0""#),
             "the row names its frames and accepts destination focus: {html}"
         );
         // **The row is the control**, which is how the drawing links the two
@@ -1967,7 +2247,7 @@ mod tests {
         // And the same act is named for a reader who is not pointing at
         // anything, which is what a click on a row cannot be.
         assert!(
-            html.contains(r#"data-slot="reach""#) && html.contains("frames in the wire log"),
+            html.contains(r#"data-slot="reach""#) && html.contains("Show 2 frames"),
             "and offers the way to them by name: {html}"
         );
         assert!(

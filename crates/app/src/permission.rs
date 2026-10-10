@@ -55,10 +55,14 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
         div {
             class: if waiting { "evidence blocking" } else { "evidence blocking answered" },
             "data-slot": "permission",
+            // Everything in the card is about answering, including the tool
+            // call's own disclosures: none of it is a press of the Timeline
+            // row, whose click reveals frames and moves focus (B1).
+            onclick: move |event| event.stop_propagation(),
             div { class: "blocking-head",
                 span { class: "eyebrow", "{v1::CLIENT_METHOD_NAMES.session_request_permission}" }
                 span { class: "blocking-wait",
-                    if waiting { "awaiting client" } else { "resolved" }
+                    if waiting { "Waiting for you" } else { "Resolved" }
                 }
             }
             div { class: "blocking-body",
@@ -76,7 +80,7 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
                     // not an empty list: the agent blocked its own turn on a
                     // question nobody can answer.
                     p { class: "unnamed",
-                        "The agent offered no options, so there is nothing to answer it with. Cancelling the turn is what ends this."
+                        "The agent offered no options. Cancel the turn to end this."
                     }
                 } else {
                     {choices(request.options(), &state, on_choose)}
@@ -87,54 +91,49 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
 }
 
 /// Every option the Agent supplied, in the order it supplied them.
+///
+/// **None of them is drawn as the default** (B7). The row is the agent's, in
+/// the agent's order, and the tone tells allow from reject. Filling the first
+/// allow made the window recommend it, and a filled `allow_always` recommended
+/// a standing grant. What sets an `*_always` apart is a tag saying so, because
+/// it is the one that outlives the click.
 fn choices(
     options: &[v1::PermissionOption],
     state: &PermissionState,
     on_choose: EventHandler<v1::PermissionOptionId>,
 ) -> Element {
-    // The agent's own order, and the first allow in it is the one drawn filled.
-    let primary = options
-        .iter()
-        .position(|option| kind(option.kind).1 == "allow");
-
     rsx! {
         div { class: "answers",
-            for (position, option) in options.iter().enumerate() {
-                {choice(option, Some(position) == primary, state, on_choose)}
+            for option in options.iter() {
+                {choice(option, state, on_choose)}
             }
         }
     }
 }
 
 /// One option, as the button that sends its id.
-///
-/// **The first allow is the filled one**, which is the drawing's own hierarchy
-/// for a row of answers: one primary and the rest bounded. Which one that is
-/// remains the *agent's* order and never a judgement — the tone still says
-/// allow from reject, and every option the agent sent is on the row.
 fn choice(
     option: &v1::PermissionOption,
-    primary: bool,
     state: &PermissionState,
     on_choose: EventHandler<v1::PermissionOptionId>,
 ) -> Element {
     let (label, tone) = kind(option.kind);
+    let always = matches!(
+        option.kind,
+        v1::PermissionOptionKind::AllowAlways | v1::PermissionOptionKind::RejectAlways
+    );
     let picked = matches!(
         state,
         PermissionState::Answered(v1::RequestPermissionOutcome::Selected(selected))
             if selected.option_id == option.option_id
     );
-    let classes = match (tone, primary, picked) {
-        // **The first allow is the filled one**, which is the drawing's own
-        // hierarchy for a row of answers: one primary and the rest bounded.
-        // Which one that is remains the *agent's* order and never a judgement —
-        // the tone still tells allow from reject, and every option the agent
-        // sent is on the row at the same size.
-        ("allow", true, false) => "btn btn-filled option primary",
-        ("allow", _, false) => "btn btn-quiet btn-go option",
-        ("reject", _, false) => "btn btn-quiet btn-bad option",
-        (_, _, false) => "btn btn-quiet option",
-        (_, _, true) => "btn btn-filled option picked",
+    let classes = match (tone, picked) {
+        // Only the option that was sent is ever filled: a record of what
+        // happened, never a suggestion.
+        (_, true) => "btn btn-filled option picked",
+        ("allow", false) => "btn btn-quiet btn-go option",
+        ("reject", false) => "btn btn-quiet btn-bad option",
+        (_, false) => "btn btn-quiet option",
     };
     let state_name = match state {
         PermissionState::Waiting => "waiting",
@@ -157,6 +156,8 @@ fn choice(
             r#type: "button",
             "data-option": "{option.option_id}",
             "data-state": state_name,
+            "data-kind": label,
+            "data-always": "{always}",
             aria_label: accessible_name,
             aria_pressed: picked,
             // Native `disabled` can drop focus from a button. ARIA and tab
@@ -165,7 +166,10 @@ fn choice(
             tabindex: (!available).then_some("-1"),
             onclick: {
                 let option = option.option_id.clone();
-                move |_| {
+                move |event: Event<MouseData>| {
+                    // An answer, not a press of the row it sits in: the row's
+                    // own click reveals its frames and moves focus (B1).
+                    event.stop_propagation();
                     if available {
                         on_choose.call(option.clone());
                     }
@@ -176,6 +180,9 @@ fn choice(
             // a row of four buttons each saying its kind twice is the drawing's
             // own reason for keeping one of them.
             "{option.name}"
+            if always {
+                span { class: "option-always", "data-slot": "always", aria_hidden: "true", "always" }
+            }
             span { class: "option-id", "{option.option_id}" }
         }
     }
@@ -193,22 +200,22 @@ fn said(state: &PermissionState) -> Element {
             p { class: "detail detail-live", "The turn is stopped here until you answer." }
         },
         PermissionState::Answering => rsx! {
-            p { class: "detail", "Sending the selected answer..." }
+            p { class: "detail", "Sending…" }
         },
         PermissionState::Answered(v1::RequestPermissionOutcome::Selected(selected)) => rsx! {
             p { class: "detail",
-                "Sent selected answer "
+                "Sent "
                 code { "selected" }
                 " with "
                 code { "{selected.option_id}" }
-                ". The turn went on."
+                "."
             }
         },
         PermissionState::Answered(v1::RequestPermissionOutcome::Cancelled) => rsx! {
             p { class: "detail detail-warn",
-                "The Turn was cancelled, so the Agent was answered "
+                "Turn cancelled. Answered "
                 code { "cancelled" }
-                ". This is what a client owes every request it leaves waiting."
+                "."
             }
         },
         // Nobody answered it and nobody can: the turn it blocked ended, or the
@@ -216,7 +223,7 @@ fn said(state: &PermissionState) -> Element {
         // row of dead buttons explaining nothing.
         PermissionState::Abandoned => rsx! {
             p { class: "detail detail-warn",
-                "Nobody answered this, and nobody can now. The Turn ended, the Agent went away, or an answer could not be sent."
+                "Can no longer be answered: the turn ended or the agent disconnected."
             }
         },
         // Both enums are non-exhaustive, and a state this window has not been
@@ -341,13 +348,16 @@ mod tests {
             v1::PermissionOptionId::new("never"),
         ));
         let cases = [
-            (PermissionState::Answering, "Sending the selected answer"),
-            (PermissionState::Answered(selected), "Sent selected"),
+            (PermissionState::Answering, "Sending…"),
+            (
+                PermissionState::Answered(selected),
+                "with <code>never</code>",
+            ),
             (
                 PermissionState::Answered(v1::RequestPermissionOutcome::Cancelled),
-                "Agent was answered",
+                "Turn cancelled. Answered <code>cancelled</code>",
             ),
-            (PermissionState::Abandoned, "or an answer could not be sent"),
+            (PermissionState::Abandoned, "Can no longer be answered"),
         ];
 
         for (state, expected) in cases {
@@ -382,6 +392,108 @@ mod tests {
         assert!(
             selected.contains(r#"data-state="selected""#),
             "the option sent to the Agent remains explicit: {selected}"
+        );
+    }
+
+    #[test]
+    fn no_option_is_drawn_as_the_default_and_always_options_are_tagged() {
+        let html = shown(options(), PermissionState::Waiting);
+        assert!(
+            !html.contains("btn-filled") && !html.contains("primary"),
+            "an unanswered request recommends nothing: {html}"
+        );
+        let button = |id: &str| {
+            html.split("<button")
+                .find(|button| button.contains(&format!(r#"data-option="{id}""#)))
+                .unwrap_or_else(|| panic!("the {id} option: {html}"))
+                .split("</button>")
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        for always in ["always", "never"] {
+            assert!(
+                button(always).contains(r#"data-slot="always""#)
+                    && button(always).contains(r#"data-always="true""#),
+                "a standing grant or refusal says so: {}",
+                button(always)
+            );
+        }
+        for once in ["yes", "no"] {
+            assert!(!button(once).contains(r#"data-slot="always""#));
+        }
+    }
+
+    #[test]
+    fn answering_an_option_does_not_press_the_row_it_sits_in() {
+        // B1: the Timeline row around a request reveals its frames on click,
+        // which steals focus and clears the Console filter. An answer is not a
+        // press of the row. The plain span is the control: a click there
+        // reaches the row, so the harness does bubble.
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::{AttributeValue, Mutation};
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut answers = use_signal(|| 0);
+            let mut reveals = use_signal(|| 0);
+            // Dynamic, so the harness can find the element by it.
+            let plain = "plain";
+            rsx! {
+                article { onclick: move |_| reveals += 1,
+                    span { "data-slot": "{plain}", onclick: move |_| {}, "row text" }
+                    {choices(
+                        &options(),
+                        &PermissionState::Waiting,
+                        EventHandler::new(move |_: v1::PermissionOptionId| answers += 1),
+                    )}
+                }
+                span { "data-slot": "counts", "{answers}/{reveals}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let click = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            )
+        };
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let element = |slot: &str, value: &str| {
+            edits
+                .iter()
+                .find_map(|edit| match edit {
+                    Mutation::SetAttribute {
+                        name,
+                        value: AttributeValue::Text(text),
+                        id,
+                        ..
+                    } if *name == slot && text == value => Some(*id),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{slot}={value} in {edits:?}"))
+        };
+
+        dom.runtime()
+            .handle_event("click", click(), element("data-option", "yes"));
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="counts">1/0"#),
+            "the option answers and the row is not pressed: {html}"
+        );
+
+        dom.runtime()
+            .handle_event("click", click(), element("data-slot", "plain"));
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        assert!(
+            dioxus_ssr::render(&dom).contains(r#"data-slot="counts">1/1"#),
+            "a click on the row's own text still reaches it"
         );
     }
 
