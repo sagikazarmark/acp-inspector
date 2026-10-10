@@ -183,6 +183,12 @@ pub fn Composer(
     let mut clipboard_bridge = use_signal(|| None::<document::Eval>);
     let mut paste_waiting = use_signal(|| 0usize);
     let mut deferred_files = use_signal(Vec::<(usize, Vec<FileData>)>::new);
+    // The resource link being typed (F12): a URI, a name, a MIME type.
+    let mut link_uri = use_signal(String::new);
+    let mut link_name = use_signal(String::new);
+    let mut link_mime = use_signal(String::new);
+    let mut link_problem = use_signal(|| None::<String>);
+    let mut link_open = use_signal(|| false);
     let picker_id = use_hook(|| {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         format!(
@@ -261,6 +267,26 @@ pub fn Composer(
             reading.set(false);
         });
     });
+    // A resource link joins the same ordered rows as the files, and the same
+    // eight-row limit; it costs none of the byte budget.
+    let add_link = use_callback(move |()| {
+        if !ready || running {
+            return;
+        }
+        let typed = Attachment::link(&link_uri.peek(), &link_name.peek(), &link_mime.peek());
+        match typed {
+            Ok(link) => {
+                link_problem.set(None);
+                if let Some(Some(id)) = reserve.call(vec![link.name.clone()]).first() {
+                    draft.write().finish(*id, Ok(link));
+                    link_uri.set(String::new());
+                    link_name.set(String::new());
+                    link_mime.set(String::new());
+                }
+            }
+            Err(problem) => link_problem.set(Some(problem)),
+        }
+    });
     let clipboard_input = use_callback(move |input: crate::clipboard::ClipboardInput| {
         use crate::clipboard::ClipboardInput;
         match input {
@@ -312,8 +338,7 @@ pub fn Composer(
         && !running
         && draft.read().sendable()
         && overflow.read().is_none()
-        && (!text().trim().is_empty()
-            || attachments_advertised && !draft.read().entries().is_empty());
+        && (!text().trim().is_empty() || !draft.read().entries().is_empty());
     let affordance = ComposerAffordance::for_turn(&turn);
     let affordance_available = affordance.is_available(sendable);
     let show_shortcut = ready && !running;
@@ -336,16 +361,16 @@ pub fn Composer(
             let Some(attachments) = draft.read().content() else {
                 return;
             };
-            if prompt.trim().is_empty() && (!attachments_advertised || attachments.is_empty()) {
+            if prompt.trim().is_empty() && attachments.is_empty() {
                 return;
             }
             let mut content = Vec::new();
             if !prompt.trim().is_empty() {
                 content.push(v1::ContentBlock::from(prompt));
             }
-            if attachments_advertised {
-                content.extend(attachments);
-            }
+            // Every row was checked against the advertisement when it was
+            // added, and links need none (F12).
+            content.extend(attachments);
             if let Err(error) = on_prompt.call(content) {
                 attachment_problem.set(Some(error.to_string()));
                 return;
@@ -449,7 +474,7 @@ pub fn Composer(
                     div { class: "prompt-attachment-picker",
                         label { class: "hint",
                             "Add or drop files · 8 attachments · 5 MiB each · 6 MiB total"
-                            if embedded_advertised { span { "UTF-8 text files and PDFs are embedded as contents. Text preview shows the first 2000 characters." } }
+                            if embedded_advertised { span { "UTF-8 text files are embedded as text, PDFs and other files as binary contents. Text preview shows the first 2000 characters." } }
                             if image_advertised { span { "Images can also be pasted from the clipboard." } }
                             input { id: picker_id.clone(), name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
                                 onmounted: {
@@ -488,8 +513,10 @@ pub fn Composer(
                                     AttachmentPreview::Text { excerpt } => rsx! { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{excerpt}" } } },
                                     AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
                                     AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
+                                    AttachmentPreview::Blob => rsx! { span { class: "hint", "Binary file · original bytes embedded" } },
+                                    AttachmentPreview::Link { .. } => rsx! { span { class: "hint", "Resource link · the agent is sent the URI, not the contents" } },
                                 }}
-                                span { "{held.name} · {held.mime()} · {held.bytes} bytes" }
+                                span { "{held.describe()}" }
                             },
                             AttachmentState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
                             AttachmentState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
@@ -643,6 +670,39 @@ pub fn Composer(
                             // turn's state, and the primary action of a region
                             // says what it does.
                             "Send"
+                        }
+                    }
+                }
+
+                // A resource link (F12), below the footer so the field and Send
+                // keep their places in the tab order.
+                if ready {
+                    details { class: "prompt-link", "data-slot": "resource-link",
+                        // The fields exist only while the disclosure is open.
+                        ontoggle: move |_| link_open.toggle(),
+                        summary { class: "hint", "Add a resource link…" }
+                        if link_open() { div { class: "prompt-link-fields",
+                            input { class: "input input-sm mono", r#type: "url", aria_label: "Resource URI",
+                                placeholder: "file:///path/to/notes.md", spellcheck: false, value: "{link_uri}",
+                                oninput: move |event| link_uri.set(event.value()),
+                                onkeydown: move |event| if event.key() == Key::Enter { event.prevent_default(); add_link.call(()); },
+                            }
+                            input { class: "input input-sm", r#type: "text", aria_label: "Resource name",
+                                placeholder: "name (optional)", value: "{link_name}",
+                                oninput: move |event| link_name.set(event.value()),
+                                onkeydown: move |event| if event.key() == Key::Enter { event.prevent_default(); add_link.call(()); },
+                            }
+                            input { class: "input input-sm mono", r#type: "text", aria_label: "Resource MIME type",
+                                placeholder: "MIME type (optional)", spellcheck: false, value: "{link_mime}",
+                                oninput: move |event| link_mime.set(event.value()),
+                                onkeydown: move |event| if event.key() == Key::Enter { event.prevent_default(); add_link.call(()); },
+                            }
+                            button { r#type: "button", class: "btn btn-xs btn-quiet", "data-slot": "add-link",
+                                disabled: running, onclick: move |_| add_link.call(()), "Add link"
+                            }
+                        }
+                        span { class: "hint", "Sent as a resource_link: the agent gets the URI and reads it itself. Every agent accepts links." }
+                        if let Some(problem) = link_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
                         }
                     }
                 }
@@ -1320,6 +1380,103 @@ mod tests {
             matches!(&sent.borrow()[0][4..],[v1::ContentBlock::Resource(resource)] if matches!(&resource.resource,v1::EmbeddedResourceResource::BlobResourceContents(blob) if blob.blob=="JVBERi0xLjcK" && blob.mime_type.as_deref()==Some("application/pdf") && blob.uri=="file:///tmp/report%20%23.pdf"))
         );
         assert!(!dioxus_ssr::render(&dom).contains("data-slot=\"attachment\""));
+    }
+
+    #[test]
+    fn a_resource_link_is_sent_to_an_agent_that_advertised_nothing() {
+        use dioxus::core::NoOpMutations;
+        use dioxus::html::{
+            PlatformEventData, SerializedFormData, SerializedMouseData, SerializedToggleData,
+        };
+        use std::{any::Any, rc::Rc};
+
+        #[derive(Clone, Props)]
+        struct HostProps {
+            sent: Rc<RefCell<Vec<Vec<v1::ContentBlock>>>>,
+        }
+        impl PartialEq for HostProps {
+            fn eq(&self, other: &Self) -> bool {
+                Rc::ptr_eq(&self.sent, &other.sent)
+            }
+        }
+        fn host(props: HostProps) -> Element {
+            rsx! {
+                Composer {
+                    turn: TurnState::Idle,
+                    ready: true,
+                    connected: true,
+                    blocked: false,
+                    problem: None,
+                    commands: vec![],
+                    mode: None,
+                    on_prompt: move |content| {
+                        props.sent.borrow_mut().push(content);
+                        Ok(())
+                    },
+                    on_stop: |_| {},
+                    on_set_mode: |_| {},
+                }
+            }
+        }
+        fn listeners(edits: &[Mutation], event: &str) -> Vec<dioxus::core::ElementId> {
+            edits
+                .iter()
+                .filter_map(|edit| match edit {
+                    Mutation::NewEventListener { name, id } if name == event => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn platform(data: impl Any) -> Event<dyn Any> {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(data))) as Rc<dyn Any>,
+                true,
+            )
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let mut dom = VirtualDom::new_with_props(host, HostProps { sent: sent.clone() });
+        let edits = dom.rebuild_to_vec().edits;
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="resource-link""#) && !html.contains("Attach media"),
+            "links need no advertisement; files do: {html}"
+        );
+        let send = listeners(&edits, "click")[0];
+
+        let toggle = listeners(&edits, "toggle")[0];
+        dom.runtime()
+            .handle_event("toggle", platform(SerializedToggleData {}), toggle);
+        let opened = dom.render_immediate_to_vec().edits;
+        let uri = listeners(&opened, "input")[0];
+        dom.runtime().handle_event(
+            "input",
+            platform(SerializedFormData::new(
+                "file:///repo/docs/spec.md".to_owned(),
+                Vec::new(),
+            )),
+            uri,
+        );
+        dom.render_immediate(&mut NoOpMutations);
+        let add = *listeners(&opened, "click").last().expect("Add link");
+        dom.runtime()
+            .handle_event("click", platform(SerializedMouseData::default()), add);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("spec.md · link · file:///repo/docs/spec.md"),
+            "the link is a row like a file: {html}"
+        );
+
+        dom.runtime()
+            .handle_event("click", platform(SerializedMouseData::default()), send);
+        dom.render_immediate(&mut NoOpMutations);
+        let sent = sent.borrow();
+        assert!(
+            matches!(&sent[0][..], [v1::ContentBlock::ResourceLink(link)] if link.uri == "file:///repo/docs/spec.md" && link.name == "spec.md"),
+            "{sent:?}"
+        );
     }
 
     thread_local! {
