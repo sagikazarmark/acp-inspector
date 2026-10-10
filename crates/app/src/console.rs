@@ -358,24 +358,58 @@ fn TabControl(
     }
 }
 
-fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
-    match key {
-        Key::ArrowLeft | Key::ArrowRight => Some(match selected {
-            Tab::Trace => Tab::Diagnostics,
-            Tab::Diagnostics => Tab::Trace,
-        }),
-        Key::Home => Some(Tab::Trace),
-        Key::End => Some(Tab::Diagnostics),
+pub(crate) fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
+    const ORDER: [Tab; 2] = [Tab::Trace, Tab::Diagnostics];
+    let at = ORDER.iter().position(|tab| *tab == selected).unwrap_or(0);
+    step(ORDER.len(), at, key, Axis::Horizontal).map(|next| ORDER[next])
+}
+
+fn focus_tab(tab: Tab) {
+    focus_id(tab.id());
+}
+
+/// Which way a set of roving-focus items is laid out, and so which arrows move
+/// through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Axis {
+    /// A tablist: ←/→ move and wrap, the WAI-ARIA tabs pattern.
+    Horizontal,
+    /// A list of rows: ↑/↓ move and stop at the ends.
+    Vertical,
+}
+
+/// Where a key moves the focus in a set of `len` items, from `at` — or `None`
+/// for a key that does not move it.
+///
+/// One answer for every roving set in the window (the Console's tabs, the
+/// elicitation's Form/Raw tabs, the Timeline and Trace rows), so they cannot
+/// come to disagree about what Home means.
+pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let at = at.min(last);
+    match (axis, key) {
+        (_, Key::Home) => Some(0),
+        (_, Key::End) => Some(last),
+        (Axis::Horizontal, Key::ArrowRight) => Some(if at == last { 0 } else { at + 1 }),
+        (Axis::Horizontal, Key::ArrowLeft) => Some(if at == 0 { last } else { at - 1 }),
+        (Axis::Vertical, Key::ArrowDown) => Some((at + 1).min(last)),
+        (Axis::Vertical, Key::ArrowUp) => Some(at.saturating_sub(1)),
         _ => None,
     }
 }
 
-fn focus_tab(tab: Tab) {
-    // The id is one of the two literals above, never content from the Agent.
-    let _ = document::eval(&format!(
-        "document.getElementById({:?})?.focus();",
-        tab.id()
-    ));
+/// Moves focus to the element with this id, once it is in the document.
+///
+/// The id is sent to the script rather than written into it, so an id built
+/// from agent-supplied text cannot become part of a program.
+pub(crate) fn focus_id(id: &str) {
+    let focusing = document::eval(
+        "const id = await dioxus.recv(); requestAnimationFrame(() => document.getElementById(id)?.focus());",
+    );
+    let _ = focusing.send(id.to_owned());
 }
 
 /// Whether a row survives what the reader typed into the Console's bar.

@@ -3,7 +3,13 @@
 
 use schemaform_dioxus::{Localizer, render::MessageDescriptor};
 
-pub struct FindingWords;
+/// The words for findings, and which properties are booleans: a required
+/// boolean that is unset reads as "not set", because an unchecked box is not
+/// `false` until somebody sets it (U11, #21).
+#[derive(Default)]
+pub struct FindingWords {
+    pub booleans: std::collections::BTreeSet<String>,
+}
 
 impl Localizer for FindingWords {
     fn localize(&self, message: &MessageDescriptor) -> String {
@@ -37,6 +43,13 @@ impl Localizer for FindingWords {
             "schemaform.validation.maxLength" => format!("Too many characters; at most {limit} stated."),
             "schemaform.validation.minItems" => format!("Too few choices; at least {limit} stated."),
             "schemaform.validation.maxItems" => format!("Too many choices; at most {limit} stated."),
+            "schemaform.validation.required"
+                if message.parameters["property"]
+                    .as_str()
+                    .is_some_and(|name| self.booleans.contains(name)) =>
+            {
+                "Required, not set (unchecked is not false).".into()
+            }
             "schemaform.validation.required" => "Required, nothing filled in.".into(),
             "schemaform.validation.pattern" => format!("Does not match the stated pattern {}.", message.parameters["pattern"]),
             "schemaform.parse.invalid-number" => "Not a number. This text is not in the form data; Raw can send it as a string.".into(),
