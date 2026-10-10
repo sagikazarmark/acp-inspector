@@ -210,6 +210,7 @@ fn launched() -> AgentCommand {
         args: String::new(),
         env: String::new(),
         cwd: "/home/laborant/dioxus-chat.orig/phoenix/inspector".to_owned(),
+        ..AgentCommand::default()
     }
 }
 

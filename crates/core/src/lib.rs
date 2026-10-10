@@ -145,7 +145,7 @@ pub use auth::AuthState;
 pub use blocking::RequestId;
 pub use call::CallError;
 pub use client::{client_capabilities, client_info};
-pub use command::AgentCommand;
+pub use command::{AgentCommand, MINIMAL_ENV};
 pub use conformance::{Annotation, Ending, OptionSet, Replay, Reuse};
 pub use connection::{
     Connection, ConnectionFactory, Diagnostic, DiagnosticKind, DiagnosticStream, FrameSink,

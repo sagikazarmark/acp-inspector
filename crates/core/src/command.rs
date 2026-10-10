@@ -19,7 +19,7 @@ use crate::stdio::StdioSpawn;
 
 /// An agent to launch, as the user typed it.
 ///
-/// It serializes as its four fields and nothing else, because that is what the
+/// It serializes as its fields and nothing else, because that is what the
 /// spawn form remembers ([`RecentCommands`](crate::RecentCommands)) — and a
 /// missing field reads as an empty one, so a file written by an older shape
 /// still refills a form.
@@ -42,19 +42,52 @@ pub struct AgentCommand {
     pub env: String,
     /// The agent's working directory. Empty means the inspector's own.
     pub cwd: String,
+    /// Inherited variables to leave out, one name per line. Variables set in
+    /// [`env`](Self::env) are still set.
+    pub unset: String,
+    /// Start the agent with only the variables in [`env`](Self::env), not
+    /// the inspector's environment.
+    pub clear_env: bool,
 }
+
+/// What a minimal environment keeps from the inspector's: enough for a shell
+/// and a package runner to find themselves.
+pub const MINIMAL_ENV: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "TERM",
+];
 
 impl AgentCommand {
     /// The connection factory this form describes.
     pub fn factory(&self) -> StdioSpawn {
-        let spawn = StdioSpawn::new(self.command.trim())
-            .args(self.arguments())
-            .envs(self.variables());
+        let mut spawn = StdioSpawn::new(self.command.trim()).args(self.arguments());
+        if self.clear_env {
+            spawn = spawn.env_clear();
+        }
+        for name in self.unset_names() {
+            spawn = spawn.env_remove(name);
+        }
+        let spawn = spawn.envs(self.variables());
 
         match self.cwd.trim() {
             "" => spawn,
             cwd => spawn.cwd(cwd),
         }
+    }
+
+    /// The inherited variables this would leave out, by name.
+    pub fn unset_names(&self) -> impl Iterator<Item = &str> {
+        filled_lines(&self.unset)
+    }
+
+    /// [`MINIMAL_ENV`] as `KEY=VALUE` lines with the inspector's own values,
+    /// for an [`env`](Self::env) field to start from alongside
+    /// [`clear_env`](Self::clear_env).
+    pub fn minimal_env() -> String {
+        MINIMAL_ENV
+            .iter()
+            .filter_map(|name| Some(format!("{name}={}", std::env::var(name).ok()?)))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The arguments this would be run with, in order.
@@ -120,6 +153,8 @@ impl AgentCommand {
             args: joined(&self.args),
             env: joined(&self.env),
             cwd: self.cwd.trim().to_owned(),
+            unset: joined(&self.unset),
+            clear_env: self.clear_env,
         }
     }
 

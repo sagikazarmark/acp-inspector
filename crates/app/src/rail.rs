@@ -332,6 +332,7 @@ mod tests {
             args: "--stdio".to_owned(),
             env: String::new(),
             cwd: "/srv/work".to_owned(),
+            ..AgentCommand::default()
         }
     }
 

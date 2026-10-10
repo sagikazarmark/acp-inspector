@@ -1705,6 +1705,7 @@ mod tests {
             args: String::new(),
             env: String::new(),
             cwd: String::new(),
+            ..AgentCommand::default()
         };
 
         // Nothing launched: the tool's own name, which is the only subject
