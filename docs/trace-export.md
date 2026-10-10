@@ -8,7 +8,7 @@ export-anchored log, and how the log is bounded).
 
 **It is a contract because something else reads it.** The export is the seed of the event log
 ACP Wiretap and replay tooling are waiting on
-([#50](https://github.com/sagikazarmark/dioxus-chat.orig/issues/50)). The moment one of them
+(host #50). The moment one of them
 consumes a file, the shape below stops being `acp-inspector-core`'s to change quietly — so it is
 written down, versioned, and self-describing rather than grown.
 
@@ -17,8 +17,8 @@ Implemented in `crates/core/src/export.rs`; asserted, field by field, in `crates
 ## The file
 
 [JSONL](https://jsonlines.org): UTF-8, one JSON document per line, `\n`-terminated including the
-last line. The first line is the header; every line after it is one frame, in the order the
-frames crossed the wire.
+last line. The first line is the header; every line after it is one frame, in the trace's order
+(see [Timestamps](#timestamps) for what that order is).
 
 ```jsonl
 {"type":"header","format":"acp-inspector-trace","version":1,"at":1785312000123,"frames":2,"dropped":0,"warning":"ACP frames may contain prompts, file contents, and tool output; nothing is redacted"}
@@ -50,7 +50,7 @@ decide what to do when it will not parse.
 | Field | Type | What it says |
 |---|---|---|
 | `type` | `"frame"` | Which record this is. |
-| `at` | number | When the frame crossed the trace decorator (see [Timestamps](#timestamps)). |
+| `at` | number | When the inspector sent the frame, or read it from the agent (see [Timestamps](#timestamps)). |
 | `connection` | number | Which connection it crossed, counting from 1. |
 | `direction` | `"client -> agent"` \| `"agent -> client"` | Which way it went. The inspector is always the client; it never observes a third party's traffic ([§13](architecture.md#13-relationship-to-the-host-repos-assets) — that is Wiretap's charter). |
 | `encoding` | `"utf8"` | How `frame` carries the bytes. Always `utf8` from this producer. |
@@ -75,10 +75,14 @@ on, no parser to write, and the ordering is the comparison. Rendering it for a h
 presentation, and belongs where the reader's own clock is known — which is the same split core
 and the desktop crate already have ([§5](architecture.md#5-the-coreui-split)).
 
-Frame order in the file is the trace's order, and the trace's order is the wire's: the recording
-and the handoff to the transport happen under one lock, so two senders cannot record in one
-order and send in the other. Where two frames share a millisecond, **the file's order is
-authoritative, not the timestamps**.
+Frame order in the file is the trace's order. **Within each direction, that is the wire's order.**
+Outgoing frames are recorded and handed to the transport under one lock, so two senders cannot
+record in one order and send in the other; incoming frames are recorded, and stamped, in the order
+they are read from the agent's stdout. **Across directions, it is the order the inspector observed
+them in**: an outgoing frame where it was sent, an incoming one where it was read. Two frames that
+were in the pipes at the same time, one each way, may appear in either order relative to each
+other. Where two frames share a millisecond, **the file's order is authoritative, not the
+timestamps**.
 
 ### Versioning
 
@@ -171,3 +175,8 @@ All desktop export entry points take one activation snapshot and write it in the
 with pending, success and error states. A repeated activation while pending is ignored; Clear
 or a new Connection cannot alter the snapshot. This changes neither the JSONL v1 schema nor
 the current temporary-directory destination.
+
+---
+
+*`host #N` cites an issue in the repository the inspector began in, which is private; see the
+[architecture spec](architecture.md#architecture-specification--acp-inspector).*

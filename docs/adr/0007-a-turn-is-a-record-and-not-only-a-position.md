@@ -3,7 +3,7 @@
 ## Context
 
 `CONTEXT.md` has always defined a **Turn** as one `session/prompt` and everything until its
-outcome. The stores did not keep one. [`TurnState`](../../core/src/turn.rs) is a single value
+outcome. The stores did not keep one. [`TurnState`](../../crates/core/src/turn.rs) is a single value
 saying where the *live* turn stands, replaced the moment the next prompt goes out, and
 `TimelineEntry` carried no turn at all — so the centre screen was a flat, arrival-ordered list, and
 the only turn information anywhere on the window was one status about the most recent one, in the
@@ -55,7 +55,7 @@ what an agent actually did.
   words are the answer either way.
 - **Grouping is read from the stamp and never inferred from the rows.** Working out turn boundaries
   from arrival order in the window would be protocol inference in a layer that is strictly
-  presentational ([§5](../architecture.md#5-the-core-window-seam)), and it would be wrong on exactly
+  presentational ([§5](../architecture.md#5-the-coreui-split)), and it would be wrong on exactly
   the traffic this exists to show.
 
 ## Consequences

@@ -22,7 +22,7 @@ is nothing for a sweep of eleven modules to apply — only a habit of choosing a
 rule.
 
 **So the vocabulary is decided before the sweep, and it is decided as tokens.** They live in
-[`crates/app/style/theme.css`](../../desktop/style/theme.css), in one `@theme static` block, and every
+[`crates/app/style/theme.css`](../../crates/app/style/theme.css), in one `@theme static` block, and every
 one of them is a name for a decision rather than a shorthand for a number. What follows is each
 scale and the rule for when its steps apply; the file itself carries the same rules beside the
 declarations, because a token whose rule is one directory away is a token that will be used for
@@ -40,7 +40,7 @@ For the original sweep, every namespace was cleared with `initial` before this v
 exists beside the scale is a step somebody can reach for without deciding anything, and `p-3` next
 to `p-group` is not a smaller version of the rhythm — it is the absence of one. The same line does
 something stronger for colour: **`--color-*: initial` is what makes `bg-red-500` not exist**.
-[#72](https://github.com/sagikazarmark/dioxus-chat.orig/issues/72)'s guarantee is asserted over the
+host #72's guarantee is asserted over the
 rules a person writes in this project, and no test here can see a class name in a Rust file — so the
 only way to keep *every colour is a token* true once utilities arrive is for there to be no other
 colour to write. `crates/app/src/style.rs` held that with a test. Current production retains the colour
@@ -145,7 +145,7 @@ arriving-content rule broken from the other end.
 
 And the rule that is a rule rather than a token: **a reader who asked for less motion gets none**.
 `prefers-reduced-motion: reduce` switches every transition and animation off, in
-[`input.css`](../../desktop/style/input.css), because none of this motion carries information and
+[`input.css`](../../crates/app/style/input.css), because none of this motion carries information and
 nobody who turned it off at the operating system should have to argue with it. It is `app/`'s rule,
 copied for the same reason.
 
@@ -173,14 +173,14 @@ ADR 0003's palette record has every ratio.)
 values, and they will keep carrying them until the ring that rewrites them. A vocabulary that
 arrives with eleven modules already rewritten is a vocabulary nobody had the chance to say *not
 that* to, which is the whole reason this ring is separate
-([#97](https://github.com/sagikazarmark/dioxus-chat.orig/issues/97) user story 17).
+(host #97 user story 17).
 
 **Layout is untouched**, here as in every ring of the redesign.
 
 ## What the sweep settled
 
 The ring after this one applied the vocabulary to every screen
-([#106](https://github.com/sagikazarmark/dioxus-chat.orig/issues/106)). It added no token and moved
+(host #106). It added no token and moved
 no step; what it did was answer four questions this document left to whoever met them first, and
 they are recorded here because the next person to ask will look here rather than in a diff.
 
@@ -224,3 +224,8 @@ they are recorded here because the next person to ask will look here rather than
 - **Current component values come from daisyUI.** An inspector-specific arbitrary value still owes
   a layout, evidence, accessibility or behavior reason, but ordinary components use standard
   classes rather than a separately enforced numeric scale.
+
+---
+
+*`host #N` cites an issue in the repository the inspector began in, which is private; see the
+[architecture spec](../architecture.md#architecture-specification--acp-inspector).*

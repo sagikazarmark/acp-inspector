@@ -1,7 +1,7 @@
 # The stylesheet becomes Tailwind's output, committed to the tree and compiled in
 
 The window's look is one hand-written string in the binary (`crates/app/src/style.rs`). The UI redesign
-ring ([#97](https://github.com/sagikazarmark/dioxus-chat.orig/issues/97)) replaces it with
+ring (host #97) replaces it with
 **Tailwind**, and the generated stylesheet is **committed to the tree and compiled into the binary**
 exactly as the hand-written one is today. It is not resolved as an asset. `cargo run` therefore still
 needs nothing but a Rust toolchain and the WebView libraries, and **Node is required to *change* the
@@ -40,7 +40,7 @@ one machine and not another, drifts silently and surfaces later as a rendering d
 attribute to a commit. So the inspector's CI job (`.github/workflows/ci.yaml`) gains a step that
 regenerates the sheet and fails on a diff. That step is what makes *committed* a fact rather than a
 convention — the same
-move [#72](https://github.com/sagikazarmark/dioxus-chat.orig/issues/72) made when it turned *every
+move host #72 made when it turned *every
 colour is a token* into a test instead of a promise.
 
 **Node and npm are not pinned**, and the consequence is recorded rather than solved. The inspector's
@@ -63,7 +63,7 @@ Tailwind version mismatch that the CI check above catches on the first commit th
 > roomier proportions rejected below are now desired.
 
 **Rejected at the time, from two mocks of one screen**
-([#105](https://github.com/sagikazarmark/dioxus-chat.orig/issues/105)). No component of daisyUI 5.7
+(host #105). No component of daisyUI 5.7
 was adopted by that ring.
 
 The criterion below was fixed before either mock was built and this is the ring's report against it,
@@ -139,7 +139,7 @@ What is left is a button, a text field and a pill, at a density daisyUI does not
 `alert`, `textarea`, `fieldset`, `fieldset-legend`, `list` and `list-row` — rendered in the mock and
 rejected; `label` — rendered, and given back inside the ring, because it is `white-space: nowrap`
 (which widens a 320px rail until the panel overflows) and draws itself at 60% of the current colour,
-which is dimness, the channel [#83](https://github.com/sagikazarmark/dioxus-chat.orig/issues/83)
+which is dimness, the channel host #83
 took away from this window. `tab`, `select`, `modal`, `dropdown`, `drawer`, `collapse` — not tried,
 because the window had no surface for them that was not already specified otherwise. Nothing was
 adopted by that ring, and `crates/app/style/` declared no daisyUI plugin at that point.
@@ -181,7 +181,7 @@ that clears the floor on one of them is a token that fails on another.
 at 4.58:1, `--control` over `--raised` at 3.17:1.
 
 **The dark palette did not, and was left alone anyway.** Those were the values the window had before
-a light palette existed, and [#72](https://github.com/sagikazarmark/dioxus-chat.orig/issues/72) —
+a light palette existed, and host #72 —
 which added the light one — asked for dark byte for byte so that its rendering would not move. The
 two requirements cannot both hold, and fidelity won. What fell short:
 
@@ -200,7 +200,7 @@ the one signal on the screen that must never be misread.
 
 ### What is true now
 
-**Both schemes clear the floor** ([#106](https://github.com/sagikazarmark/dioxus-chat.orig/issues/106)).
+**Both schemes clear the floor** (host #106).
 The deferral expired with the render it was owed to. The ratio quoted for each token below is its
 **worst** across the seven grounds, which in both schemes is `--hover` — the ground a control takes
 under the pointer, and the reason a token measured only at rest can still be wrong.
@@ -279,7 +279,7 @@ that says *which* connection — is lifted to `--ink` on that row, so the handov
 and not only in a line.
 
 **One use had left that list before the sweep**
-([#83](https://github.com/sagikazarmark/dioxus-chat.orig/issues/83)), and a use is all that left it.
+(host #83), and a use is all that left it.
 What moved is the capability rows. One the agent did not advertise takes `--muted`, because on the
 session lifecycle screen what an agent left out is as much of an answer as what it claimed — those
 rows are content, and the shortfall above was a list of chrome. On `--panel`, which is what the rail
@@ -327,10 +327,15 @@ is held to.
 - **The colour-literal rule moves from the output to the input.** Generated CSS is nothing but
   literals, so the test that asserts no colour literal appears below the token blocks cannot survive
   against the generated file. The same rule, asserted the same way, over the source stylesheet's
-  theme block — [#72](https://github.com/sagikazarmark/dioxus-chat.orig/issues/72)'s guarantee is
+  theme block — host #72's guarantee is
   kept by moving what it reads, not by dropping it.
 - **A generated file cannot hold an argument.** The palette record above is the first thing that had
   to move for that reason; anything else the module comment carries which is a *record* rather than a
   rule belongs in this directory or in the specification for the same reason.
 - **Node enters `phoenix/`, and travels with it.** The `package.json`, the source stylesheet and the
   check script split out with the inspector; the environment that provides Node does not.
+
+---
+
+*`host #N` cites an issue in the repository the inspector began in, which is private; see the
+[architecture spec](../architecture.md#architecture-specification--acp-inspector).*

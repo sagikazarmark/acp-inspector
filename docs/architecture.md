@@ -1,19 +1,24 @@
 # Architecture Specification — ACP Inspector
 
 **Status:** draft, awaiting maintainer review. Assembled 2026-08-01 from the Phoenix wayfinder
-effort ([map #48](https://github.com/sagikazarmark/dioxus-chat.orig/issues/48)); every decision
+effort (map host #48); every decision
 below traces to a closed ticket on that map. This document resolves
-[#57](https://github.com/sagikazarmark/dioxus-chat.orig/issues/57), the map's destination
+host #57, the map's destination
 artifact: the spec an implementation effort starts from.
 
-**Scope boundary:** [the MVP cut, #56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56).
+**Citations to the host repository.** The inspector began inside another repository, which is
+private. `host #N` cites an issue there, and paths such as `docs/research/…`, `CONTEXT-MAP.md`,
+`crates/dioxus-agent-ui-acp`, `app/…` and `demo/…` are files there. They are kept as the record of
+where a decision came from, and cannot be followed from this repository.
+
+**Scope boundary:** the MVP cut, host #56.
 The research behind this spec describes a **larger** program than this one — full 25-method v1
 coverage, a WebSocket transport, an agent catalog, session load/replay, a web surface, v2. All of
 that is charted (as fog or as recorded leanings on the map), none of it is in the MVP, and where
 this spec and a ticket disagree, the ticket is right about *what was decided* and this spec is
 right about *what the MVP is*.
 
-**Amended 2026-08-02 for the second ring** ([#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75)),
+**Amended 2026-08-02 for the second ring** (host #75),
 in place rather than by addendum, so that there is one document describing the tool: the session
 lifecycle work leaves the deliberately-not-built table
 ([§1.1](#11-what-is-deliberately-not-built)) and becomes the second ring
@@ -23,7 +28,7 @@ is settled by an admission rule ([§15](#15-open-questions--validation-gaps) q7)
 below is the MVP as it was assembled and, where noted, as the build corrected it. The MVP's own
 scope boundary above is unchanged — it describes what shipped first, not what the document covers.
 
-**Amended again 2026-08-02 for the third ring** ([#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)),
+**Amended again 2026-08-02 for the third ring** (host #84),
 in place for the same reason: the two configuration setters leave the deliberately-not-built table
 and become the third ring ([§7.6](#76-the-third-ring-session-settings)); gating is re-stated as
 **four** shapes rather than two, each named where it is read from ([§7.6](#76-the-third-ring-session-settings));
@@ -32,7 +37,7 @@ the MVP's empty client capabilities are **narrowed with their argument** rather 
 ([§15](#15-open-questions--validation-gaps) q7); and the terminology leaves this document for a
 glossary of the inspector's own ([§2](#2-terminology)).
 
-**Amended again 2026-08-03 for the fourth ring** ([#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96)),
+**Amended again 2026-08-03 for the fourth ring** (host #96),
 in place for the reason the last two were: the capability panel's rows gain a fourth fact — whether
 the advertisement was ever driven and what came back ([§7.7](#77-the-fourth-ring-what-was-driven)) —
 and the two advertisements that had no affordance at all, `logout` and `additionalDirectories`,
@@ -44,23 +49,23 @@ section. The annotation list does **not** grow ([§15](#15-open-questions--valid
 the reason is recorded there rather than left as silence.
 
 **Amended 2026-08-05 for the fifth ring**
-([#108](https://github.com/sagikazarmark/dioxus-chat.orig/issues/108),
-[#116](https://github.com/sagikazarmark/dioxus-chat.orig/issues/116)): every desktop surface now
+(host #108,
+host #116): every desktop surface now
 uses daisyUI first, Winter and Business own component themes, and the former exact design vocabulary
 is retained only where it expresses inspector semantics, evidence, accessibility or behavior
 ([ADR 0005](adr/0005-daisyui-owns-ordinary-components-and-themes.md)). Core behavior and the domain
 language are unchanged.
 
 **Amended 2026-08-05 for the compact native shell**
-([#119](https://github.com/sagikazarmark/dioxus-chat.orig/issues/119),
-[#120](https://github.com/sagikazarmark/dioxus-chat.orig/issues/120),
-[#121](https://github.com/sagikazarmark/dioxus-chat.orig/issues/121),
-[#122](https://github.com/sagikazarmark/dioxus-chat.orig/issues/122),
-[#123](https://github.com/sagikazarmark/dioxus-chat.orig/issues/123),
-[#124](https://github.com/sagikazarmark/dioxus-chat.orig/issues/124),
-[#125](https://github.com/sagikazarmark/dioxus-chat.orig/issues/125),
-[#126](https://github.com/sagikazarmark/dioxus-chat.orig/issues/126),
-[#127](https://github.com/sagikazarmark/dioxus-chat.orig/issues/127)): purpose-built Inspector Light
+(host #119,
+host #120,
+host #121,
+host #122,
+host #123,
+host #124,
+host #125,
+host #126,
+host #127): purpose-built Inspector Light
 and Inspector Dark daisyUI themes replace Winter and Business, the toolbar and Agent rail narrow,
 the first Heroicons Outline controls establish the icon family, and Session Settings use compact
 native controls chosen from the shape of each Config Option. The Console is a flat compact utility
@@ -94,27 +99,27 @@ integration suite, desktop server-rendered component tests and stylesheet contra
 platform walkthrough gaps are recorded in
 [`desktop-smoke-matrix.md`](desktop-smoke-matrix.md). The external evidence it started from remains:
 the MCP Inspector v2 architecture this design copies is shipped, working software
-([#49](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)); the ACP v1 method surface
+(host #49); the ACP v1 method surface
 is read from the canonical `schema/v1/meta.json`
-([#51](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)); the liftable prior art in
+(host #51); the liftable prior art in
 this repo is shipped and tested
-([#53](https://github.com/sagikazarmark/dioxus-chat.orig/issues/53)). See
+(host #53). See
 [§15](#15-open-questions--validation-gaps) for observations that still require a real platform.
 
 **The product name is not fixed.** *ACP Inspector* is the working name from the decomposition
-([#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55)); product-grade naming
+(host #55); product-grade naming
 happens when the project splits to its own repo. Crate and binary names below are provisional
 the same way the host repo's are. **The application bundle's are not**: `ACP Inspector` and
 `dev.sagikazarmark.acp-inspector` are fixed by
 [ADR 0010](adr/0010-the-bundle-is-the-one-thing-dx-makes.md), because a bundle identifier is what
 macOS keys a user's preferences and permissions to and cannot wait for the split.
 
-This spec sits **beside** the host repo's specs — [`docs/app-architecture.md`](../../../docs/app-architecture.md),
-[`docs/bridge-architecture.md`](../../../docs/bridge-architecture.md),
-[`docs/architecture.md`](../../../docs/architecture.md) — not on top of them: the inspector
-depends on none of the code they describe ([§13](#13-relationship-to-the-host-repos-assets)). It
-links rather than restates; research findings are cited by their `docs/research/<name>.md` path
-on the corresponding `research/<name>` branch (this repo keeps findings on branches, not `main`).
+This spec sat **beside** the host repo's specs — `docs/app-architecture.md`,
+`docs/bridge-architecture.md` and `docs/architecture.md` in the original host repository (private)
+— not on top of them: the inspector depends on none of the code they describe
+([§13](#13-relationship-to-the-host-repos-assets)). Research findings are cited by their
+`docs/research/<name>.md` path on the corresponding `research/<name>` branch of that repository,
+which kept findings on branches, not `main`.
 
 ---
 
@@ -127,9 +132,9 @@ conversations at once — the *turn* (prompt, streamed updates, permission reque
 including misbehaviour: traffic the inspector does not recognize is rendered, never dropped.
 
 The MVP is a **single Dioxus desktop app** over a headless **`acp-inspector-core`** crate
-([#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56)). It spawns the agent
+(host #56). It spawns the agent
 directly — no tunnel, no launch token, no origin machinery, none of the browser/backend split the
-MCP Inspector's web client needs ([#49 §4.3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
+MCP Inspector's web client needs (host #49 §4.3).
 Convertibility to a web surface was guaranteed **by the boundary, not built**: core has zero UI
 dependencies, so a web surface is additive (MCP Inspector's own v2 pattern). Web is now scheduled,
 and the shape it will take is decided rather than open
@@ -146,49 +151,49 @@ argument. A row leaves this table when a ring consumes it — the session lifecy
 second ring ([§7.5](#75-the-second-ring-the-session-lifecycle)) and the two configuration setters
 are the third ([§7.6](#76-the-third-ring-session-settings)), so neither sits here any longer — and
 what a ring defers in turn is recorded beside the MVP's own deferrals rather than left as
-silence ([#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75),
-[#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)). A row can also **split**: the
+silence (host #75,
+host #84). A row can also **split**: the
 fourth ring builds half of the capability sweep and declines the other half, so that row stays here
 with a new reason rather than leaving with a job half done
-([#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96)). And a row that names several
+(host #96). And a row that names several
 things can lose one of them: the fifth ring takes `elicitation/*` out of the declined client
 services and leaves the other two where they were, which is a row losing an item rather than a
 decision being reversed for all three
-([#133](https://github.com/sagikazarmark/dioxus-chat.orig/issues/133)).
+(host #133).
 
 | Not built | Status | Where decided |
 |---|---|---|
-| Persistent agent catalog with import/export | Later; MVP keeps at most a recent-commands convenience | [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56) |
-| The capability sweep — a tool-driven pass that exercises every advertised method | **Declined**, not deferred again. The *filled-in report* half of this row is what the fourth ring builds, passively ([§7.7](#77-the-fourth-ring-what-was-driven)); the pass that would drive it is refused, because a tool that manufactures the traffic its subject is judged on has made the record harder to read, and because a report that outlives its frames is the verdict [§15](#15-open-questions--validation-gaps) q7 exists to refuse. The row's old reason was timing and had expired — rings two and three made the methods reachable and the shape was still wrong | [ADR 0002](adr/0002-the-capability-sweep-is-a-record-and-not-a-pass.md), [#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96) |
+| Persistent agent catalog with import/export | Later; MVP keeps at most a recent-commands convenience | host #56 |
+| The capability sweep — a tool-driven pass that exercises every advertised method | **Declined**, not deferred again. The *filled-in report* half of this row is what the fourth ring builds, passively ([§7.7](#77-the-fourth-ring-what-was-driven)); the pass that would drive it is refused, because a tool that manufactures the traffic its subject is judged on has made the record harder to read, and because a report that outlives its frames is the verdict [§15](#15-open-questions--validation-gaps) q7 exists to refuse. The row's old reason was timing and had expired — rings two and three made the methods reachable and the shape was still wrong | [ADR 0002](adr/0002-the-capability-sweep-is-a-record-and-not-a-pass.md), host #96 |
 | Non-PDF binary resource attachments and resource references | Deferred. Picker/drop accept signature-identified PNG/JPEG/GIF/WebP, WAV/MP3, PDFs and UTF-8 text files in one ordered draft: eight rows, 5 MiB each, 6 MiB aggregate, optional prompt text first. Clipboard images join the same draft. Each kind is gated on its own `promptCapabilities.image`, `.audio` or `.embeddedContext` Advertisement; its row records the driven outcome. Text uses embedded resource contents, `text/plain`, preserved BOM/line endings and a literal 2000-character preview. PDFs use binary resource contents, `application/pdf` and original bytes in base64, identified by a PDF 1.0–1.7 or 2.0 header line; no PDF renderer or document validation. Both resources use escaped native file URIs or distinct browser attachment URIs. Embedded context is an Advertisement of content shape, not PDF interpretation. Invalid UTF-8/binary controls in text and other recognized binary formats are refused. Audio controls never autoplay and playback failure does not prevent sending. Complete serialized prompt Frames remain capped at 10 MiB. | [#11](https://github.com/sagikazarmark/acp-inspector/issues/11), [#12](https://github.com/sagikazarmark/acp-inspector/issues/12), [#13](https://github.com/sagikazarmark/acp-inspector/issues/13), [#14](https://github.com/sagikazarmark/acp-inspector/issues/14), [#15](https://github.com/sagikazarmark/acp-inspector/issues/15), [#17](https://github.com/sagikazarmark/acp-inspector/issues/17) |
 | Persistent MCP catalog | Deferred. Stdio/HTTP/SSE definitions use one structured, in-memory editor before Launch and in Sessions. Stdio is baseline ACP; HTTP and SSE are independently gated on `mcpCapabilities.http` and `.sse`. Drafts for the next Launch may name either before initialize; syntax is validated before connecting, then the snapshot's transports against the new Agent before opening its first Session. Unsupported definitions remain visible with the Connection available for correction. All new/load/resume routes use the shared draft and validate before switching; reconnect retains it, recent commands and persistent storage do not. Ordered arguments, environment and headers preserve empty values and duplicates. The inspector neither checks executable existence nor fetches URLs. Capability outcomes refer to the Session-opening call, never individual MCP connectivity. New/load serialize an empty list; resume omits it under the pinned schema. | [#18](https://github.com/sagikazarmark/acp-inspector/issues/18), [#19](https://github.com/sagikazarmark/acp-inspector/issues/19) |
-| Connecting to more than one agent at once | Deferred, and wants research before a build: a client legitimately holds many MCP servers because that is MCP's normal topology, whereas ACP's is one client and one agent. Whether the shape transfers is an open question, not an assumed yes | [#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75), [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84) |
-| Making the client's boolean-config-option claim configurable — a spawn-form switch for what the inspector advertises about itself | Deferred, and the observation it would unlock is real: an agent that degrades its offer for clients which did not claim the capability would be watchable doing it. Declined here anyway, because the first configuration knob on this tool is a decision of its own and this ring should not smuggle one in. The consequence is accepted and stated in [§7.6](#76-the-third-ring-session-settings): a candidate annotation that can never arm is not on the rule list | [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84) |
-| A fourth fact for the client's *own* claims — whether any agent took one up on this connection | Deferred with a ring of its own owed. [§7.7](#77-the-fourth-ring-what-was-driven)'s fourth fact says *this tool drove the agent's advertisement and here is what came back*; the client-side analogue says *an agent used what this tool claimed*, which is a different sentence about a different party and needs its own store and its own wording. The fifth ring is what makes it worth having — it takes the client's claims from one to three ([§7.8](#78-the-fifth-ring-elicitation)) — and is exactly why it is not built there: a ring that adds the claims should not also be the ring that grades their uptake | [#133](https://github.com/sagikazarmark/dioxus-chat.orig/issues/133) |
-| `session/set_model` | **It does not exist.** There is no `models` field on a session setup response and no such method in the schema — config options superseded them. Recorded so that a reader looking for it stops looking | [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84) |
-| `session/fork`'s `modes` and `configOptions` | Not decoded. Fork stays on the raw-first path ([§7.5](#75-the-second-ring-the-session-lifecycle)), so the settings on its response are traffic to read rather than a session setup response to fill the store from | [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84) |
-| Logs-as-a-tab beyond the Console's two | Later, and with a rule now that there is a panel to put one in ([§9](#9-screens)): **a Console tab holds what the transport seam produced about one Connection, below the typed layer** — the frames as they crossed, everything else the transport said, and where it says the record has a hole. That is what the Trace and the diagnostic channel have in common, it is why the Timeline is not in the panel — an entry there is what the typed layer *made* of frames, not the frames — and it is the test any third tab has to pass. The rule said *captured* until an audit found that nothing captures a dropped frame, a dropped stderr line, or the trace ring's dropped count, all three of which are in the panel and belong there ([§8](#8-unknown-traffic-the-raw-first-rule)): the boundary is the subject, not the voice, and the tool's own voice is admitted about the integrity of the record and about nothing else. A log about the inspector's own working — a store updated, a file written, a render — is about this tool and not about a connection, and would be somewhere else or nowhere | [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56), [#95](https://github.com/sagikazarmark/dioxus-chat.orig/issues/95) |
-| WebSocket transport (remote agents) | Later — a second connection factory behind the seam in [§6](#6-the-transport-seam); the transport RFD's `/acp` upgrade slots there | [#51](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51), [#52](https://github.com/sagikazarmark/dioxus-chat.orig/issues/52), map fog |
-| Full 25-method v1 coverage | Later — mechanical enumeration against the coverage checklist ([§7.4](#74-the-coverage-yardstick)) | [#51](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51), map fog |
-| v2 support and dual-version decoding | Later — v2 remains a draft with no stated timeline and nothing published since 2026-07-28, when upstream instead *removed* its own version-conversion helpers citing unrepresentable states. The seams stay open ([§11](#11-v2-seams-kept-open)) and nothing is decoded as v2. Its folding of modes into config options — `session/set_mode` gone, a `category` on a config option in its place — is one more thing the seams have to survive rather than something built for | [#51](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51), [#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75), [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84), map fog |
-| `fs/*` and `terminal/*` client services | Declined by advertising no capability for either, and **still declined** now that the client claims several things about itself ([§7.3](#73-decline-by-capability)): these are *services* the inspector genuinely cannot perform — there is no filesystem mediation to offer and no terminal embedded. Arriving calls are logged and answered method-not-found. `elicitation/*` left this row with the fifth ring ([§7.8](#78-the-fifth-ring-elicitation)): it had been declined in the same sentence on the strength of one clause about what this tool *had built* rather than what it can do, and a schema-driven form is a thing it draws | [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56), [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84), [#133](https://github.com/sagikazarmark/dioxus-chat.orig/issues/133) |
-| Authentication beyond `authenticate` and `logout` | `authMethods` shown, `-32000 auth_required` surfaced as a real state; every practical login runs in the user's own terminal. `logout` leaves this row with the fourth ring ([§7.7](#77-the-fourth-ring-what-was-driven)) — it was a drawn capability row with no method anywhere in the tool, which is the gap the ring's record made impossible to keep quiet | [#51 §2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51), [#54](https://github.com/sagikazarmark/dioxus-chat.orig/issues/54), [#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96) |
-| CLI / TUI surfaces | Out of MVP | [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56) |
-| Observing *third-party* client↔agent pairs (MITM) | **Never in this project** — that is ACP Wiretap's charter; the inspector event-logs only its own traffic | [#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55) |
-| Primitive-catalog tabs as the UI's center, HTTP/OAuth/Network stack, per-frame replay, MCP Apps sandbox | **Never** — MCP Inspector features with no ACP analog | [#49](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49), [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56) |
+| Connecting to more than one agent at once | Deferred, and wants research before a build: a client legitimately holds many MCP servers because that is MCP's normal topology, whereas ACP's is one client and one agent. Whether the shape transfers is an open question, not an assumed yes | host #75, host #84 |
+| Making the client's boolean-config-option claim configurable — a spawn-form switch for what the inspector advertises about itself | Deferred, and the observation it would unlock is real: an agent that degrades its offer for clients which did not claim the capability would be watchable doing it. Declined here anyway, because the first configuration knob on this tool is a decision of its own and this ring should not smuggle one in. The consequence is accepted and stated in [§7.6](#76-the-third-ring-session-settings): a candidate annotation that can never arm is not on the rule list | host #84 |
+| A fourth fact for the client's *own* claims — whether any agent took one up on this connection | Deferred with a ring of its own owed. [§7.7](#77-the-fourth-ring-what-was-driven)'s fourth fact says *this tool drove the agent's advertisement and here is what came back*; the client-side analogue says *an agent used what this tool claimed*, which is a different sentence about a different party and needs its own store and its own wording. The fifth ring is what makes it worth having — it takes the client's claims from one to three ([§7.8](#78-the-fifth-ring-elicitation)) — and is exactly why it is not built there: a ring that adds the claims should not also be the ring that grades their uptake | host #133 |
+| `session/set_model` | **It does not exist.** There is no `models` field on a session setup response and no such method in the schema — config options superseded them. Recorded so that a reader looking for it stops looking | host #84 |
+| `session/fork`'s `modes` and `configOptions` | Not decoded. Fork stays on the raw-first path ([§7.5](#75-the-second-ring-the-session-lifecycle)), so the settings on its response are traffic to read rather than a session setup response to fill the store from | host #84 |
+| Logs-as-a-tab beyond the Console's two | Later, and with a rule now that there is a panel to put one in ([§9](#9-screens)): **a Console tab holds what the transport seam produced about one Connection, below the typed layer** — the frames as they crossed, everything else the transport said, and where it says the record has a hole. That is what the Trace and the diagnostic channel have in common, it is why the Timeline is not in the panel — an entry there is what the typed layer *made* of frames, not the frames — and it is the test any third tab has to pass. The rule said *captured* until an audit found that nothing captures a dropped frame, a dropped stderr line, or the trace ring's dropped count, all three of which are in the panel and belong there ([§8](#8-unknown-traffic-the-raw-first-rule)): the boundary is the subject, not the voice, and the tool's own voice is admitted about the integrity of the record and about nothing else. A log about the inspector's own working — a store updated, a file written, a render — is about this tool and not about a connection, and would be somewhere else or nowhere | host #56, host #95 |
+| WebSocket transport (remote agents) | Later — a second connection factory behind the seam in [§6](#6-the-transport-seam); the transport RFD's `/acp` upgrade slots there | host #51, host #52, map fog |
+| Full 25-method v1 coverage | Later — mechanical enumeration against the coverage checklist ([§7.4](#74-the-coverage-yardstick)) | host #51, map fog |
+| v2 support and dual-version decoding | Later — v2 remains a draft with no stated timeline and nothing published since 2026-07-28, when upstream instead *removed* its own version-conversion helpers citing unrepresentable states. The seams stay open ([§11](#11-v2-seams-kept-open)) and nothing is decoded as v2. Its folding of modes into config options — `session/set_mode` gone, a `category` on a config option in its place — is one more thing the seams have to survive rather than something built for | host #51, host #75, host #84, map fog |
+| `fs/*` and `terminal/*` client services | Declined by advertising no capability for either, and **still declined** now that the client claims several things about itself ([§7.3](#73-decline-by-capability)): these are *services* the inspector genuinely cannot perform — there is no filesystem mediation to offer and no terminal embedded. Arriving calls are logged and answered method-not-found. `elicitation/*` left this row with the fifth ring ([§7.8](#78-the-fifth-ring-elicitation)): it had been declined in the same sentence on the strength of one clause about what this tool *had built* rather than what it can do, and a schema-driven form is a thing it draws | host #56, host #84, host #133 |
+| Authentication beyond `authenticate` and `logout` | `authMethods` shown, `-32000 auth_required` surfaced as a real state; every practical login runs in the user's own terminal. `logout` leaves this row with the fourth ring ([§7.7](#77-the-fourth-ring-what-was-driven)) — it was a drawn capability row with no method anywhere in the tool, which is the gap the ring's record made impossible to keep quiet | host #51 §2, host #54, host #96 |
+| CLI / TUI surfaces | Out of MVP | host #56 |
+| Observing *third-party* client↔agent pairs (MITM) | **Never in this project** — that is ACP Wiretap's charter; the inspector event-logs only its own traffic | host #55 |
+| Primitive-catalog tabs as the UI's center, HTTP/OAuth/Network stack, per-frame replay, MCP Apps sandbox | **Never** — MCP Inspector features with no ACP analog | host #49, host #56 |
 
 ## 2. Terminology
 
 **The terms live in [`CONTEXT.md`](../CONTEXT.md), not here.** The inspector is a separate project
-destined to split out ([#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55)), so it
+destined to split out (host #55), so it
 keeps a context of its own — a glossary beside its code, decisions in its own
-[`docs/adr/`](adr/), and a [context map](../../../CONTEXT-MAP.md) at the repository root naming both
+[`docs/adr/`](adr/), and a context map (`CONTEXT-MAP.md`) at the host repository's root naming both
 this context and the host chat library's. Nothing of the inspector's is written into the host repo's
 `CONTEXT.md`, which was true from the first draft of this document and is now written down as a
 decision ([ADR 0001](adr/0001-the-inspector-keeps-its-own-context.md)).
 
 This section held those definitions until the third ring
-([#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)) found *Capability* meaning three
+(host #84) found *Capability* meaning three
 things at once and *Mode* meaning two — which is what a document that defines terms while using them
 cannot see. The glossary holds terms and nothing else; this document holds the decisions and states
 them in those terms, and defines none of them here — including the two the third ring introduces,
@@ -197,7 +202,7 @@ and the glossary defines.
 
 ## 3. Where it lives
 
-Decided in [#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55), and since carried out:
+Decided in host #55, and since carried out:
 
 - **Its own repository, `acp-inspector`.** It began as `phoenix/inspector/`, a top-level root in the
   host repo that was its own excluded Cargo workspace, destined to split out with no fixed trigger.
@@ -247,12 +252,12 @@ a Node toolchain does not make Node a dependency of a build, is
 **Two processes, one artefact we build.** The inspector spawns the agent as a direct child —
 stdio transport, newline-delimited JSON-RPC, stderr piped into the diagnostic channel. No bridge,
 no backend, no port. This is the MCP Inspector's CLI/TUI path — the one its architecture proves
-works without the remote layer ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
+works without the remote layer (host #49 §5).
 
 ## 5. The core/UI split
 
 The load-bearing design, copied from MCP Inspector v2's `InspectorClient` + observable state
-stores ([#49 §4.1](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)) and mapped onto
+stores (host #49 §4.1) and mapped onto
 Rust/Dioxus:
 
 **`acp-inspector-core`** (headless, no Dioxus, no UI types) owns:
@@ -274,7 +279,7 @@ Rust/Dioxus:
   `elicitation/create` ([§7.8](#78-the-fifth-ring-elicitation)) becomes a value
   holding the request plus a resolver; the UI renders it, the user's choice resolves it, core
   sends the JSON-RPC response. The MCP Inspector's pending-client-request machinery
-  ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)) — with the presentation
+  (host #49 §5) — with the presentation
   moved inline into the timeline, because in ACP these are the main traffic of a turn, not an
   exceptional alert.
 - **Conformance annotations** ([§15](#15-open-questions--validation-gaps) q7) — where the
@@ -292,7 +297,7 @@ menu strip, the icon — is the one module in it that imports `dioxus::desktop`,
 
 ## 6. The transport seam
 
-Decided in [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56): the seam lives in
+Decided in host #56: the seam lives in
 `acp-inspector-core` as a **connection factory yielding framed JSON-RPC messages, not raw bytes**.
 
 ### 6.1 The connection contract
@@ -304,7 +309,7 @@ messages. The MVP ships exactly one factory:
 - **`StdioSpawn { command, args, env, cwd }`** — spawns the child, does newline-delimited
   framing on stdin/stdout, pipes stderr line-by-line into the diagnostic channel. The four
   spawn fields are the MCP Inspector's, unchanged
-  ([#49 §2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
+  (host #49 §2).
 
 **Process exit is not the end of its evidence.** Stdio finishes its pipe pumps
 before publishing `AgentExited`; the Inspector then consumes the incoming Frame stream through
@@ -336,9 +341,9 @@ group/session escapes that boundary.
 
 WebSocket later is a **second factory**, not a redesign: WS is natively message-framed, and the
 transport RFD's `/acp` upgrade (Active, explicitly additive to v1) slots behind the same
-contract ([#51 §3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)). The native
+contract (host #51 §3). The native
 proxy/conductor RFDs are message-level middleware and do not change this seam
-([#52](https://github.com/sagikazarmark/dioxus-chat.orig/issues/52)). The *other* half of that
+(host #52). The *other* half of that
 RFD — the Streamable HTTP profile — does not slot in as cleanly, and
 [§6.3](#63-what-the-seam-cannot-host-the-per-session-http-profile) records why.
 
@@ -347,22 +352,22 @@ RFD — the Streamable HTTP profile — does not slot in as cleanly, and
 A decorator wraps the connection's frame streams and records **every frame with direction and
 timestamp before the typed layer sees it** — the MCP Inspector's `MessageTrackingTransport`
 pattern, which logs the true wire frame no matter what happens above it
-([#49 §4.2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)). This is the **single
+(host #49 §4.2). This is the **single
 capture mechanism**: the trace view, the JSONL export, and misbehaving-agent logging are three
 consumers of one log. Nothing else in the program touches the wire.
 
 ### 6.3 What the seam cannot host: the per-session HTTP profile
 
-Recorded by [#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75) so that a later
+Recorded by host #75 so that a later
 remote-agent effort finds the finding rather than rediscovering it. **The seam as specified above
 is incomplete for one transport, not wrong**, and nothing here is built to fix it.
 
 The transport RFD's Streamable HTTP profile — one `/acp` endpoint, POST plus long-lived GET
 streams, `Acp-Connection-Id` and `Acp-Session-Id` carried as transport-level headers
-([#51 §3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51),
-[#54 §2](https://github.com/sagikazarmark/dioxus-chat.orig/issues/54), the RFD read at Active) —
+(host #51 §3,
+host #54 §2, the RFD read at Active) —
 **keys its event stream by session identity, below the JSON-RPC layer**
-([#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75)'s reading of the profile; the
+(host #75's reading of the profile; the
 header names are quoted above from the research, the keying is not re-read here). That identity is
 minted *above* the seam — it arrives in a `session/new` response, which only the typed layer
 decodes — while the factory below the seam is handed nothing but whole JSON messages and has, by
@@ -385,8 +390,8 @@ here.
 
 ## 7. The procedure cut
 
-[#51](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)'s proposed 9-method subset,
-adopted verbatim by [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56). The
+host #51's proposed 9-method subset,
+adopted verbatim by host #56. The
 capability mechanism is the client's friend: whatever the inspector does not advertise, a
 conformant agent MUST NOT call.
 
@@ -395,9 +400,9 @@ conformant agent MUST NOT call.
 | Method | MVP behaviour |
 |---|---|
 | `initialize` | `protocolVersion: 1`, honest `clientCapabilities` — empty at MVP, and narrowed to one claim by the third ring ([§7.3](#73-decline-by-capability), [§7.6](#76-the-third-ring-session-settings)) — and `clientInfo`. Its result is the first display artifact: agent info, capabilities, auth methods ([§9](#9-screens)) |
-| `session/new` | `cwd` from the spawn form, `mcpServers: []`; `additionalDirectories` from a control the fourth ring adds, where the agent advertised it ([§7.7](#77-the-fourth-ring-what-was-driven)) |
+| `session/new` | `cwd` from the spawn form; `mcpServers` from the MCP editor — stdio, HTTP and SSE definitions, HTTP and SSE only where `mcpCapabilities` advertises them, and an empty array when there are none (the same list goes on `session/load` and `session/resume`); `additionalDirectories` from a control the fourth ring adds, where the agent advertised it ([§7.7](#77-the-fourth-ring-what-was-driven)) |
 | `session/list` | Only when `sessionCapabilities.list` advertised; paging ignored (no surveyed agent emits `nextCursor`), cursor treated as opaque if one appears. The listing the tool refreshes on its own initiative after a close or delete still reports a failure in the trace and nowhere else ([§7.5](#75-the-second-ring-the-session-lifecycle)) — it is not a call anybody asked for, so it writes no record ([§7.7](#77-the-fourth-ring-what-was-driven)) |
-| `session/prompt` | Text-only `ContentBlock[]` composer; render the `stopReason` |
+| `session/prompt` | A `ContentBlock[]` composer: text, plus image, audio and embedded-resource (text and PDF) attachments where `promptCapabilities` advertises them; render the `stopReason` |
 | `session/cancel` | A stop button; the prompt must still resolve with `stopReason: "cancelled"` — a conformance point worth watching in the UI, and one of the rules the inspector annotates ([§15](#15-open-questions--validation-gaps) q7) |
 | `authenticate` | Show `authMethods`, let the user pick, surface `-32000 auth_required` as a real "log in" state. No terminal auth — the UI says "run the agent's login in your own terminal". The auth methods are an Advertisement and the buttons gate on them, so this is driven and recorded like the rest — in `AuthState`, which already holds not-driven, accepted-with-a-method, and refused-with-the-agent's-error, and is not duplicated into a second store ([§7.7](#77-the-fourth-ring-what-was-driven)) |
 | `logout` | A button in the agent panel wherever `agentCapabilities.auth.logout` is advertised, including where nobody has logged in — the corner is undefined and that is the reason to drive it. Connection-scoped: the request carries no session id. It answers `{}`, so it licenses no claim about where authentication stands; a success returns `AuthState` to *unasked*, because the agent has retracted what it accepted, and does not make the login screen appear ([§7.7](#77-the-fourth-ring-what-was-driven)) |
@@ -435,13 +440,13 @@ matter, so if such a call arrives anyway it is **logged in the trace as first-cl
 answered method-not-found**, never silently swallowed.
 
 > **The MVP's empty client capabilities are narrowed here, not abandoned**
-> ([#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)). The stance the sentence above
+> (host #84). The stance the sentence above
 > states was always about **services** — work the inspector would have to *perform* on the agent's
 > behalf, and genuinely cannot: it has no filesystem mediation to offer and embeds no terminal
 > ([§7.1](#71-driven-client--agent)). Both of those stay declined.
 >
 > **And the third name this list used to carry was not one of them**
-> ([#133](https://github.com/sagikazarmark/dioxus-chat.orig/issues/133)). `elicitation/*` was
+> (host #133). `elicitation/*` was
 > declined in the same breath, on the strength of one clause — that this tool *renders no
 > elicitation form* — which was a fact about what had been built rather than about what it can do.
 > It draws a schema-driven form on the settings screen already. Elicitation is serviced in both
@@ -458,8 +463,10 @@ answered method-not-found**, never silently swallowed.
 > else, so the inspector was silently reshaping the behaviour it exists to observe, by a claim it had
 > never examined, with nothing on screen saying so. For a tool whose thesis is that claims should be
 > legible, that was the dishonest answer rather than the honest one. The inspector therefore claims
-> **boolean config options and nothing else** ([§7.6](#76-the-third-ring-session-settings)), fixed
-> for every connection, and shows the claim beside the agent's ([§9](#9-screens)).
+> **boolean config options** ([§7.6](#76-the-third-ring-session-settings)) and, since the fifth ring,
+> **elicitation in form and URL modes** ([§7.8](#78-the-fifth-ring-elicitation)) — and nothing else:
+> no `fs`, no `terminal`. The claim is fixed for every connection (`client_capabilities()` in
+> `crates/core/src/client.rs`), and shown beside the agent's ([§9](#9-screens)).
 >
 > The rule the two halves share is unchanged: **the inspector claims exactly what it will honour.**
 > A service it cannot perform is not claimed; a data shape it will render is. Neither half is a
@@ -499,7 +506,7 @@ methods: thirteen agent methods, eleven client methods and `$/cancel_request`.
 
 ### 7.5 The second ring: the session lifecycle
 
-Decided in [#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75), which re-cuts the
+Decided in host #75, which re-cuts the
 value order [§7.4](#74-the-coverage-yardstick) first proposed for this ring. **Every session
 lifecycle method ACP v1 defines as stable becomes an affordance**, each gated on the agent's own
 advertisement and on nothing else — including where the inspector believes the operation cannot
@@ -625,7 +632,7 @@ ring assigned to it yet.
 
 ### 7.6 The third ring: Session Settings
 
-Decided in [#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84), and it takes up the
+Decided in host #84, and it takes up the
 two rows the previous ring pushed out of its own. The inspector could drive a session's whole
 lifecycle and could not touch its configuration: every surveyed agent publishes settings of some
 kind, and the inspector answered all of it by rendering an announcement as a passing sentence in the
@@ -853,7 +860,7 @@ exists, because it was just set.
 
 ### 7.7 The fourth ring: what was driven
 
-Decided in [#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96). The capability panel
+Decided in host #96. The capability panel
 could say what an agent claimed and could not say what happened when anybody took it up: an agent
 that advertises `session/close` and refuses every one is indistinguishable, on the screen built to
 audit its claims, from an agent nobody ever pressed the button on. **The panel's rows gain a fourth
@@ -991,7 +998,7 @@ it — that there is a button — and this section says *driven* for the other t
 
 ### 7.8 The fifth ring: elicitation
 
-Decided in [#133](https://github.com/sagikazarmark/dioxus-chat.orig/issues/133). The permission
+Decided in host #133. The permission
 request stops a turn and this tool answers it; the three calls Testy makes after it are answered
 *method not found* on the reader's behalf, and then the prompt dies at `-32602` and the turn ends
 with no stop reason. No scenario the reference agent ships has ever run to `end_turn` here.
@@ -1197,7 +1204,7 @@ rather than one smuggled in here ([§1.1](#11-what-is-deliberately-not-built)).
 
 ## 8. Unknown traffic: the raw-first rule
 
-Decided in [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56), and it is the
+Decided in host #56, and it is the
 spec's central invariant:
 
 > **Every frame renders raw JSON, always. A typed layer decorates frames it recognizes. Unknown
@@ -1262,9 +1269,9 @@ reason somebody is shown something other than what the agent sent.
 
 ## 9. Screens
 
-The feature cut from [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56). The
+The feature cut from host #56. The
 center of the UI is the **turn timeline** — not a primitive catalog; ACP has no enumerable
-primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.orig/issues/49)).
+primitives to browse (host #49 §5).
 
 > **Where the regions are, amended 2026-08-17**
 > ([ADR 0009](adr/0009-the-window-is-the-drawing.md)). This section is written as
@@ -1381,7 +1388,7 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
   > dropped count) and diagnostic lines, so that *frames are arriving* and *the agent is saying
   > things* stay legible while it is shut. One click restores it, on the tab that was selected. The
   > diagnostic channel has no collapse of its own; one collapse belongs to the panel.
-  > **The compact native refinement keeps that shape literal** ([#125](https://github.com/sagikazarmark/dioxus-chat.orig/issues/125)):
+  > **The compact native refinement keeps that shape literal** (host #125):
   > the Console is a flat bottom utility pane rather than a card, its tabs use the compact underline
   > strip, and one accessibly named Heroicons Outline chevron remains the only collapse control.
   > **Tabs carry counts and nothing else** — no unread badge, no activity dot, no severity mark
@@ -1417,7 +1424,7 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
   surface is showing and says what it is hiding — presentation only, so both stores go on capturing
   and counting everything and an export writes the whole trace
   ([ADR 0006](adr/0006-the-window-is-drawn-as-an-application.md)).
-  > **Evidence disclosures share one compact visual contract** ([#125](https://github.com/sagikazarmark/dioxus-chat.orig/issues/125)):
+  > **Evidence disclosures share one compact visual contract** (host #125):
   > Frames, Timeline raw Frames and tool-call raw input/output use native disclosure state, complete
   > accessible names and tooltips, visible focus, and the same Heroicons Outline chevron. A Frame's
   > name is its ordinal, direction, Connection and timestamp plus the disclosure action, never the
@@ -1537,7 +1544,7 @@ primitives to browse ([#49 §5](https://github.com/sagikazarmark/dioxus-chat.ori
 - **A connection that ended keeps its record and says so.** Nothing is cleared when an agent goes:
   the timeline, the trace, the diagnostic channel, the settings it published and the sessions it
   reported are what the tool was run to produce, and an agent that died mid-turn is the finding
-  ([§5](#5-crate-boundaries)). What the window owes instead is to say which of the two states it is
+  ([§5](#5-the-coreui-split)). What the window owes instead is to say which of the two states it is
   in, wherever there are controls it is about — the same sentence in the same register on Session
   Settings, in the login, and in the sessions dialog — with every control ARIA-disabled beside it.
   And **Connect is not offered while an agent is running**: one connection at a time, so the way
@@ -1872,10 +1879,10 @@ folder controls and visible retrieval outcomes. Keeping evidence durably require
 moving that file elsewhere. Measurements and remaining limits:
 [`performance-hardening.md`](performance-hardening.md).
 
-Pulled *into* the MVP deliberately ([#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56)):
+Pulled *into* the MVP deliberately (host #56):
 the export is **the seed of the event log** that ACP Wiretap and future replay tooling wait on
 (the surveyed ecosystem's open gap is exactly live capture + JSONL replay + validation in one
-tool, [#50](https://github.com/sagikazarmark/dioxus-chat.orig/issues/50)).
+tool, host #50).
 
 One record per frame, from the trace decorator's captured fields: timestamp, direction, and the
 verbatim frame. Prior art for the record shape is the bridge's `--trace-frames` capture
@@ -1892,7 +1899,7 @@ Wiretap consumes it, so it should be pinned during implementation, not grown.
 
 ## 11. v2 seams kept open
 
-The MVP targets v1 only. [#51 §3](https://github.com/sagikazarmark/dioxus-chat.orig/issues/51)
+The MVP targets v1 only. host #51 §3
 condensed the v2 delta into five seams; this spec builds the first, second, fourth and fifth as
 **structural commitments** and the third as a modelling rule:
 
@@ -1909,7 +1916,7 @@ condensed the v2 delta into five seams; this spec builds the first, second, four
 
 ## 12. Dummy agent and test strategy
 
-Decided in [#56](https://github.com/sagikazarmark/dioxus-chat.orig/issues/56): **adopt Testy**
+Decided in host #56: **adopt Testy**
 from the ACP rust-sdk (`agent-client-protocol-test`, merged in
 [rust-sdk#300](https://github.com/agentclientprotocol/rust-sdk/pull/300)) — a deterministic
 stdio agent with prompt-driven scenarios (`echo`, `wait_for_cancel`, `session_updates`, `elicitations`,
@@ -1922,18 +1929,20 @@ Accepted consequences, recorded so the build doesn't rediscover them:
 - The crate is `publish = false`: Testy is built from a rust-sdk checkout —
   `cargo build -p agent-client-protocol-test --bin testy` — and the project carries a justfile
   (or equivalent) task plus a CI step that does exactly this.
-- Integration tests build Testy from git, accepting rust-sdk `main` as a dev-time moving part.
+- Integration tests build Testy from git at a pinned rust-sdk revision (v3.3.0, by commit, in
+  `scripts/build-testy.sh` and the Dagger module). The MVP accepted `main` as a dev-time moving
+  part; the suite asserts on Testy's exact behaviour, so the pin now moves deliberately.
 - Its v2 flag is a free test target when v2's turn comes.
 
 Test shape follows from the architecture: `acp-inspector-core` is fully testable against Testy with
-no UI (spawn → drive the 9 methods → assert stores and trace); the app crate stays thin
+no UI (spawn → drive the 13 methods → assert stores and trace); the app crate stays thin
 enough that its testing burden is presentational. **Real agents** (Claude Code ACP, Gemini CLI)
 are named smoke targets only — driven by hand, not in CI.
 
 ## 13. Relationship to the host repo's assets
 
-Settled by [#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55) and
-[#53](https://github.com/sagikazarmark/dioxus-chat.orig/issues/53). The standing rule: **copy
+Settled by host #55 and
+host #53. The standing rule: **copy
 patterns, never link code.** The library keeps waiting for a genuinely independent second
 consumer; the inspector is not it.
 
@@ -1949,7 +1958,7 @@ consumer; the inspector is not it.
 
 One boundary knowingly re-crossed, for the record: the prior app effort ruled an inspector out
 of scope (`.scratch/acp-app/map.md`, ticket 15); Phoenix reopened it deliberately as its primary
-project ([#55](https://github.com/sagikazarmark/dioxus-chat.orig/issues/55)).
+project (host #55).
 
 ## 14. Build order (suggested)
 
@@ -2028,8 +2037,8 @@ backlog.
    `session/request_permission` the way the timeline needs) — the no-fixture-of-our-own decision
    is only as good as Testy holds up.
    **Answered by first contact**, reported in full on
-   [#60](https://github.com/sagikazarmark/dioxus-chat.orig/issues/60) as
-   [#66](https://github.com/sagikazarmark/dioxus-chat.orig/issues/66) was asked to: Testy blocks
+   host #60 as
+   host #66 was asked to: Testy blocks
    a real turn on `session/request_permission` and resolves a cancelled one with
    `stopReason: "cancelled"`, which is the flow the inline panel exists for. Two gaps, neither
    fatal: its request offers **two** of the four option kinds (`allow_once`, `reject_once`), and
@@ -2065,7 +2074,7 @@ backlog.
    Both were read from the checked-out source first and both readings were then driven; the second
    one was wrong, which is the reason the ticket asked.
 
-   **Four more answers, from driving it for close and delete** ([#82](https://github.com/sagikazarmark/dioxus-chat.orig/issues/82)
+   **Four more answers, from driving it for close and delete** (host #82
    asked that the first of them be observed rather than assumed). None of them is a conformance
    claim: the specification states no MUST about any of it, so nothing here is annotated
    ([q7](#15-open-questions--validation-gaps)) and what follows is a report about one agent.
@@ -2085,7 +2094,7 @@ backlog.
      fact about Testy that no rule here turns on.
 
    **And two more, from driving it for the settings ring's boolean options**
-   ([#90](https://github.com/sagikazarmark/dioxus-chat.orig/issues/90)):
+   (host #90):
 
    - **Testy publishes one config option and it is a select**, so it cannot put the inspector on
      the boolean path at all — which is why the boolean fixtures are scripted one-liners through
@@ -2100,7 +2109,7 @@ backlog.
      at all.
 
    **And one more, which is the first close finding above read as a gap**
-   ([#94](https://github.com/sagikazarmark/dioxus-chat.orig/issues/94)):
+   (host #94):
 
    - **Testy cannot hold a prompt open across a close**, so it cannot be the agent for what a
      close owes a waiting permission request (§7.2). The prompt it resolves off its own close
@@ -2146,7 +2155,7 @@ backlog.
    `cancelled`; how the UI flags an agent that violates this (a conformance annotation in the
    trace?) is open, and is the first instance of a broader later question: how far the inspector
    goes toward *validation* (the ecosystem gap #50 found) versus plain observation.
-   **Answered by [#75](https://github.com/sagikazarmark/dioxus-chat.orig/issues/75)**, and the
+   **Answered by host #75**, and the
    broader question is answered with it, by an **admission rule** rather than case by case:
 
    > The inspector annotates only where the specification states a **MUST** *and* the violation is
@@ -2204,7 +2213,7 @@ backlog.
    > supplies another qualifying MUST, and this ring landed one.
 
    **The fourth ring adds no rule, and three candidates are named rather than left silent**
-   ([#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96)). The admission rule has two
+   (host #96). The admission rule has two
    halves and each of these fails a different one, which is worth seeing together:
 
    - **An agent that advertised a capability and then refused it.** Decidable from two frames, and
@@ -2233,7 +2242,7 @@ backlog.
      agent state. It wants its own ticket.
 
    **The third rule arrives with the session settings ring**
-   ([#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)), and the admission rule is
+   (host #84), and the admission rule is
    again what decides its shape rather than its subject:
 
    > It is armed by a `session/set_config_option` this client sent that **succeeded**, and judged on
@@ -2371,7 +2380,7 @@ backlog.
       a test. The surface's under-reporting is exactly the limit that section names, and the frame is
       in the trace, whole.
 11. **Three things the fourth ring carries as unverified**
-    ([#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96)), named the way the ring
+    (host #96), named the way the ring
     before it named its own:
 
     - **A capability key v1 does not define is invisible on the panel, and this ring did not fix
@@ -2402,7 +2411,7 @@ backlog.
     matrix covers native controls, every Affordance, disclosures, complete Console tab navigation,
     visible focus and reduced motion; automated source/markup contracts pass, while the headless
     environment could not supply a rendered accessibility tree. The host repo's smoke pass
-    ([`docs/a11y-smoke-pass.md`](../../../docs/a11y-smoke-pass.md))
+    (`docs/a11y-smoke-pass.md` in the original host repository, private)
     is about the library's *web* build under Chromium and says so; it excludes the WebView leg,
     which is the only leg this tool has, so it is precedent rather than coverage. The remaining
     platform questions are recorded rather than confused with keyboard coverage; the source-level
