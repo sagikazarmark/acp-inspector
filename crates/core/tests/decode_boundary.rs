@@ -89,6 +89,30 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
         ),
         // The embedded fonts' base64 encoder, not a reader of anything.
         ("crates/app/src/style.rs", "into.copy_from_slice(part);"),
+        // The raw request composer (F2): params a person typed, checked to be
+        // JSON and carried as a RawValue; and an envelope's `params` fragment
+        // copied out for "Edit and resend". Never a protocol type.
+        (
+            "crates/app/src/raw.rs",
+            "let parsed = serde_json::from_str::<&RawValue>(params)",
+        ),
+        (
+            "crates/app/src/raw.rs",
+            "let params = serde_json::from_str::<Envelope<'_>>(frame.as_str())",
+        ),
+        (
+            "crates/app/src/wire.rs",
+            ".map(serde_json::from_str::<&serde_json::value::RawValue>)",
+        ),
+        (
+            "crates/core/src/rpc.rs",
+            "serde_json::from_str(\"{\\n  \\\"z\\\": 1.50,\\n  \\\"a\\\": \\\"two words\\\\n\\\"\\n}\").unwrap();",
+        ),
+        // The JSON type of an answer's id, to say it is the wrong one (F1).
+        (
+            "crates/app/src/trace.rs",
+            "let id = serde_json::from_str::<serde_json::Value>(answer.as_str())",
+        ),
     ]
     .into_iter()
     .map(|(path, line)| (path.to_owned(), line.to_owned()))

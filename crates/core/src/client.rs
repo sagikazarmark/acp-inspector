@@ -457,6 +457,12 @@ impl Client {
         self.rpc.sink()
     }
 
+    /// The JSON-RPC conversation itself, for what is sent beside the typed
+    /// layer rather than through it (F2's hand-sent frames).
+    pub(crate) fn rpc(&self) -> &Rpc {
+        &self.rpc
+    }
+
     /// The calls this client is still waiting on, oldest first.
     pub(crate) fn pending_calls(&self) -> Vec<PendingCall> {
         self.rpc.pending()
@@ -1790,6 +1796,11 @@ impl Client {
             // asked once (`rpc::ours`) and answered for both of the things that
             // happen to an answer.
             Incoming::Answer { id, outcome } => match ours(&id) {
+                // An answer to a request a person sent by hand (F2) is theirs
+                // to read off the trace: it drives no store and arms no rule.
+                Some(id) if self.rpc.is_hand_sent(id) => {
+                    self.rpc.answer(id, outcome);
+                }
                 // The stores first, the caller second: what the screen shows
                 // must not depend on anyone being awake to await the call.
                 Some(id) => {

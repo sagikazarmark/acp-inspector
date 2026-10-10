@@ -24,6 +24,8 @@ struct Contents {
     origin: Origin,
     /// When a transport read it, for frames that came off a pipe.
     read: Option<(SystemTime, Instant)>,
+    /// Composed by a person rather than by the typed layer (F2).
+    hand: bool,
 }
 
 /// How the text relates to the bytes that crossed.
@@ -74,6 +76,48 @@ impl Frame {
         Self::build(text.into(), Origin::Verbatim, None)
     }
 
+    /// A frame a person wrote and sent by hand, rather than one the typed
+    /// layer composed (F2). The text is carried exactly as given; what marks it
+    /// is [`is_hand_sent`](Self::is_hand_sent), which the trace view and the
+    /// export both read.
+    pub fn by_hand(text: impl Into<Arc<str>>) -> Self {
+        Self(Arc::new(Contents {
+            hand: true,
+            ..Self::contents(text.into(), Origin::Verbatim, None)
+        }))
+    }
+
+    /// Whether a person composed this frame by hand (F2): it was sent from the
+    /// raw request composer, so its answer drives none of the typed stores and
+    /// no conformance rule is judged on it.
+    pub fn is_hand_sent(&self) -> bool {
+        self.0.hand
+    }
+
+    /// The bytes of a frame read back out of an export: decoded lossily where
+    /// they are not UTF-8, as they were when they crossed, and stamped with
+    /// nothing.
+    pub(crate) fn rebuilt(bytes: Vec<u8>, hand: bool) -> Self {
+        let (text, origin) = match String::from_utf8(bytes) {
+            Ok(text) => (text, Origin::Verbatim),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                (text, Origin::Lossy(bytes.into()))
+            }
+        };
+        Self(Arc::new(Contents {
+            hand,
+            ..Self::contents(text.into(), origin, None)
+        }))
+    }
+
+    /// A placeholder read back out of an export, which says only how long the
+    /// dropped line was.
+    pub(crate) fn placeholder(omission: Omission) -> Self {
+        Self::build("".into(), Origin::Omitted(omission), None)
+    }
+
     /// A line a transport has just read, stamped now. Bytes that are not UTF-8
     /// are decoded lossily and kept, so the frame is recorded rather than lost.
     pub fn read(bytes: Vec<u8>) -> Self {
@@ -97,12 +141,17 @@ impl Frame {
     }
 
     fn build(text: Arc<str>, origin: Origin, read: Option<(SystemTime, Instant)>) -> Self {
-        Self(Arc::new(Contents {
+        Self(Arc::new(Self::contents(text, origin, read)))
+    }
+
+    fn contents(text: Arc<str>, origin: Origin, read: Option<(SystemTime, Instant)>) -> Contents {
+        Contents {
             text,
             summary: OnceLock::new(),
             origin,
             read,
-        }))
+            hand: false,
+        }
     }
 
     pub fn as_str(&self) -> &str {

@@ -318,6 +318,35 @@ impl Trace {
         }
     }
 
+    /// A trace made of frames already captured — read back out of an export
+    /// ([`Imported`](crate::Imported)), or drawn by a test — numbered from
+    /// `dropped` as they were when they were captured, and paired again.
+    ///
+    /// Nothing taps it: it is a record of a connection that is over. Pairs are
+    /// timed from the frames' own stamps, which are the only clock a file has.
+    pub fn from_records(frames: Vec<TracedFrame>, dropped: usize) -> Self {
+        let trace = Self::default();
+        trace.entries.forgotten(dropped);
+        let connections = frames.iter().map(|traced| traced.connection).max();
+        trace
+            .connections
+            .store(connections.unwrap_or(0), Ordering::Relaxed);
+        let earliest = frames.iter().map(|traced| traced.at).min();
+        let base = Instant::now();
+        for traced in frames {
+            let since = earliest
+                .and_then(|earliest| traced.at.duration_since(earliest).ok())
+                .unwrap_or_default();
+            let instant = base.checked_add(since).unwrap_or(base);
+            let summary = traced.frame.summary().clone();
+            let (connection, direction) = (traced.connection, traced.direction);
+            trace.entries.append_then(traced, |ordinal, dropped| {
+                trace.pair(connection, direction, &summary, ordinal, instant, dropped);
+            });
+        }
+        trace
+    }
+
     /// Records a frame and hands it on without letting go of the log in
     /// between, so what the log says about order is what the transport will do
     /// about order — even with several tasks sending at once.

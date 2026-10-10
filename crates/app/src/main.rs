@@ -67,6 +67,10 @@ mod timeline;
 mod toast;
 mod trace;
 mod update;
+// The Console's tools beyond the frames (F1, F2, F4, F5).
+mod raw;
+mod view;
+mod wire;
 
 use std::collections::HashSet;
 
@@ -472,6 +476,9 @@ fn App() -> Element {
     // made of, and a console that stopped tracking it would break silently on
     // the day the log is bounded rather than loudly now.
     let mut dropped_lines = use_signal(|| 0usize);
+    // Pairing, pending calls, sending by hand, and a trace opened from a file
+    // shown in place of the live one (`wire.rs`, `view.rs`).
+    let wire = wire::use_wire(inspector.clone(), status);
     let mut entries = use_signal(Vec::<TimelineEntry>::new);
     // And what each turn of this session came to, which the entries are grouped
     // by (§9). Its own signal beside them rather than a second reading of the
@@ -788,7 +795,9 @@ fn App() -> Element {
     // this window already has, and the timeline announcing a revision is
     // exactly when the answer changes (§11 seam 3).
     let decoded = use_memo(move || {
-        entries()
+        wire.view
+            .entries_or(entries)
+            .read()
             .iter()
             .flat_map(|entry| entry.frames.iter().filter_map(|recorded| recorded.captured))
             .collect::<HashSet<u64>>()
@@ -857,7 +866,8 @@ fn App() -> Element {
         navigation.console(Tab::Trace);
         // The activation owns this snapshot, even if Clear or a restart follows.
         let recorded = *dropped.peek() + frames.peek().len();
-        let Some(snapshot) = export_work.write().begin(exporting.trace(), recorded) else {
+        let Some(snapshot) = export::start(export_work, exporting.trace(), recorded, Some(wire))
+        else {
             return;
         };
         spawn(async move {
@@ -1317,6 +1327,9 @@ fn App() -> Element {
             },
         }
 
+        // A trace opened from a file, said, with the way back (`view.rs`).
+        view::Banner { view: wire.view }
+
         // Where a session is opened, switched or ended, over the screen it
         // changes: the Timeline's own header is what opens it (`session.rs`).
         session::Sessions { claims: claims.clone() }
@@ -1343,7 +1356,7 @@ fn App() -> Element {
         // Everything a command in the palette can ask for is a control that is
         // also on screen (`palette.rs`), and every one of them is built from a
         // handler this window already has.
-        palette::Palette { commands: commands_with(PaletteWiring {
+        palette::Palette { commands: wire::with_commands(wire, EventHandler::new(move |()| navigation.console(Tab::Trace)), commands_with(PaletteWiring {
             connected: status() == ConnectionStatus::Connected,
             described: described.read().is_some(),
             traced: !frames().is_empty(),
@@ -1401,7 +1414,7 @@ fn App() -> Element {
                     });
                 }
             }),
-        }) }
+        })) }
 
         div { class: focus().class(),
             Rail {
@@ -1451,16 +1464,16 @@ fn App() -> Element {
             Screens { spine: spine(),
             timeline: rsx! {
             Timeline {
-                retention: retention(),
+                retention: wire.view.retention_or(retention()),
                 prompt_epoch: prompt_epoch(),
                 image_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.image),
                 audio_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.audio),
                 embedded_advertised: described().is_some_and(|agent| agent.agent_capabilities.prompt_capabilities.embedded_context),
-                entries,
+                entries: wire.view.entries_or(entries),
                 turn: turn(),
-                session: session(),
+                session: wire.view.live(session()),
                 connected: status() == ConnectionStatus::Connected,
-                held_frames: dropped() as u64..(dropped() + frames().len()) as u64,
+                held_frames: wire.view.held_or(dropped() as u64..(dropped() + frames().len()) as u64),
                 blocked: blocked(),
                 problem: problem(),
                 // The same call the Agent screen makes, offered on the screen
@@ -1540,7 +1553,7 @@ fn App() -> Element {
                 // scrolled a panel nobody can see would be a control that does
                 // nothing, and this is the same escalation a failed spawn makes
                 // for the same reason (§9).
-                turns: turns(),
+                turns: wire.view.turns_or(turns()),
                 // Whether there is an agent that could open a session, which is
                 // what the header's session control is drawn behind. The two
                 // accounts it used to draw are the rail's now.
@@ -1583,14 +1596,15 @@ fn App() -> Element {
             // The wire and the agent's diagnostics, beside the turn: two tabs,
             // one at a time (§9, ADR 0009).
             console: rsx! { Console {
-                frames,
-                dropped_frames: dropped(),
+                frames: wire.view.frames_or(frames),
+                dropped_frames: wire.view.dropped_or(dropped()),
                 saved: export_work.read().result.clone(),
                 export_pending: export_work.read().pending,
                 on_export,
                 on_clear: move |()| clearing.trace().clear(),
-                lines,
-                dropped_lines: dropped_lines(),
+                lines: wire.view.lines_or(lines),
+                dropped_lines: wire.view.dropped_lines_or(dropped_lines()),
+                wire,
                 tab: tab(),
                 on_select: move |chosen| navigation.console(chosen),
                 revealed,

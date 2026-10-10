@@ -23,7 +23,7 @@ publish.workspace = true
 # surface (docs/architecture.md §1).
 [features]
 default = ["desktop"]
-desktop = ["dioxus/desktop", "dep:open"]
+desktop = ["dioxus/desktop", "dep:open", "dep:rfd"]
 web = ["dioxus/web"]
 
 # State, rendering, form presentation, clocks and the answer's data format.
@@ -53,8 +53,10 @@ schemaform-dioxus = "=0.5.0"
 # builder it would only be calling from here. Still nothing that speaks a
 # protocol: this is a format, and the frames stay strings all the way through
 # (`trace.rs`).
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 serde.workspace = true
+# Where Save As starts (the Downloads folder). Already core's.
+dirs.workspace = true
 # The existing runtime supplies toast timers and off-thread, bounded reads of
 # user-selected image files. No filesystem work runs on the UI executor.
 tokio = { workspace = true, features = ["time", "rt"] }
@@ -79,3 +81,9 @@ png.workspace = true
 # although nothing here is published to crates.io.
 [package.metadata.dist]
 dist = true
+
+# The native open and save dialogs for traces (F5). The crate and the features
+# dioxus-desktop already resolves for its own file input, on the same targets,
+# so this names a dependency the graph has rather than adding one.
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"], optional = true }

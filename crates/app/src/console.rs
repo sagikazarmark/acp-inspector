@@ -22,10 +22,9 @@
 //! says how much of it there is and never that the reader should look.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use acp_inspector_core::{
-    ConnectionStatus, Diagnostic, DiagnosticKind, Direction, FrameKind, TracedFrame,
+    ConnectionStatus, Diagnostic, DiagnosticKind, Direction, FrameKind, Stop, TracedFrame,
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::{
@@ -36,6 +35,7 @@ use dioxus_free_icons::{
 use crate::copy::Copy;
 use crate::time::stamp;
 use crate::trace::{Kinds, TraceView, named_kind};
+use crate::wire::Wire;
 
 /// Which of the Console's two surfaces is on screen.
 ///
@@ -88,7 +88,7 @@ pub fn Console(
     /// has one too.
     dropped_frames: usize,
     /// What became of the last export: the file it wrote, or why it did not.
-    saved: Option<Result<PathBuf, String>>,
+    saved: Option<crate::export::Outcome>,
     #[props(default)] export_pending: bool,
     on_export: EventHandler<()>,
     on_clear: EventHandler<()>,
@@ -103,12 +103,22 @@ pub fn Console(
     revealed: ReadSignal<Vec<u64>>,
     decoded: ReadSignal<HashSet<u64>>,
     on_seek: EventHandler<u64>,
+    /// The connection's tools beyond the frames: pairing, pending calls,
+    /// sending by hand, and the trace opened from a file (`crate::wire`).
+    #[props(default)]
+    wire: Option<Wire>,
 ) -> Element {
     // Whether there is anything to export or clear. Read here rather than in
     // the Trace because the controls are here, and it is the same question the
     // tab's own count answers.
     let nothing_traced = frames.read().is_empty();
     let cannot_export = nothing_traced || export_pending;
+    let viewing = wire.is_some_and(|wire| wire.view.is_open());
+    // The export notice, until the reader puts it away.
+    let mut dismissed = use_signal(|| None::<u64>);
+    let saved = saved.filter(|outcome| dismissed() != Some(outcome.id));
+    let saved_id = saved.as_ref().map(|outcome| outcome.id);
+    let composing = wire.is_some_and(|wire| (wire.composing)()) && !viewing;
     // And whether the surface in front of the reader has captured anything at
     // all, which is what decides whether there is anything to narrow.
     let empty = match tab {
@@ -189,6 +199,33 @@ pub fn Console(
                 // control that did nothing on the tab in front of you is worse
                 // than one that is not there.
                 if tab == Tab::Trace {
+                    if let Some(wire) = wire {
+                        if !viewing {
+                            button {
+                                class: "btn btn-xs btn-quiet",
+                                "data-slot": "compose",
+                                r#type: "button",
+                                aria_expanded: composing,
+                                title: "Write a request or notification by hand and send it to the agent",
+                                onclick: move |_| {
+                                    let mut composing = wire.composing;
+                                    let now = !composing();
+                                    composing.set(now);
+                                },
+                                "Send…"
+                            }
+                        }
+                        if crate::view::CAN_OPEN {
+                            button {
+                                class: "btn btn-xs btn-quiet",
+                                "data-slot": "open-trace",
+                                r#type: "button",
+                                title: "Open an exported trace, read-only",
+                                onclick: move |_| wire.view.choose(wire.live()),
+                                "Open…"
+                            }
+                        }
+                    }
                     button {
                         class: "btn btn-xs btn-quiet",
                         "data-slot": "export",
@@ -203,9 +240,28 @@ pub fn Console(
                             }
                         },
                         Icon { class: "icon", icon: HiDownload }
-                        "Export"
+                        "Export…"
                     }
-                    ClearTrace { nothing_traced, on_clear }
+                    if let Some(wire) = wire {
+                        label {
+                            class: "export-stderr",
+                            "data-slot": "export-stderr",
+                            title: "Also write the agent's stderr lines into the export, interleaved by time",
+                            input {
+                                r#type: "checkbox",
+                                class: "checkbox checkbox-xs",
+                                checked: (wire.include_stderr)(),
+                                onchange: move |event| {
+                                    let mut include = wire.include_stderr;
+                                    include.set(event.checked());
+                                },
+                            }
+                            "with stderr"
+                        }
+                    }
+                    if !viewing {
+                        ClearTrace { nothing_traced, on_clear }
+                    }
                 }
             }
 
@@ -248,6 +304,34 @@ pub fn Console(
                                 }
                             }
                         }
+                        if let Some(wire) = wire {
+                            button {
+                                class: "chip",
+                                "data-slot": "pending",
+                                r#type: "button",
+                                aria_pressed: (wire.pending_only)(),
+                                title: "Show only requests nothing has answered yet",
+                                onclick: move |_| {
+                                    let mut pending = wire.pending_only;
+                                    let now = !pending();
+                                    pending.set(now);
+                                },
+                                "pending"
+                            }
+                            button {
+                                class: "chip",
+                                "data-slot": "merged",
+                                r#type: "button",
+                                aria_pressed: (wire.merged)(),
+                                title: "Show the agent's stderr lines among the frames, by when each was read",
+                                onclick: move |_| {
+                                    let mut merged = wire.merged;
+                                    let now = !merged();
+                                    merged.set(now);
+                                },
+                                "stderr"
+                            }
+                        }
                     }
                     input {
                         class: "input",
@@ -280,10 +364,22 @@ pub fn Console(
                 aria_labelledby: Tab::Trace.id(),
                 hidden: tab != Tab::Trace,
                 if tab == Tab::Trace {
+                    if let Some(wire) = wire.filter(|_| composing) {
+                        crate::raw::Composer {
+                            wire,
+                            frames,
+                            dropped: dropped_frames,
+                            on_show: move |ordinal| selected.set(Some(ordinal)),
+                        }
+                    }
                     TraceView {
                         frames,
                         dropped: dropped_frames,
                         saved,
+                        on_dismiss_saved: move |()| dismissed.set(saved_id),
+                        wire,
+                        lines: Some(lines),
+                        dropped_lines,
                         filter: filter(),
                         kinds: kinds(),
                         directions: directions(),
@@ -690,7 +786,7 @@ fn Diagnostics(
         .iter()
         .enumerate()
         .filter(|(_, diagnostic)| {
-            filter.trim().is_empty() || matching(&diagnostic.to_string(), &filter)
+            filter.trim().is_empty() || matching(&said(&diagnostic.kind), &filter)
         })
         .map(|(position, _)| (dropped + position) as u64)
         .collect();
@@ -720,7 +816,7 @@ fn Diagnostics(
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
                         span { class: "dot dot-{tone(&diagnostic.kind).dot()}", aria_hidden: "true" }
                         span { class: "sr-only", "{diagnostic_source(&diagnostic.kind)}: " }
-                        DiagnosticEvidence { text: std::sync::Arc::<str>::from(diagnostic.to_string()) }
+                        DiagnosticEvidence { text: std::sync::Arc::<str>::from(said(&diagnostic.kind)) }
                     }
                     } }
                 }
@@ -809,10 +905,53 @@ impl Tone {
     }
 }
 
+/// What a line says, in plain words: the agent's own stderr verbatim, and the
+/// transport's remarks as sentences about what happened to the record.
+pub(crate) fn said(kind: &DiagnosticKind) -> String {
+    use crate::trace::size;
+    match kind {
+        DiagnosticKind::Stderr(line) => line.clone(),
+        DiagnosticKind::FrameDropped { limit, length } => format!(
+            "The agent sent a frame of {}, over the {} limit. It was dropped; a placeholder marks where it was in the trace.",
+            size(*length),
+            size(*limit)
+        ),
+        DiagnosticKind::StderrLineCut { limit, length } => format!(
+            "The stderr line above was too long: only its first {} of {} are kept.",
+            size(*limit),
+            size(*length)
+        ),
+        DiagnosticKind::StderrLineLossy => {
+            "The stderr line above wasn't valid UTF-8. Invalid bytes are shown as \u{FFFD}."
+                .to_owned()
+        }
+        DiagnosticKind::Stopped { by, status } => {
+            let how = match by {
+                Stop::AlreadyExited => "The agent had already exited.",
+                Stop::StdinClosed => "The agent stopped when its input was closed.",
+                Stop::Terminated => "The agent stopped when asked to terminate (SIGTERM).",
+                Stop::Killed => "The agent didn't stop when asked, and was killed (SIGKILL).",
+                _ => "The agent stopped.",
+            };
+            match status {
+                Some(status) => format!("{how} ({status})"),
+                None => how.to_owned(),
+            }
+        }
+        DiagnosticKind::DrainAbandoned => "Stopped reading the agent's output: the agent exited, but another process still holds its output open.".to_owned(),
+        other => other.to_string(),
+    }
+}
+
 fn tone(kind: &DiagnosticKind) -> Tone {
     match kind {
         DiagnosticKind::Stderr(_) => Tone::Agent,
-        DiagnosticKind::SpawnFailed { .. } | DiagnosticKind::TransportFailed(_) => Tone::Bad,
+        DiagnosticKind::SpawnFailed { .. }
+        | DiagnosticKind::TransportFailed(_)
+        | DiagnosticKind::FrameDropped { .. }
+        | DiagnosticKind::Stopped {
+            by: Stop::Killed, ..
+        } => Tone::Bad,
         // An agent that exits reporting failure is the line the reader is
         // looking for; one that exits cleanly is a remark.
         DiagnosticKind::AgentExited(status) if !status.success() => Tone::Bad,
@@ -1314,6 +1453,52 @@ mod tests {
             2,
             "every line can be taken away: {html}"
         );
+    }
+
+    #[test]
+    fn the_transports_remarks_about_the_record_are_said_in_plain_words() {
+        let said_of = |kind: DiagnosticKind| said(&kind);
+        assert_eq!(
+            said_of(DiagnosticKind::FrameDropped {
+                limit: 10 * 1024 * 1024,
+                length: 20 * 1024 * 1024,
+            }),
+            "The agent sent a frame of 20.0 MiB, over the 10.0 MiB limit. It was dropped; a placeholder marks where it was in the trace."
+        );
+        assert!(
+            said_of(DiagnosticKind::StderrLineCut {
+                limit: 1024 * 1024,
+                length: 3 * 1024 * 1024,
+            })
+            .contains("only its first 1.0 MiB of 3.0 MiB are kept")
+        );
+        assert!(said_of(DiagnosticKind::StderrLineLossy).contains("wasn't valid UTF-8"));
+        assert_eq!(
+            said_of(DiagnosticKind::Stopped {
+                by: Stop::StdinClosed,
+                status: None,
+            }),
+            "The agent stopped when its input was closed."
+        );
+        assert!(
+            said_of(DiagnosticKind::Stopped {
+                by: Stop::Killed,
+                status: None,
+            })
+            .contains("was killed (SIGKILL)")
+        );
+        assert!(said_of(DiagnosticKind::DrainAbandoned).contains("another process"));
+        assert_eq!(
+            said_of(DiagnosticKind::Stderr("verbatim".into())),
+            "verbatim"
+        );
+        assert!(matches!(
+            tone(&DiagnosticKind::FrameDropped {
+                limit: 1,
+                length: 2
+            }),
+            Tone::Bad
+        ));
     }
 
     #[test]
