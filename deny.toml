@@ -1,0 +1,83 @@
+# `cargo deny check`: what the dependency graph may contain. Run by CI and by
+# `just deny`. The same licence list is what `about.toml` renders into the
+# third-party notices the macOS bundle ships (`just licenses`).
+
+[graph]
+# Every platform the app is built for, so a Linux- or Windows-only dependency is
+# checked from any host.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# Unsound and unmaintained crates count wherever they are in the graph, not only
+# as direct dependencies: they are the advisories this graph actually has.
+unsound = "all"
+unmaintained = "all"
+# Every advisory fails the check unless it is ignored below, with the reason.
+# Each one is reached only through the renderer's own dependency tree
+# (dioxus-desktop, wry, tao and the gtk-rs stack on Linux), so the fix is a
+# Dioxus or wry bump; re-check this list on every one (release plan T4, #22).
+#
+# `cargo audit` reads the whole lockfile and also reports two that are not
+# here, because they are only in wry's Android tree (kuchikiki → selectors 0.24),
+# which none of the targets above builds: RUSTSEC-2025-0057 (fxhash,
+# unmaintained) and RUSTSEC-2026-0097 (rand 0.7.3, unsound with a custom logger
+# calling `rand::rng()`, via phf_generator 0.8 at build time).
+ignore = [
+    # glib 0.18.5: unsound `VariantStrIter`. Linux only, via the gtk-rs 0.18
+    # stack wry/tao build WebKitGTK on; nothing here touches GVariant. Fixed in
+    # glib 0.20, which wry has not moved to.
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 via wry/tao on Linux; nothing here uses VariantStrIter; needs a wry bump" },
+    # Unmaintained, no known vulnerability; both are build-time proc macros.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc macro under image (dioxus-desktop)" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; proc macro under glib-macros on Linux" },
+]
+
+[licenses]
+# What the dependency graph uses today, and nothing speculative: a new licence
+# is a decision, so it fails the check until it is added here (and shows up in
+# the bundle's notices).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    # File-level copyleft, used unmodified, with the notice shipped in the
+    # bundle (release plan T5). On the targets above that is option-ext (under
+    # `dirs`); cssparser, selectors and dtoa-short are in the lockfile only for
+    # wry's Android tree.
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+# The workspace's own crates are `publish = false` and carry the repository's
+# own licence.
+[licenses.private]
+ignore = true
+
+[bans]
+# Several versions of one crate are normal under a GUI framework's tree, and
+# none of them is ours to fix.
+multiple-versions = "allow"
+wildcards = "deny"
+# A workspace path dependency has no version, which is not a wildcard here.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# dioxus-primitives has no crates.io release (release plan U13, #22); it is
+# pinned to a rev in `crates/app/Cargo.toml`.
+allow-git = ["https://github.com/DioxusLabs/components"]
