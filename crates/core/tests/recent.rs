@@ -168,6 +168,13 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
     // that keeps the form working.
     let recent = RecentCommands::load_from(&path);
     assert!(recent.entries().is_empty());
+    // Set aside rather than overwritten by the next save.
+    let backup = recent.backup().expect("the unreadable file was kept");
+    assert_eq!(backup, path.with_extension("json.bak"));
+    assert_eq!(
+        std::fs::read_to_string(backup).unwrap(),
+        "{ this is not the file we left }"
+    );
 
     recent
         .record(&typed("npx", ""))
@@ -176,6 +183,15 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
         named(&RecentCommands::load_from(&path)),
         ["npx"],
         "and the next launch is remembered over it"
+    );
+    assert!(RecentCommands::load_from(&path).backup().is_none());
+    let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        left.iter().all(|name| !name.ends_with(".new")),
+        "no staging file is left behind: {left:?}"
     );
 }
 

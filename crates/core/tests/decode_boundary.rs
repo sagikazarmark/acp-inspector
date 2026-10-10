@@ -73,11 +73,11 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
         ),
         (
             "crates/core/src/recent.rs",
-            "let file: Stored = serde_json::from_str(&document).ok()?;",
+            "let file: Stored = serde_json::from_str(document).ok()?;",
         ),
         (
             "crates/core/src/settings.rs",
-            "let file: Stored = serde_json::from_str(&document).ok()?;",
+            "let file: Stored = serde_json::from_str(document).ok()?;",
         ),
         (
             "crates/app/src/elicitation_schema.rs",
