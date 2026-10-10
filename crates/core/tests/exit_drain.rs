@@ -8,7 +8,7 @@ use acp_inspector_core::{
     Connection, ConnectionFactory, ConnectionStatus, Diagnostic, DiagnosticKind, Frame, Inspector,
     StdioSpawn, TransportEnds, TurnState, connection, v1,
 };
-use common::{PATIENCE, QUIET, received, sent, until};
+use common::{PATIENCE, QUIET, received, until};
 
 /// A transport whose agent is a script run against the transport ends, for
 /// the failures no subprocess can be made to produce.
@@ -83,20 +83,24 @@ os._exit(0)
             inspector.turn(),
             TurnState::Ended(v1::StopReason::EndTurn)
         ));
-        // Whether the replies reached the writer before the exit closed it is a
-        // race: either one was handed over and its write failed, or none was.
+        // Whether a reply's write fails is up to the OS: on macOS a child spawned
+        // by a concurrent test can inherit this pipe's read end (pipe() and
+        // FD_CLOEXEC are two calls there), and then the write succeeds. What the
+        // transport guarantees is the order: any write failure precedes the exit.
         let diagnostics = inspector.diagnostics().entries();
-        let replies = sent(&inspector)
+        if let Some(failed) = diagnostics
             .iter()
-            .filter(|frame| frame.contains("agent-"))
-            .count();
-        assert!(
-            replies == 0
-                || diagnostics
-                    .iter()
-                    .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_))),
-            "{replies} replies were handed to the transport without a write failure"
-        );
+            .position(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_)))
+        {
+            let exited = diagnostics
+                .iter()
+                .position(|line| matches!(line.kind, DiagnosticKind::AgentExited(_)))
+                .expect("the exit is reported");
+            assert!(
+                failed < exited,
+                "a write failure must be reported before the exit"
+            );
+        }
         assert!(
             matches!(diagnostics.last().unwrap().kind, DiagnosticKind::AgentExited(status) if status.success())
         );
