@@ -1659,9 +1659,9 @@ primitives to browse (host #49 §5).
   > panel, and each account has a screen to itself where a row is one line, in tracks stated once
   > for the account so that the four facts align down the whole of it. The identity is the screen's
   > heading rather than a list of three rows, and the composer is drawn on the turn's view alone.
-  > **Beside now means one click and never merged.** The client's claim is fixed for every
-  > connection, so sharing the agent's screen spent half of it on a block that is the same on every
-  > launch of every agent; the two are still drawn identically, still never folded into one list of
+  > **Beside now means one click and never merged.** The client's claim is the same on every
+  > launch unless the reader chooses client services (F3), so sharing the agent's screen spent half
+  > of it on a block that rarely changes; the two are still drawn identically, still never folded into one list of
   > "capabilities", and the causal reading §7.6 wants — a boolean config option whose shape is an
   > answer to this client's claim — costs a tab rather than a glance. **And the inspector's own
   > commentary is not drawn as a pull-quote.** A hairline down the near edge marked every aside this

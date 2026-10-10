@@ -52,9 +52,9 @@
 //! markup, so neither is the other's footnote, and they are kept apart rather
 //! than merged into a single list of "capabilities": who claimed a thing is the
 //! point of showing it. This client's own block does not wait for an agent —
-//! the claim is fixed for every connection and rides the `initialize` *request*
-//! ([`client_capabilities`](acp_inspector_core::client_capabilities)), so it is
-//! knowable before there is an agent and unchanged by anything one answers.
+//! the claim is chosen at launch and rides the `initialize` *request*
+//! ([`ClientClaim`](acp_inspector_core::ClientClaim)), so it is knowable before
+//! there is an agent and unchanged by anything one answers.
 //!
 //! **Authentication is display-only** (§1.1). The panel shows the advertised
 //! methods, sends `authenticate` with the one the user picks, and renders
@@ -311,10 +311,10 @@ pub fn AgentClaims(claims: Claims, whose: Advertiser) -> Element {
         div { class: "rail-group claims", "data-slot": "claims",
             match whose {
                 // **This client's own claim does not wait for an agent**,
-                // because it does not depend on one: it is fixed for every
-                // connection and goes out in the request rather than coming back
-                // in the answer (§7.6). Read before a launch, it is what the
-                // next agent will be told before it is told.
+                // because it does not depend on one: it is chosen at launch
+                // and goes out in the request rather than coming back in the
+                // answer (§7.6). Read before a launch, it is what the next
+                // agent will be told before it is told.
                 Advertiser::Client => rsx! {
                     div { class: "rail-group account",
                         {identity(
