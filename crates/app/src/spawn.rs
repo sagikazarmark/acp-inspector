@@ -527,6 +527,10 @@ pub fn SpawnForm(
                 }
 
                 crate::mcp::McpEditor { prefix: "launch" }
+                crate::client_services::ClientServicesControl {
+                    value: crate::client_services::current(),
+                    on_change: crate::client_services::change,
+                }
 
                 if !recent.is_empty() {
                     div { class: "form-field recent-field",

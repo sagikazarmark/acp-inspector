@@ -26,6 +26,7 @@ compile_error!(
 mod agent;
 mod appearance;
 mod attachment_draft;
+mod client_services;
 mod clipboard;
 #[allow(dead_code, unused_imports)] // Unmodified registry install includes its complete public API.
 mod components;
@@ -370,7 +371,9 @@ fn recovery(errors: ErrorContext) -> Element {
 /// reader's next action turns on. Core's lists rather than a scan of the rows,
 /// which is the rule the flag already followed for one of them.
 fn waiting_on(inspector: &Inspector) -> bool {
-    !inspector.pending_permissions().is_empty() || !inspector.pending_elicitations().is_empty()
+    !inspector.pending_permissions().is_empty()
+        || !inspector.pending_elicitations().is_empty()
+        || !inspector.pending_services().is_empty()
 }
 
 /// The window: a spawn form, the turn timeline, and the Console — the trace and
@@ -388,6 +391,7 @@ fn App() -> Element {
     #[cfg(feature = "desktop")]
     use_context_provider(shell::export_retrieval);
     mcp::provide(inspector.clone());
+    client_services::provide(inspector.clone());
 
     // What the spawn form remembers (§9) and how the window should look. Both
     // files are read once, at the window's start, and **off the UI thread**
@@ -1057,10 +1061,9 @@ fn App() -> Element {
     // same fact to be wrong.
     let claims = agent::Claims {
         agent: described(),
-        // Not a signal and not a store: the claim is fixed for
-        // every connection and there is nothing that could change
-        // it (§7.6), so the screen reads the value core sends.
-        client: acp_inspector_core::client_capabilities(),
+        // What this connection's `initialize` claimed, or what the next
+        // launch will (F3, F13).
+        client: client_services::claim(&inspector),
         client_info: acp_inspector_core::client_info(),
         driven: driven(),
         auth: auth(),

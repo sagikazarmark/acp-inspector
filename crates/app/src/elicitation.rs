@@ -600,6 +600,9 @@ fn said(state: &ElicitationState, completed: bool, url: bool) -> Element {
         ElicitationState::Abandoned => {
             rsx! { p { class: "detail detail-warn", "Can no longer be answered: the turn ended or the agent disconnected." } }
         }
+        ElicitationState::CancelledByAgent => {
+            rsx! { p { class: "detail detail-warn", "data-slot": "withdrawn", "The agent withdrew this request." } }
+        }
         _ => rsx! { p { class: "detail", "A state this window has no rendering for." } },
     }
 }
@@ -1299,6 +1302,10 @@ mod tests {
     #[test]
     fn url_consent_is_separate_from_completion() {
         let state = ElicitationState::Answered(ElicitationAnswer::Accepted(None));
+        assert!(
+            dioxus_ssr::render_element(said(&ElicitationState::CancelledByAgent, false, false))
+                .contains("The agent withdrew this request.")
+        );
         assert!(dioxus_ssr::render_element(said(&state, false, true)).contains("not completion"));
         assert!(!dioxus_ssr::render_element(said(&state, true, true)).contains("not completion"));
     }
