@@ -103,10 +103,11 @@
   --motion-arrive: 220ms;
 
   /* -- The type stack ------------------------------------------------------
-     IBM Plex is the family the design was drawn in, and it is *asked for* and
-     never fetched: a desktop tool that reached across the network to paint its
-     own chrome would look different on a machine with no route out. What
-     follows it is the platform's own. */
+     IBM Plex is the family the design was drawn in, and it is **shipped**
+     (D3): `style.rs` appends the latin subset of each face to the sheet as a
+     `data:` URL, so the window is set in it on every machine and nothing is
+     fetched. The platform's own faces follow, for the glyphs the subset does
+     not carry (an arrow, a check, a CJK name an agent sent). */
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 

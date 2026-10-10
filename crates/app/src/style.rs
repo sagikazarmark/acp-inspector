@@ -61,12 +61,165 @@
 //! hairlines and are decoration in both schemes for the reason they always were:
 //! at 3:1 a line drawn on every row and every panel is a grid over a dense tool.
 
-/// The generated stylesheet, as the root component inlines it into `<style>`.
+/// One bundled face as an `@font-face` rule whose source is the font itself.
+///
+/// **IBM Plex is shipped rather than asked for** (D3). It is the family the
+/// design was drawn in, and asking for it by name painted the window in
+/// whatever a machine happened to have — Helvetica on a Mac without it,
+/// DejaVu on Linux. The latin subset of five weights is about 125 KB of
+/// woff2 (OFL-1.1, `style/fonts/`), inlined as a `data:` URL so nothing is
+/// resolved at run time and a window with no route out looks the same as one
+/// with. `font-display: block`, because the face is in the document already
+/// and a swap would only ever be a flash.
+macro_rules! face {
+    ($family:literal, $style:literal, $weight:literal, $file:literal) => {{
+        const FONT: &[u8] = include_bytes!(concat!("../style/fonts/", $file));
+        const ENCODED: [u8; base64_len(FONT.len())] = base64(FONT);
+        const PARTS: &[&[u8]] = &[
+            concat!(
+                "\n@font-face{font-family:\"",
+                $family,
+                "\";font-style:",
+                $style,
+                ";font-weight:",
+                $weight,
+                ";font-display:block;src:url(data:font/woff2;base64,"
+            )
+            .as_bytes(),
+            &ENCODED,
+            b") format(\"woff2\");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}",
+        ];
+        const RULE: [u8; total(PARTS)] = join(PARTS);
+        &RULE
+    }};
+}
+
+/// The generated stylesheet and the faces it is set in, as the root component
+/// inlines them into `<style>`.
 ///
 /// `include_str!` of a committed build artifact: nothing resolves it and
 /// nothing generates it at build time, so a checkout with a Rust toolchain
-/// builds a window that is painted (ADR 0003).
-pub const SHEET: &str = include_str!("../style/sheet.css");
+/// builds a window that is painted (ADR 0003). The faces are appended here
+/// rather than generated into `sheet.css`, so the committed sheet stays a
+/// readable diff and `npm run css:check` never compares 170 KB of base64.
+pub static SHEET: &str = joined(&JOINED);
+
+/// The compiled sheet followed by one `@font-face` per bundled face.
+const PARTS: &[&[u8]] = &[
+    include_bytes!("../style/sheet.css"),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        400,
+        "ibm-plex-sans-latin-400-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "italic",
+        400,
+        "ibm-plex-sans-latin-400-italic.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        500,
+        "ibm-plex-sans-latin-500-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Sans",
+        "normal",
+        600,
+        "ibm-plex-sans-latin-600-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Mono",
+        "normal",
+        400,
+        "ibm-plex-mono-latin-400-normal.woff2"
+    ),
+    face!(
+        "IBM Plex Mono",
+        "normal",
+        600,
+        "ibm-plex-mono-latin-600-normal.woff2"
+    ),
+];
+
+/// A static rather than a constant: the joined sheet is a few hundred
+/// kilobytes, and a constant would be copied into every place that named it.
+static JOINED: [u8; total(PARTS)] = join(PARTS);
+
+/// How long `bytes` bytes are once base64-encoded, padding included.
+const fn base64_len(bytes: usize) -> usize {
+    bytes.div_ceil(3) * 4
+}
+
+/// Standard base64 with padding, at compile time.
+const fn base64<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = [b'='; N];
+    let mut read = 0;
+    let mut write = 0;
+    while read < bytes.len() {
+        let first = bytes[read];
+        let second = if read + 1 < bytes.len() {
+            bytes[read + 1]
+        } else {
+            0
+        };
+        let third = if read + 2 < bytes.len() {
+            bytes[read + 2]
+        } else {
+            0
+        };
+        out[write] = ALPHABET[(first >> 2) as usize];
+        out[write + 1] = ALPHABET[(((first & 0b11) << 4) | (second >> 4)) as usize];
+        if read + 1 < bytes.len() {
+            out[write + 2] = ALPHABET[(((second & 0b1111) << 2) | (third >> 6)) as usize];
+        }
+        if read + 2 < bytes.len() {
+            out[write + 3] = ALPHABET[(third & 0b11_1111) as usize];
+        }
+        read += 3;
+        write += 4;
+    }
+    out
+}
+
+/// The summed length of `parts`.
+const fn total(parts: &[&[u8]]) -> usize {
+    let mut sum = 0;
+    let mut at = 0;
+    while at < parts.len() {
+        sum += parts[at].len();
+        at += 1;
+    }
+    sum
+}
+
+/// `parts`, one after another.
+const fn join<const N: usize>(parts: &[&[u8]]) -> [u8; N] {
+    let mut out = [0; N];
+    let mut written = 0;
+    let mut at = 0;
+    while at < parts.len() {
+        let part = parts[at];
+        let (_, rest) = out.split_at_mut(written);
+        let (into, _) = rest.split_at_mut(part.len());
+        into.copy_from_slice(part);
+        written += part.len();
+        at += 1;
+    }
+    out
+}
+
+/// The joined bytes as the text they are: a stylesheet and some base64.
+const fn joined(bytes: &'static [u8]) -> &'static str {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => panic!("the stylesheet is UTF-8"),
+    }
+}
 
 /// The stylesheet as it is written, which is what the tests below read.
 ///
@@ -287,6 +440,86 @@ mod tests {
         // compiled in and that it carries the token contract.
         assert!(SHEET.starts_with("/*! tailwindcss"), "{:.40}", SHEET);
         assert!(SHEET.contains("--color-acc:"), "the tokens are in it");
+    }
+
+    #[test]
+    fn the_window_is_set_in_the_faces_it_ships() {
+        // **IBM Plex is bundled and inlined** (D3): six faces, every one a
+        // `data:` URL, so nothing is resolved at run time and nothing is
+        // fetched — and the stack asks for exactly the families that are here.
+        use base64::Engine as _;
+
+        let faces = [
+            (
+                "IBM Plex Sans",
+                "normal",
+                "400",
+                "ibm-plex-sans-latin-400-normal.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "italic",
+                "400",
+                "ibm-plex-sans-latin-400-italic.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "normal",
+                "500",
+                "ibm-plex-sans-latin-500-normal.woff2",
+            ),
+            (
+                "IBM Plex Sans",
+                "normal",
+                "600",
+                "ibm-plex-sans-latin-600-normal.woff2",
+            ),
+            (
+                "IBM Plex Mono",
+                "normal",
+                "400",
+                "ibm-plex-mono-latin-400-normal.woff2",
+            ),
+            (
+                "IBM Plex Mono",
+                "normal",
+                "600",
+                "ibm-plex-mono-latin-600-normal.woff2",
+            ),
+        ];
+        assert_eq!(SHEET.matches("@font-face{").count(), faces.len());
+        assert!(
+            !SHEET.contains("url(http") && !SHEET.contains("url(./") && !SHEET.contains("url(/"),
+            "no face is fetched"
+        );
+        for (family, style, weight, file) in faces {
+            let path = format!("{}/style/fonts/{file}", env!("CARGO_MANIFEST_DIR"));
+            let font = std::fs::read(&path).expect("the face is in the tree");
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&font);
+            let rule = format!(
+                "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};font-display:block;src:url(data:font/woff2;base64,{encoded}) format(\"woff2\")"
+            );
+            assert!(
+                SHEET.contains(&rule),
+                "{family} {style} {weight} is inlined byte for byte"
+            );
+        }
+        // The cost, held: the faces are a fraction of what a WebView already
+        // loads, and a seventh weight should be a decision rather than drift.
+        let inlined = SHEET.len() - include_str!("../style/sheet.css").len();
+        assert!(inlined < 400 * 1024, "the faces add {inlined} bytes");
+
+        for (stack, family) in [
+            ("--font-sans", "\"IBM Plex Sans\", system-ui"),
+            ("--font-mono", "\"IBM Plex Mono\", ui-monospace"),
+        ] {
+            assert!(
+                vocabulary()
+                    .iter()
+                    .any(|(name, value)| name == stack && value.starts_with(family)),
+                "{stack} asks for the bundled face first and the platform's after it"
+            );
+        }
     }
 
     #[test]
