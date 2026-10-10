@@ -1,70 +1,36 @@
-//! A word about what the *tool* just did, and then nothing.
+//! A transient note about what the window itself just did, such as a copy.
 //!
-//! **The window's one transient voice, and the only kind of statement it is
-//! for.** Everything else on these screens is the record — a frame that
-//! crossed, a line the agent wrote, what a call came back with — and all of it
-//! stays until the trace drops it, because a reader who looked away is owed the
-//! evidence when they look back. This says something else: that *this window*
-//! did the thing that was asked of it, and did it somewhere the reader cannot
-//! see. A clipboard write is the whole of that today ([`crate::copy`]) — the
-//! bytes went out of the process, and the only other way to find out whether
-//! they arrived is to paste.
-//!
-//! **Nothing about the agent is ever said here**, and neither is a failure.
-//! What went wrong is drawn where the thing that failed is: a refused call on
-//! the row it was refused on (§7.5), an export's error under the button that
-//! asked for it, an agent that never started on the tab carrying its own
-//! reason (§9). A message that takes itself away is a message a reader can
-//! miss, and none of the record is allowed to depend on having been watched —
-//! which is also why a copy that did not take says nothing at all rather than
-//! flashing red here.
-//!
-//! **One at a time.** A second copy replaces the first rather than piling under
-//! it: the latest is the one the reader just asked for, and a stack in the
-//! corner is a panel nobody opened, over the densest surface in the tool.
+//! Never about the agent and never a failure: those are drawn where they
+//! happened and stay, since a message that disappears can be missed. One note
+//! at a time; a new one replaces the last.
 
 use std::time::Duration;
 
 use dioxus::prelude::*;
 
-/// How long a sentence stays.
-///
-/// Long enough to be read twice at three words, short enough that a reader who
-/// was looking at the row they copied is not still being told about it by the
-/// time they look up. It is not adjustable and there is nothing to dismiss:
-/// what this says is never something to act on.
+/// How long a sentence stays. Not adjustable, and nothing to dismiss.
 const LINGER: Duration = Duration::from_secs(2);
 
-/// How long a [`notice`](Announcer::notice) stays: a sentence about the
-/// window's own files, long enough to read the path in it.
+/// How long a [`notice`](Announcer::notice) stays: long enough to read a path.
 const NOTICE: Duration = Duration::from_secs(10);
 
-/// What the window is saying about itself, if anything.
-///
-/// A handle rather than a store: it is one signal, held by the root and reached
-/// from wherever a control has something to say.
+/// What the window is saying about itself, if anything. One signal held by the
+/// root.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Announcer(Signal<Option<String>>, Signal<Duration>);
 
 impl Announcer {
-    /// Says one thing, which takes the place of whatever was being said.
-    ///
-    /// The clock starts here, and it starts *again* on the next call: a reader
-    /// copying three rows in a row sees the third for its full time rather than
-    /// for what was left of the first's.
+    /// Says one thing, replacing whatever was being said and restarting the
+    /// clock.
     pub fn say(&self, what: String) {
-        // Callable from an event handler, an async task, anywhere — a write is
-        // not a subscription, so nothing that clicks becomes a subscriber to
-        // every announcement the window ever makes.
+        // A write, not a read, so callers never subscribe to announcements.
         let (mut said, mut linger) = (self.0, self.1);
         linger.set(LINGER);
         said.set(Some(what));
     }
 
-    /// Says something about the window's own state that the reader may want
-    /// to act on later — a state file that could not be read and was set
-    /// aside — and lets it stay long enough to read. Still nothing about the
-    /// agent: that is the record's.
+    /// Says something about the window's own state the reader may act on later,
+    /// such as a set-aside state file, and keeps it up long enough to read.
     pub fn notice(&self, what: String) {
         let (mut said, mut linger) = (self.0, self.1);
         linger.set(NOTICE);
@@ -77,65 +43,43 @@ impl Announcer {
     }
 }
 
-/// Puts the window's announcer where every control under it can find one, and
-/// starts the clock that empties it. **Once, at the root.**
+/// Provides the window's announcer and starts the clock that empties it. Once,
+/// at the root.
 ///
-/// The clock is here rather than in [`Announcer::say`] on purpose: a task
-/// spawned by a click belongs to the component that was clicked, and the copy
-/// buttons sit on rows that come and go — a trace that is cleared while a note
-/// is up would take the clock with the row and leave the sentence on screen for
-/// the rest of the session. This one belongs to the window, which outlives
-/// every row in it.
-///
-/// [`use_resource`] restarts its future whenever something it read has changed,
-/// which is exactly the clock this needs: reading the note *is* the
-/// subscription, so a second announcement drops the first's timer and starts
-/// its own.
+/// The clock lives here rather than in [`Announcer::say`] because a task
+/// spawned by a click belongs to the clicked component, and copy buttons sit on
+/// rows that come and go. [`use_resource`] restarts on each new note, so a
+/// second announcement drops the first's timer.
 pub fn provide() -> Announcer {
     let announcer = use_context_provider(|| Announcer(Signal::new(None), Signal::new(LINGER)));
 
     use_resource(move || async move {
-        // Read and dropped in the one statement — a signal's guard held across
-        // an await is a lock held across an await.
+        // Read and dropped in one statement: a guard held across an await is a
+        // lock held across an await.
         if announcer.0.read().is_none() {
             return;
         }
         let linger = *announcer.1.peek();
         tokio::time::sleep(linger).await;
-        // Which is itself a change, so this future is started once more and
-        // returns at the line above. That is the whole of the loop.
+        // That clear is itself a change, so the future runs once more and
+        // returns above.
         announcer.0.clone().set(None);
     });
 
     announcer
 }
 
-/// The announcer to say something into, from anywhere under the root.
-///
-/// **Or a detached one, where there is nothing above this component.** The
-/// screen tests in this crate render one component with no window around it,
-/// and a copy button that panicked for want of somewhere to announce would make
-/// them hostage to a corner of the window they are not about. Nobody hears a
-/// detached announcer, and the clipboard write happens either way.
+/// The announcer, or a detached one where nothing above provides it (screen
+/// tests render single components). The clipboard write happens either way.
 pub fn announcer() -> Announcer {
     use_hook(|| {
         try_consume_context().unwrap_or_else(|| Announcer(Signal::new(None), Signal::new(LINGER)))
     })
 }
 
-/// The toast, wherever the window has one.
-///
-/// **The region is always here, and mostly empty**, which is the rule the
-/// composer's live region already states (`timeline.rs`): an announcement is
-/// made by text *changing* inside a live region, so one that appeared along
-/// with its sentence would announce nothing at all — and this is a message
-/// about something that left the window, which is the case where a reader who
-/// cannot see the corner has nothing else to go on.
-///
-/// It draws over the screens rather than in one of them, because the control it
-/// answers for is on three of them (§9's density rule: wherever the content is
-/// bytes, it can be copied) — and it lets every click through, so a reader
-/// copying a second row never finds this in the way of the first.
+/// The toast. The live region is always present and mostly empty, because
+/// screen readers announce text that changes inside a region, not a region
+/// that appears with its text. It lets every click through.
 #[component]
 pub fn Toast(said: Option<String>) -> Element {
     rsx! {
@@ -171,12 +115,9 @@ mod tests {
 
     #[test]
     fn the_region_is_in_the_document_with_nothing_to_say() {
-        // A live region announces text that *changes* inside it. One that
-        // arrived along with its first sentence would have that sentence
-        // inserted rather than changed, and an insertion is not reliably
-        // announced — least of all in a WebView. The composer's `.waiting`
-        // region is here for the same reason and was quietly broken by a
-        // stylesheet once; this asks the question of the markup.
+        // A live region that arrived with its first sentence would have it
+        // inserted rather than changed, which is not reliably announced
+        // (especially in a WebView).
         let html = screen(None);
 
         assert!(

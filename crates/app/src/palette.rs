@@ -1,24 +1,9 @@
-//! Every command this window has, by name (ADR 0009).
+//! The command palette: every command the window has, by name. Each entry is a
+//! control on screen or a menu item (ADR 0009).
 //!
-//! **It is the menu bar's list, reached the other way.** The strip at the top of
-//! the window is how a desktop application is read when you are looking for what
-//! it can do; this is how one is driven when you already know. Every entry here
-//! is a control that exists on screen or a menu item that exists in the strip —
-//! the same rule `shell.rs` states, for the same reason.
-//!
-//! **The platform owns the modality**, as it does for the other two dialogs
-//! (`connect.rs`): `showModal` traps focus, dims the window behind it, closes on
-//! Escape and gives focus back to whatever opened it. What is not the platform's
-//! is the shortcut, because there is no such thing as a native one here — a
-//! keystroke that works wherever the reader is has to be a listener on the
-//! document, and this module's one script is it.
-//!
-//! **A combobox over a listbox** (A2): focus stays in the field, the highlighted
-//! row is the field's `aria-activedescendant`, and the row is scrolled into view
-//! as the arrow keys move it.
-//!
-//! **Nothing here decides anything.** A command is a label, a sentence and a
-//! handler the window already had; this file filters a list and calls one.
+//! `showModal` owns the modality; the shortcut is a document listener. The
+//! field is a combobox over a listbox: focus stays in the field and the
+//! highlighted row is its `aria-activedescendant`.
 
 use dioxus::prelude::*;
 
@@ -28,14 +13,11 @@ const DIALOG: &str = "palette-dialog";
 /// The list the field controls.
 const LIST: &str = "palette-list";
 
-/// The field inside it, by the name those scripts find it under. A slot rather
-/// than a class, because what this names is *the thing the keyboard belongs in*
-/// rather than how it is painted.
+/// The field inside it, by the selector the scripts focus.
 const QUERY: &str = "[data-slot='palette-query']";
 
 /// The window's keyboard shortcuts, as data: the menu bar binds them
-/// (`shell.rs`) and the palette and rail print them, so the three cannot
-/// disagree about which key does what.
+/// (`shell.rs`) and the palette and rail print them, so they cannot disagree.
 pub mod shortcut {
     /// A key a shortcut is made of.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,14 +87,10 @@ pub mod shortcut {
     }
 }
 
-/// The shortcut, installed once at the root.
+/// The shortcut script, installed once at the root. It toggles the palette.
 ///
-/// **A toggle rather than an open**, because that is what every application
-/// with this control does: the keystroke that summoned it puts it away. ⌘K on
-/// macOS and Ctrl+K elsewhere — Control on a Mac is text editing (Ctrl+K kills
-/// to the end of the line), and taking it would break that in every field.
-/// Nothing an agent said reaches this string — the only values interpolated
-/// are `const`s this crate wrote.
+/// ⌘K on macOS and Ctrl+K elsewhere: Ctrl+K on a Mac is a text-editing key.
+/// Only this crate's `const`s are interpolated, never anything an agent said.
 pub fn watch() -> String {
     format!(
         r#"
@@ -138,11 +116,8 @@ document.addEventListener("keydown", (event) => {{
     )
 }
 
-/// Open it, for the control at the foot of the rail.
-///
-/// **And put the keyboard in the field**, which is the whole of what this
-/// surface is: `showModal` gives focus to the dialog itself, and the platform's
-/// own `autofocus` is honoured for the *first* showing of a dialog only.
+/// Opens it and focuses the field: `showModal` focuses the dialog itself, and
+/// `autofocus` is honoured only on a dialog's first showing.
 pub fn open() {
     document::eval(&opening());
 }
@@ -174,11 +149,7 @@ fn reveal(position: usize) {
     ));
 }
 
-/// One thing the window can be asked to do.
-///
-/// The group is what it is *about* — the connection, the session, the wire, the
-/// window itself — because a list of twenty verbs read in one run is a list
-/// nobody reads.
+/// One thing the window can be asked to do, grouped by what it is about.
 #[derive(Clone, PartialEq)]
 pub struct Command {
     pub group: &'static str,
@@ -223,12 +194,8 @@ impl Command {
     }
 }
 
-/// Whether a command answers to what has been typed.
-///
-/// **What it is about, what it is called, and what it does** — all three,
-/// because a reader looking for a verb has the sentence and one looking for a
-/// surface has the group. Case-insensitive substring and deliberately nothing
-/// cleverer, which is the rule the Console's own filter already states.
+/// Whether a command's group, label or description contains what was typed
+/// (case-insensitive substring, like the Console's filter).
 fn found(group: &str, label: &str, says: &str, typed: &str) -> bool {
     if typed.is_empty() {
         return true;
@@ -251,10 +218,7 @@ pub fn Palette(commands: Vec<Command>) -> Element {
         .cloned()
         .collect();
     let highlight = highlighted().min(found.len().saturating_sub(1));
-    // What a command does when it is chosen: the thing, and then the way out.
-    // The dialog is what the reader opened to *do* something, so it closes
-    // itself once they have — and it forgets what was typed, because the next
-    // question is a different one.
+    // Running a command closes the dialog and forgets what was typed.
     let mut reset = move || {
         typed.set(String::new());
         highlighted.set(0);
@@ -275,9 +239,7 @@ pub fn Palette(commands: Vec<Command>) -> Element {
             class: "modal palette",
             "data-slot": "palette",
             aria_labelledby: "palette-title",
-            // **On the dialog rather than on the box inside it**, because a
-            // keystroke is only this surface's if it arrives wherever the
-            // reader's focus is.
+            // On the dialog, so keys arrive wherever focus is inside it.
             onkeydown: move |event| {
                 let moved = match event.key() {
                     Key::ArrowDown if count > 0 => Some((highlight + 1) % count),
@@ -300,9 +262,7 @@ pub fn Palette(commands: Vec<Command>) -> Element {
                         close();
                         command.run.call(());
                     }
-                    // **Said here rather than left to the platform**: the field
-                    // took the key first and swallowed it, which is what a search
-                    // input does with Escape.
+                    // Handled here: the field swallows Escape before the dialog.
                     Key::Escape => {
                         reset();
                         close();
@@ -316,8 +276,7 @@ pub fn Palette(commands: Vec<Command>) -> Element {
                 input {
                     class: "palette-query",
                     "data-slot": "palette-query",
-                    // Not `search`: the type comes with a clear affordance this
-                    // window does not draw and with Escape already spoken for.
+                    // Not `search`, which brings its own clear button and Escape.
                     r#type: "text",
                     role: "combobox",
                     aria_expanded: "true",
@@ -340,7 +299,6 @@ pub fn Palette(commands: Vec<Command>) -> Element {
                     }
                     for (group, rows) in groups {
                         div { key: "{group}-{rows[0].0}", role: "group", aria_label: "{group}",
-                            // The group's name, over the first command in it.
                             div { class: "palette-group heading", aria_hidden: "true", "{group}" }
                             for (position, command) in rows {
                                 {
@@ -388,8 +346,8 @@ pub fn Palette(commands: Vec<Command>) -> Element {
                 }
             }
 
-            // The click outside, which `showModal` does not give (`connect.rs`).
-            // Out of the Tab order: Escape is the keyboard's way out.
+            // The click outside, which `showModal` does not give. Out of the Tab
+            // order: Escape is the keyboard's way out.
             form { method: "dialog", class: "modal-backdrop",
                 button { "data-slot": "dismiss", tabindex: "-1", onclick: move |_| reset(), "close" }
             }

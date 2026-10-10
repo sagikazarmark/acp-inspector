@@ -1,17 +1,11 @@
-//! A trace opened from a file (F5): the window, read-only, showing an export
-//! instead of a connection.
+//! A trace opened from a file: the window, read-only, showing an export instead
+//! of a connection.
 //!
-//! **Core reads the file and replays it** (`acp_inspector_core::Imported`);
-//! this holds what it read as the same kinds of values the live stores give the
-//! window — frames, stderr lines, timeline entries and turns — so the screens
-//! draw an imported trace exactly as they draw a live one. While one is open,
-//! [`View`] answers the window's sources in place of the live ones, and the
-//! banner ([`Banner`]) says so and is the way out.
-//!
-//! **There is no agent while viewing.** A trace is opened only with nothing
-//! connected, and launching an agent closes it: the live stores go on being
-//! the live stores underneath, and mixing a file's frames into a live trace
-//! would be the one thing an evidence tool must never do.
+//! Core reads and replays the file (`acp_inspector_core::Imported`) into the
+//! same kinds of values the live stores hold, and [`View`] answers the
+//! window's sources in their place while it is open. A trace opens only with
+//! nothing connected, and launching closes it: a file's frames never mix into
+//! a live trace.
 
 use std::path::PathBuf;
 use std::time::SystemTime;

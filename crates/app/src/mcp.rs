@@ -1,15 +1,9 @@
 //! Shared, in-memory MCP input shown before Launch and in the Sessions dialog.
 //!
-//! **Rows are keyed on core's identities** ([`McpServerDraft::identify`]), not on
-//! their position: moving or removing a row keeps every other row's DOM node and
-//! focus, and the control that should take focus after a move is found by the
-//! same identity rather than by searching labels.
-//!
-//! **Findings wait for the reader.** A field the reader has not left yet, in a
-//! form nobody has tried to submit, is a field still being typed into; what is
-//! wrong with it is said once it is touched or a launch or session opening was
-//! attempted. A transport the agent did not advertise is a fact about the
-//! agent, not about typing, and is said at once.
+//! Rows are keyed on core's identities ([`McpServerDraft::identify`]), so a
+//! move or removal keeps the other rows' DOM nodes and focus. Findings wait
+//! until a field is left or a launch is attempted; a transport the agent did
+//! not advertise is said at once.
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -423,9 +417,8 @@ pub fn McpEditor(prefix: &'static str) -> Element {
     }
 }
 
-/// One labelled text field on the registry components: a visible label that is
-/// the accessible name, and an error region that speaks once there is something
-/// to say.
+/// One labelled text field: a visible label that is the accessible name, and
+/// an error region that speaks once there is something to say.
 #[component]
 fn McpText(
     id: String,

@@ -30,13 +30,13 @@ enum AttachmentContent {
         base64: String,
         uri: String,
     },
-    /// Any other binary file, embedded as a `resource` blob (F12).
+    /// Any other binary file, embedded as a `resource` blob.
     Blob {
         mime: &'static str,
         base64: String,
         uri: String,
     },
-    /// A `resource_link`: the agent is told where, not given the bytes (F12).
+    /// A `resource_link`: the agent is told where, not given the bytes.
     Link {
         uri: String,
         mime: Option<String>,
@@ -150,11 +150,9 @@ impl Attachment {
             content,
         })
     }
-    /// A resource link the user typed (F12): an absolute URI, a name (the
-    /// URI's last segment when left empty), and an optional MIME type.
-    ///
-    /// Links are baseline prompt content — every agent must accept them — so
-    /// unlike the embedded kinds they need no advertisement.
+    /// A resource link the user typed: an absolute URI, a name (the URI's last
+    /// segment when left empty), and an optional MIME type. Links are baseline
+    /// prompt content, so they need no advertisement.
     pub fn link(uri: &str, name: &str, mime: &str) -> Result<Self, String> {
         let uri = uri.trim();
         let parsed = url::Url::parse(uri).map_err(|_| {
@@ -569,8 +567,8 @@ mod tests {
         assert!(
             matches!(Attachment::from_bytes("empty.txt".into(), b"").unwrap().preview(), AttachmentPreview::Text { excerpt } if excerpt.is_empty())
         );
-        // Bytes that are not text are not refused any more: they are
-        // embedded as a blob, under the same advertisement (F12).
+        // Bytes that are not text are embedded as a blob, under the same
+        // advertisement.
         for (bytes, mime) in [
             (b"a\0b".as_slice(), "application/octet-stream"),
             (b"\xff", "application/octet-stream"),

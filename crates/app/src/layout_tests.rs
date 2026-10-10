@@ -3,7 +3,7 @@
 
 use std::{any::Any, cell::RefCell, rc::Rc, time::Duration};
 
-use acp_inspector_core::{ElicitationRequest, EntryId, EntryKind};
+use acp_inspector_core::{ElicitationRequest, EntryId, EntryKind, TimelineEntry, TurnState};
 use dioxus::core::{AttributeValue, ElementId, Mutation};
 use dioxus::html::{
     PlatformEventData, SerializedFileData, SerializedFormData, SerializedFormObject,

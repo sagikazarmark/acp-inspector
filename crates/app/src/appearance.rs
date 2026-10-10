@@ -1,11 +1,5 @@
-//! The appearance switch, and the one thing the window does with an answer:
-//! mark the document element (`docs/architecture.md` §9).
-//!
-//! **Presentational, like everything else here** (§5). What the three values are,
-//! which token each carries and what an unreadable settings file falls back to
-//! are core's ([`Appearance`], [`Settings`](acp_inspector_core::Settings)); this is
-//! the `<select>` that offers them and the attribute that makes the stylesheet
-//! act on one.
+//! The appearance switch, and marking the document element with the choice.
+//! The values and their fallback are core's ([`Appearance`]).
 
 use acp_inspector_core::Appearance;
 use dioxus::prelude::*;
@@ -17,20 +11,10 @@ use dioxus_free_icons::{
 /// Marks the document element with an explicit choice, or unmarks it for
 /// `System` so the stylesheet's `prefers-color-scheme` rules answer again.
 ///
-/// **The document element, not the app's own root.** The ground is painted by
-/// `body`, which would go on reading the media query if the attribute were
-/// scoped inside the app — leaving the wrong colour behind the window under an
-/// explicit choice.
-///
-/// [`document::eval`] is the renderer's own bridge into its WebView — the
-/// desktop crate's way to touch a node outside the app's subtree, and the reason
-/// it needs no `web_sys` of its own. **The script is a constant.** Its only
-/// variable part comes from `theme_name`, which returns one of two static theme
-/// names this crate wrote: nothing an agent said, a file held or a user typed
-/// can reach it.
-///
-/// Fire-and-forget: the script is queued the moment it is handed over, and there
-/// is nothing to wait for and nothing to do if it fails.
+/// The document element rather than the app root, because `body` paints the
+/// ground and would otherwise keep following the media query. The script is a
+/// constant apart from `theme_name`, which only returns names this crate wrote.
+/// Fire-and-forget.
 pub fn paint(appearance: Appearance) {
     let _ = document::eval(&match theme_name(appearance) {
         None => "document.documentElement.removeAttribute('data-theme');".to_owned(),
@@ -49,21 +33,14 @@ fn theme_name(appearance: Appearance) -> Option<&'static str> {
     }
 }
 
-/// The three-way switch, in the bar — as the drawing puts it: a segmented
-/// group of a sun, a moon and the word for *whichever the desktop is*.
-///
-/// **A group of buttons rather than a native select**, which is what the design
-/// draws and what a segmented control is for: three exclusive answers, one of
-/// which is always true, all three visible. What a native select gave for free
-/// is given back explicitly here — each button carries the choice's full name,
-/// `aria-pressed` says which one is on, and the glyphs are decoration the name
-/// does not depend on.
+/// The three-way segmented switch in the bar: Light, Dark and System. Each
+/// button carries the choice's full name and `aria-pressed`; the glyphs are
+/// decoration.
 #[component]
 pub fn AppearanceControl(chosen: Appearance, on_choose: EventHandler<Appearance>) -> Element {
     rsx! {
         div { class: "seg appearance", role: "group", aria_label: "Appearance",
-            // Light, Dark, then System — the order the drawing puts them in,
-            // which is the two schemes and then *whichever the desktop is*.
+            // Light, Dark, then System, as drawn.
             for choice in [Appearance::Light, Appearance::Dark, Appearance::System] {
                 button {
                     key: "{choice.token()}",
@@ -82,9 +59,8 @@ pub fn AppearanceControl(chosen: Appearance, on_choose: EventHandler<Appearance>
     }
 }
 
-/// What each choice is drawn as: the two schemes get the sky they are, as
-/// icons from the window's one set (D8), and System gets the word, because
-/// *follow the desktop* is not a picture.
+/// What each choice is drawn as: icons for the two schemes, the word for
+/// System.
 fn glyph(appearance: Appearance) -> Element {
     match appearance {
         Appearance::Light => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSun } },
@@ -119,18 +95,13 @@ mod tests {
     fn appearance_is_a_named_segmented_group_of_three_exclusive_answers() {
         let html = screen(Appearance::Dark);
 
-        // A group of buttons rather than a native select, which is what the
-        // design draws — and what a segmented control is for: three exclusive
-        // answers, one of which is always true, all three visible.
         assert!(
             html.contains(r#"class="seg appearance""#)
                 && html.contains(r#"role="group""#)
                 && html.contains(r#"aria-label="Appearance""#),
             "the group carries the question: {html}"
         );
-        // What the native select gave for free is given back explicitly: each
-        // button carries the choice's complete name and says whether it is the
-        // one that is on.
+        // Each button carries its full name and whether it is on.
         for (token, name) in [
             ("light", "Light appearance"),
             ("dark", "Dark appearance"),
@@ -148,8 +119,7 @@ mod tests {
             1,
             "exactly one answer is on: {html}"
         );
-        // And the icons are decoration the name does not depend on, drawn from
-        // the icon set rather than from whatever font has a sun in it.
+        // The icons are decoration from the icon set, not font glyphs.
         assert!(
             html.matches(r#"<span aria-hidden="true"><svg class="icon" height="16" width="16""#)
                 .count()

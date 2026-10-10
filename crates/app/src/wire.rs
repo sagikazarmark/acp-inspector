@@ -1,13 +1,10 @@
-//! What the Console needs of the connection beyond the frames themselves:
-//! which frame answers which (F1), which calls are still waiting and a way to
-//! give one up (F4), a way to send a frame by hand (F2), and which trace is
-//! being shown — the live one, or one opened from a file (F5).
+//! What the Console needs of the connection beyond the frames: which frame
+//! answers which, which calls are waiting and how to cancel one, sending a
+//! frame by hand, and whether the live trace or an opened file is shown.
 //!
-//! **One value, made once by the window** ([`use_wire`]) and handed to the
-//! Console, so the panel's props stay a rendering of stores: every answer here
-//! is core's (`Trace::counterpart`, `Inspector::pending_calls`,
-//! `Inspector::cancel_call`, `Inspector::send_raw`), read or called and never
-//! worked out again on this side.
+//! Made once by the window ([`use_wire`]). Every answer is core's
+//! (`Trace::counterpart`, `Inspector::pending_calls`, `Inspector::cancel_call`,
+//! `Inspector::send_raw`).
 
 use std::time::{Duration, SystemTime};
 
@@ -39,11 +36,11 @@ pub struct Wire {
     pub draft: Signal<Draft>,
     pub composing: Signal<bool>,
     pub sent: Signal<Option<Sent>>,
-    /// Whether an export carries the agent's stderr (F5).
+    /// Whether an export carries the agent's stderr.
     pub include_stderr: Signal<bool>,
-    /// Whether the Trace interleaves the agent's stderr lines (F14).
+    /// Whether the Trace interleaves the agent's stderr lines.
     pub merged: Signal<bool>,
-    /// Whether the Trace shows only calls still waiting for an answer (F1).
+    /// Whether the Trace shows only calls still waiting for an answer.
     pub pending_only: Signal<bool>,
 }
 
@@ -55,9 +52,8 @@ pub fn use_wire(inspector: Inspector, status: Signal<ConnectionStatus>) -> Wire 
         ..Wire::with(inspector.trace().clone(), view, status)
     });
 
-    // Re-read whenever the trace moves — a call goes out, an answer comes
-    // back — and whenever the connection does. A little after the frame,
-    // because the reader records a frame before it hands the answer on.
+    // Re-read whenever the trace or the connection moves, a little after the
+    // frame: the reader records a frame before it hands the answer on.
     let watched = inspector.clone();
     use_future(move || {
         let inspector = watched.clone();
@@ -294,8 +290,8 @@ pub fn elapsed(span: Duration) -> String {
     }
 }
 
-/// How long ago `since` was, said again four times a second for as long as it
-/// is on screen — which is only while something is waiting.
+/// How long ago `since` was, re-said four times a second while on screen
+/// (only while something is waiting).
 #[component]
 pub fn Elapsed(since: SystemTime) -> Element {
     let mut tick = use_signal(|| 0_u64);

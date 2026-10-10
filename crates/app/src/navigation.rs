@@ -12,17 +12,14 @@ pub(crate) struct Navigation {
     pub rail: Signal<rail::Tab>,
     pub revealed: Signal<Vec<u64>>,
     pub sought: Signal<Option<u64>>,
-    /// Whether the rail is open as a drawer over the screens, which is how a
-    /// window too narrow for three columns shows it (D18). Read only by the
-    /// stylesheet's narrow layout; at full width the rail is always there.
+    /// Whether the rail is open as a drawer, as it is on narrow windows. Only the
+    /// narrow layout reads it.
     pub drawer: Signal<bool>,
 }
 
-/// The toolbar's button that opens the rail as a drawer, where focus goes back
-/// to when the drawer closes.
+/// The toolbar button that opens the drawer; focus returns here on close.
 pub(crate) const DRAWER_TOGGLE: &str = "rail-toggle";
-/// The rail itself, where focus goes when the drawer opens on a rail with no
-/// tabs to land on.
+/// The rail, focused when the drawer opens on a rail with no tabs.
 pub(crate) const RAIL: &str = "rail";
 
 pub(crate) fn use_navigation() -> Navigation {
@@ -116,16 +113,14 @@ impl Navigation {
         Destination::Control { id: chosen.id() }.focus();
     }
 
-    /// A rail tab asked for from somewhere other than the rail (the palette,
-    /// the menu): the tab, and the drawer open where the rail is one.
+    /// Shows a rail tab from outside the rail, opening the drawer.
     pub fn show_rail(mut self, chosen: rail::Tab) {
         self.drawer.set(true);
         self.rail(chosen);
     }
 
-    /// Opens or closes the rail's drawer from the toolbar's button (D18).
-    /// Opening moves focus into the rail — onto its selected tab, or the rail
-    /// itself when it has none — and closing hands it back to the button.
+    /// Toggles the drawer. Opening focuses the selected rail tab (or the rail);
+    /// closing focuses the toolbar button.
     pub fn toggle_drawer(mut self, tabbed: bool) {
         let open = !(self.drawer)();
         self.drawer.set(open);
@@ -139,8 +134,7 @@ impl Navigation {
         .focus();
     }
 
-    /// Closes the drawer — Escape inside it, or a press on its backdrop — and
-    /// hands focus back to the button that opened it.
+    /// Closes the drawer and returns focus to the toolbar button.
     pub fn close_drawer(mut self) {
         if (self.drawer)() {
             self.drawer.set(false);
@@ -157,8 +151,7 @@ impl Navigation {
         Destination::Frames { ordinals: frames }.focus();
     }
 
-    /// The request the agent is waiting on, shown and focused without marking
-    /// it as sought: it is not a frame the reader followed here.
+    /// Shows and focuses the waiting request without marking it as sought.
     pub fn waiting(mut self, ordinal: u64) {
         self.spine.set(Spine::Split);
         self.region.set(Focus::Turn);
@@ -174,9 +167,8 @@ impl Navigation {
         Destination::Prompt.focus();
     }
 
-    /// Clear asked for from anywhere but the Console's own button (the
-    /// palette, the menu, the shortcut): the Trace is shown and its Clear is
-    /// armed and focused, so the same second press confirms it (I2, F9).
+    /// Clear from the palette, menu or shortcut: shows the Trace and arms and
+    /// focuses its Clear, so a second press confirms.
     pub fn clear(mut self) {
         self.region.set(Focus::Wire);
         self.drawer.set(false);

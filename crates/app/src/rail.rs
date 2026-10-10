@@ -1,26 +1,7 @@
-//! The rail: the Connection, and everything scoped to it
-//! (`docs/architecture.md` §9, ADR 0009).
-//!
-//! **One column, three parts.** At the top, the Connection as a card — what it
-//! is, what was spawned, where, and the two things that can be done to it.
-//! Under that, a tabbed scroller holding the two things a reader looks *up*:
-//! what the live Session is configured as, and what the two parties claimed
-//! about themselves. At the foot, the way to every command the window has.
-//!
-//! **Why these and not others.** Everything in this rail is about the
-//! Connection or the Session it holds; nothing in it is about the turn, which
-//! is the screen beside it, or about the wire, which is the screen beside that.
-//! That is the whole of the rule for what may be added here.
-//!
-//! **And why the two accounts came back to a rail.** They were a rail block in
-//! the third ring, moved to the centre screen in the fifth because a capability
-//! row is four facts and 288px holds two of them — measured then at 1430px of a
-//! 1994px column, which is a specification standing between a reader and the
-//! buttons under it. Both halves of that are still true and neither is a problem
-//! here: the rows are two lines by construction (`input.css`), and they are
-//! *behind a tab*, so their length costs the rail nothing until somebody asks
-//! the question they answer. What the centre screen gets back is the whole width
-//! for the turn, which is what the centre screen is for.
+//! The rail: the Connection card, then tabs for the live Session's settings
+//! and the two parties' capabilities, then the way to the command palette.
+//! Only things scoped to the Connection or its Session belong here.
+//! See `docs/architecture.md` §9 and ADR 0009.
 
 use acp_inspector_core::{AgentCommand, ConnectionStatus, SessionSettings, v1};
 use dioxus::prelude::*;
@@ -32,10 +13,7 @@ use dioxus_free_icons::{
 use crate::agent::{Advertiser, AgentClaims, Claims};
 use crate::session_settings::{Choice, SessionSettings as SessionSettingsPanel};
 
-/// Which of the rail's two lookups is on screen.
-///
-/// Window-session state, like the Console's tab and for the same reason: what
-/// somebody was reading yesterday is not what this window should open onto.
+/// Which of the rail's two lookups is on screen. Not persisted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
     /// The live Session: which one it is, and what it is configured as.
@@ -68,9 +46,8 @@ impl Tab {
     }
 }
 
-/// Which tab a key moves to from `selected`, if any: the arrow keys go to the
-/// other tab, Home to the first and End to the last — the tab pattern the
-/// Console's own tabs follow (`console::tab_for_key`).
+/// Which tab a key moves to from `selected`, if any: arrows to the other tab,
+/// Home and End to the ends (as `console::tab_for_key`).
 fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
     match key {
         Key::ArrowLeft | Key::ArrowRight => Some(match selected {
@@ -94,13 +71,12 @@ fn focus_tab(tab: Tab) {
 /// The rail's Restart button, which focus goes to after a disconnect.
 pub const RESTART: &str = "rail-restart";
 
-/// Whether the two accounts are open wide over the screens (D18): the
-/// rail's Capabilities tab, at the width a capability row wants. Provided by
-/// the window, so a rail drawn without it offers no way there.
+/// Whether the two accounts are open wide over the screens. Provided by the
+/// window; a rail drawn without it offers no way there.
 #[derive(Clone, Copy)]
 pub struct WideCapabilities(pub Signal<bool>);
 
-/// The sheet the wide capabilities are drawn in, by the id the scripts reach.
+/// The wide capabilities sheet's element id.
 const SHEET: &str = "capabilities-sheet";
 
 impl WideCapabilities {
@@ -122,13 +98,9 @@ impl WideCapabilities {
     }
 }
 
-/// The two accounts, side by side over the screens (D18).
-///
-/// **The same rows as the rail's tab, only wider**: a capability row is four
-/// facts and the rail holds two, so a reader comparing what the two parties
-/// claimed gets the width the comparison needs without the rail taking it from
-/// the turn. The rows are drawn here only while the sheet is open, and the
-/// rail's tab says where they went, so no id is on the page twice.
+/// The two accounts, side by side over the screens: the rail tab's rows with
+/// room for all four facts. Rows are drawn only while open, and the rail's tab
+/// says where they went, so no id is on the page twice.
 #[component]
 pub fn CapabilitiesSheet(claims: Claims) -> Element {
     let Some(wide) = try_use_context::<WideCapabilities>() else {
@@ -173,7 +145,7 @@ pub fn CapabilitiesSheet(claims: Claims) -> Element {
     }
 }
 
-/// The rail's narrowest and widest, in CSS pixels (D18).
+/// The rail's narrowest and widest, in CSS pixels.
 pub const RAIL_MIN: u32 = 220;
 pub const RAIL_MAX: u32 = 420;
 /// The rail's width before anybody has dragged it: the drawing's.
@@ -181,10 +153,8 @@ pub const RAIL_DEFAULT: u32 = 244;
 /// How far one arrow key moves the rail's edge.
 const RAIL_STEP: u32 = 16;
 
-/// Where the rail's width is remembered. **Not in core's Settings**, which has
-/// no place for a layout preference; the webview's own storage keeps it per
-/// machine, and a store that refuses (a private profile, a cleared one) leaves
-/// the drawing's width.
+/// Where the rail's width is remembered: the webview's `localStorage`, since
+/// core's Settings has no layout preferences. A refusing store leaves the default.
 const RAIL_KEY: &str = "acp-inspector.rail-width";
 
 /// A width a reader asked for, held to the rail's range.
@@ -214,9 +184,8 @@ fn remember_width(width: u32) {
     ));
 }
 
-/// Follows the pointer from a press on the handle to its release, in the page:
-/// the width is written to the screen as a variable on every move, without a
-/// render, and only the final one comes back to be kept.
+/// Follows the pointer from press to release in the page, setting the width
+/// variable on every move without a render; only the final width is sent back.
 const RESIZE: &str = r#"
 const [min, max] = await dioxus.recv();
 const handle = document.querySelector('[data-slot="rail-resize"]');
@@ -241,9 +210,8 @@ document.addEventListener('pointermove', move);
 document.addEventListener('pointerup', up);
 "#;
 
-/// The edge between the rail and the screens, which a reader drags — or, with
-/// the keyboard on it, moves with ←/→ — to make the rail wider or narrower
-/// (D18). A window separator in the WAI-ARIA sense: focusable, with its value.
+/// The draggable edge between the rail and the screens, also moved with ←/→.
+/// A focusable WAI-ARIA window separator with its value.
 #[component]
 pub fn RailHandle(width: Signal<u32>) -> Element {
     let mut width = width;
@@ -300,19 +268,16 @@ pub fn RailHandle(width: Signal<u32>) -> Element {
 #[component]
 pub fn Rail(
     status: ConnectionStatus,
-    /// The invocation the live agent was launched from, which is what the card
-    /// names: the command as it was typed, and the directory it was typed for.
+    /// The invocation the live agent was launched from, which the card names.
     launched: Option<AgentCommand>,
     session: Option<v1::SessionId>,
-    /// What the two parties claimed, and the affordances that hang off the
-    /// agent's half (`agent::Claims`).
+    /// What the two parties claimed, and the agent's affordances.
     claims: Claims,
     settings: SessionSettings,
     settings_epoch: u64,
     changing_mode: bool,
     setting_option: Option<v1::SessionConfigId>,
-    /// What the agent said it can be asked to run, counted under the way into
-    /// the palette — the drawing puts the number there, and it is the agent's.
+    /// How many slash commands the agent published.
     commands: usize,
     tab: Tab,
     on_tab: EventHandler<Tab>,
@@ -321,29 +286,27 @@ pub fn Rail(
     #[props(default)]
     launching: bool,
     /// Whether the agent this window disconnected is still being stopped
-    /// (F6): stdin closed, then SIGTERM, then SIGKILL.
+    /// (stdin closed, then SIGTERM, then SIGKILL).
     #[props(default)]
     stopping: bool,
-    /// Relaunch the last invocation, keeping the trace (X4).
+    /// Relaunches the last invocation, keeping the trace.
     #[props(default)]
     on_restart: Option<EventHandler<()>>,
     on_set_mode: EventHandler<v1::SessionModeId>,
     on_set_config_option: EventHandler<Choice>,
-    /// Closes the rail where it is a drawer over the screens (D18), for
-    /// Escape pressed inside it. `None` where it is not one.
+    /// Closes the rail on Escape where it is a drawer. `None` where it is not.
     #[props(default)]
     on_dismiss: Option<EventHandler<()>>,
 ) -> Element {
-    // Whether the capabilities are open wide, over the screens (D18). While
-    // they are, the rail's tab says so rather than drawing them twice.
+    // While the capabilities are open wide, the tab says so instead of
+    // drawing them twice.
     let wide = try_use_context::<WideCapabilities>();
     let widened = wide.is_some_and(|wide| (wide.0)());
     let connected = status == ConnectionStatus::Connected;
     let described = claims.agent.is_some();
     let on_new_session = claims.on_new_session;
-    // Session-scoped surfaces are for a window that has an agent, or the
-    // record of one: before the first launch there is nothing for them to say
-    // but "none", and a first run reads better without three of those (D10).
+    // Session-scoped surfaces need an agent or the record of one; before the
+    // first launch they would only say "none".
     let active = connected || described || session.is_some();
     let restart = on_restart.filter(|_| launched.is_some() && !launching);
 
@@ -377,8 +340,6 @@ pub fn Rail(
                             aria_controls: choice.panel_id(),
                             tabindex: if choice == tab { "0" } else { "-1" },
                             onclick: move |_| on_tab.call(choice),
-                            // The tab pattern: the arrows move between tabs and
-                            // select as they go, Home and End go to the ends.
                             onkeydown: move |event| {
                                 if let Some(next) = tab_for_key(tab, &event.key()) {
                                     event.prevent_default();
@@ -416,7 +377,7 @@ pub fn Rail(
                         },
                         Tab::Capabilities => rsx! {
                             // A capability row is four facts and the rail holds
-                            // two (ADR 0006); the same rows, the screens' width.
+                            // two; the sheet gives them the screens' width.
                             if let Some(wide) = wide {
                                 div { class: "rail-head",
                                     span { class: "grow" }
@@ -453,9 +414,7 @@ pub fn Rail(
                     "Command palette"
                     kbd { class: "palette-key", {crate::palette::shortcut::PALETTE.here()} }
                 }
-                // The agent's own count, under the way to the list it is about:
-                // what it published, not what this window can do. Nothing is
-                // said about none.
+                // The agent's published count; nothing is said about none.
                 if active && commands > 0 {
                     p { class: "hint", "data-slot": "command-count",
                         if commands == 1 { "1 slash command · type /" } else { "{commands} slash commands · type /" }
@@ -466,14 +425,9 @@ pub fn Rail(
     }
 }
 
-/// The Connection, as the card at the top of the rail.
-///
-/// **What it says is what was asked for and what came back**: the state in the
-/// word core uses for it, the transport this build has (`StdioSpawn` — the one
-/// factory, §6.1), the invocation as it was typed, and the working directory a
-/// session will be opened in. The command is the one the window launched rather
-/// than whatever is in the form's fields, which are editable while an agent
-/// runs.
+/// The Connection card: its state, the transport, the invocation and the cwd.
+/// The command is the one launched, not the form's fields, which stay editable
+/// while an agent runs.
 fn connection(
     status: ConnectionStatus,
     launched: Option<&AgentCommand>,
@@ -485,7 +439,7 @@ fn connection(
     let (tone, said) = if stopping && !connected {
         ("idle", "stopping\u{2026}")
     } else {
-        crate::connection_state(status)
+        crate::app::bar::connection_state(status)
     };
     let endpoint = launched.map(invocation).filter(|said| !said.is_empty());
     let cwd = launched
@@ -498,9 +452,7 @@ fn connection(
             div { class: "tile-line",
                 span { class: "dot dot-{tone}", aria_hidden: "true" }
                 span { class: "tile-state {tone}", "data-slot": "connection-state", "{said}" }
-                // The one transport this build has, named rather than assumed:
-                // an agent reached some other way is a second factory behind
-                // the same seam (§6.1), and this line is where it would say so.
+                // The one transport this build has (§6.1).
                 span { class: "tile-transport", "stdio" }
             }
             div { class: "tile-endpoint",
@@ -559,11 +511,7 @@ fn connection(
     }
 }
 
-/// The live Session, and the two ways to another.
-///
-/// **The id is the name**, because that is what the agent minted and what every
-/// call about this session carries; a title this window invented would be a
-/// name nothing on the wire answers to.
+/// The live Session, named by its id, and the two ways to another.
 fn live(
     session: Option<&v1::SessionId>,
     connected: bool,
@@ -581,10 +529,8 @@ fn live(
                 match session {
                     Some(session) => rsx! {
                         span { class: "session-tile-name", "Open" }
-                        // **Whole and copyable, where the session is named.** It
-                        // is the string every other surface asks for — a
-                        // `session/load`, a log line, a bug report — so it is
-                        // never elided and never only readable.
+                        // Whole and copyable: it is what every other surface
+                        // asks for.
                         div { class: "tile-line",
                             span { class: "session-tile-id grow", "{session}" }
                             crate::copy::Copy { text: session.to_string(), what: "Session ID" }
@@ -614,10 +560,7 @@ fn live(
                         title: "{v1::AGENT_METHOD_NAMES.session_new} — {crate::agent::SESSION_NEW_COSTS}",
                         aria_disabled: (!connected).then_some("true"),
                         tabindex: (!connected).then_some("-1"),
-                        // No roots ride with it: the control that supplies them
-                        // is in the dialog, and for a session that does not
-                        // exist yet *none were asked for* is the true answer
-                        // rather than *an empty control was* (§7.7).
+                        // No roots: the roots control is in the dialog (§7.7).
                         onclick: move |_| {
                             if connected {
                                 on_new_session.call(None);
@@ -631,9 +574,8 @@ fn live(
     }
 }
 
-/// What the way to the launch fields is called: Connect… before anything was
-/// launched, and Edit command… once there is a command to edit — one name per
-/// state, the same in the rail, the palette and the empty timeline.
+/// The launch fields' entry label, shared by the rail, the palette and the
+/// empty timeline: Connect… before a launch, Edit command… after.
 pub fn connect_label(launched: bool) -> &'static str {
     if launched {
         "Edit command…"
@@ -642,8 +584,7 @@ pub fn connect_label(launched: bool) -> &'static str {
     }
 }
 
-/// A launched invocation on one line, the way it would read if it had been
-/// typed at a shell.
+/// A launched invocation on one line, as typed at a shell.
 fn invocation(command: &AgentCommand) -> String {
     std::iter::once(command.command.trim())
         .chain(command.arguments())
@@ -822,8 +763,6 @@ mod tests {
             html.contains("cwd /srv/work"),
             "and the directory a session will be opened in: {html}"
         );
-        // The one transport this build has, named rather than assumed: an agent
-        // reached some other way is a second factory behind the same seam.
         assert!(html.contains(">stdio<"), "{html}");
     }
 
@@ -1032,8 +971,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_has_gone_leaves_the_record_and_takes_the_affordances() {
-        // The settings and the listing outlive the agent that filled them on
-        // purpose (§5); what changes is that nothing can be sent.
+        // The record outlives the agent (§5); only sending stops.
         let html = shown(Screen {
             status: ConnectionStatus::Lost,
             ..Screen::default()
@@ -1083,8 +1021,7 @@ mod tests {
 
     #[test]
     fn the_capabilities_tab_draws_both_accounts_and_neither_is_the_others_footnote() {
-        // Who claimed a thing is the point of showing it (#86), so both are
-        // drawn, in the same rows, one under the other.
+        // Both accounts, in the same rows.
         let html = shown(Screen {
             tab: Tab::Capabilities,
             ..Screen::default()
@@ -1103,9 +1040,7 @@ mod tests {
 
     #[test]
     fn this_clients_own_claim_does_not_wait_for_an_agent() {
-        // It is fixed for every connection and rides the `initialize` request,
-        // so it is knowable before there is an agent and unchanged by anything
-        // one answers (§7.6).
+        // The client's claim rides the request, so it is known before an agent.
         let html = shown(Screen {
             agent: false,
             session: false,

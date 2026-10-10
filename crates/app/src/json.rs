@@ -1,30 +1,9 @@
-//! What a payload is *made of*, said in colour and in nothing else.
+//! Syntax colouring for a payload in the frame pane.
 //!
-//! **It is a lexer and not a parser, and that is the whole design.** The one
-//! surface this is for is the Console's frame pane, whose subject is a single
-//! frame a reader selected — and the rule that surface is held to is §8's: what
-//! is drawn is the bytes, in the order they arrived, with nothing added,
-//! reordered, folded or summarised. A parser would have to *succeed* to say
-//! anything, so a frame that is not JSON — the most interesting frame an
-//! inspector can capture — would either be drawn twice or not at all. A lexer
-//! walks whatever it is given, hands back every character it was handed, and
-//! colours the ones it recognizes.
-//!
-//! That is also why there is no dependency here. `serde_json` is in this crate
-//! for the elicitation panel, which builds an answer *value*; this builds no
-//! value at all, and running the bytes through a data model on the way to a
-//! `<pre>` would be the one thing the raw-first rule forbids.
-//!
-//! **Colour is the only mark.** No line numbers, no fold arrows, no key sorting,
-//! no ellipsis: four token classes and the punctuation between them, so a reader
-//! can find the field they want at a glance and still be looking at the frame.
+//! A lexer, not a parser: it hands back every character it was given, in order,
+//! so a frame that is not JSON is still drawn whole (`docs/architecture.md` §8).
 
-/// The classes a token can be drawn in, which are the four things JSON has and
-/// the space between them.
-///
-/// A key is a string in the position a key is in, which is the one thing a
-/// lexer has to look ahead for — and the one distinction that earns its keep,
-/// because a frame read at a glance is read by its field names.
+/// The classes a token can be drawn in. A key is a string followed by a colon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token {
     Key,
@@ -47,11 +26,7 @@ impl Token {
     }
 }
 
-/// The payload, split into what it is made of.
-///
-/// **Every character comes back**, in order: concatenating the pieces is the
-/// text that went in, which is the assertion the test at the bottom of this file
-/// makes and the reason this can be pointed at a frame nobody can parse.
+/// The payload, split into tokens. Concatenating the pieces gives back the input.
 pub fn tokens(payload: &str) -> Vec<(Token, String)> {
     let mut tokens: Vec<(Token, String)> = Vec::new();
     let characters: Vec<char> = payload.chars().collect();
@@ -88,9 +63,7 @@ pub fn tokens(payload: &str) -> Vec<(Token, String)> {
                 (Token::Literal, length)
             }
             _ => {
-                // Everything else — the braces, the commas, the indentation, and
-                // whatever a frame that is not JSON at all is made of — is the
-                // space between the tokens.
+                // Everything else, including whatever a non-JSON frame holds.
                 let length = characters[at..]
                     .iter()
                     .take_while(|character| {
@@ -103,9 +76,8 @@ pub fn tokens(payload: &str) -> Vec<(Token, String)> {
         };
 
         let text: String = characters[at..at + length].iter().collect();
-        // Runs of the same class are one span rather than one per character,
-        // which is what keeps a ten-kilobyte frame from becoming ten thousand
-        // elements.
+        // Punctuation runs merge into one span, so a large frame does not become
+        // one element per character.
         match tokens.last_mut() {
             Some((last, held)) if *last == token && token == Token::Punctuation => {
                 held.push_str(&text);
@@ -119,11 +91,7 @@ pub fn tokens(payload: &str) -> Vec<(Token, String)> {
 }
 
 /// How many characters the string starting at `characters[0]` occupies,
-/// including both quotes — or the rest of the input, where nothing closes it.
-///
-/// An unterminated string is a frame worth seeing rather than a reason to
-/// panic: it is exactly the sort of thing the tool exists to catch an agent
-/// doing.
+/// including both quotes, or the rest of the input where nothing closes it.
 fn string_length(characters: &[char]) -> usize {
     let mut at = 1;
     while at < characters.len() {
@@ -161,7 +129,7 @@ mod tests {
         for payload in [
             r#"{"jsonrpc":"2.0","id":1,"method":"session/prompt"}"#,
             "{\n  \"a\": [1, -2.5e3, true, null],\n  \"b\": {}\n}",
-            // The frames this window exists for: the ones nobody can parse.
+            // Frames that do not parse.
             "not json at all",
             r#"{"unterminated": "string"#,
             "",
@@ -188,8 +156,7 @@ mod tests {
 
     #[test]
     fn a_key_is_still_a_key_when_the_payload_is_laid_out() {
-        // The pane draws indented payloads, so the colon a key is found by is
-        // routinely a space and a newline away from it.
+        // Indented payloads put whitespace between a key and its colon.
         let payload = "{\n  \"session\"  :  \"s-1\"\n}";
         assert_eq!(classed(payload, Token::Key), vec![r#""session""#]);
         assert_eq!(classed(payload, Token::Text), vec![r#""s-1""#]);

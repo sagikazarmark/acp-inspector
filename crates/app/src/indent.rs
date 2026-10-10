@@ -1,80 +1,38 @@
-//! The indentation switch, and the one thing the window does with an answer:
-//! draw a payload spaced out (`docs/architecture.md` §8, §9).
+//! The indentation switch, and the one call every surface drawing payload bytes
+//! makes on the way to the screen. See `docs/architecture.md` §8.
 //!
-//! **Presentational, like everything else here** (§5). What indenting does to a
-//! payload, what it refuses to touch and what an unreadable settings file falls
-//! back to are core's ([`Indentation`], [`Settings`](acp_inspector_core::Settings));
-//! this is the switch that offers the choice and the call every surface drawing
-//! bytes makes on the way to the screen.
+//! What indenting does is core's ([`Indentation`]). The choice is provided as
+//! context so the Trace, Timeline evidence and tool-call payloads read it
+//! without threading. Off is the default, and the clipboard and export always
+//! carry the wire's own bytes. Only open disclosures are laid out.
 //!
-//! **Reached from context rather than handed down**, which is the rule the copy
-//! control already follows (`crate::copy`) and for the same reason: the surfaces
-//! that draw bytes are the Trace's frames, a Timeline entry's raw evidence and a
-//! tool call's raw input and output, and a preference threaded to all three
-//! would be the Console, the Trace, the Timeline and every entry in it carrying
-//! a value for somebody else. What is in the context is the signal, so a change
-//! redraws the screens that read it.
-//!
-//! **Off is the default and off is the record.** A window nobody has switched
-//! draws exactly what crossed (§8), and what leaves the window — the clipboard,
-//! the JSONL export — is the wire's own bytes whatever the switch says: this
-//! adds whitespace on the way to a reader's eyes and to nothing else.
-//!
-//! **And only where a reader is looking.** Every payload on these screens is
-//! inside a disclosure, most of them closed, and a Trace holding ten thousand
-//! Frames would otherwise be ten thousand documents laid out to be seen by
-//! nobody on every render. So the layout is spent on the disclosures that are
-//! open, which is what [`drawn`] takes a name and a state for.
-//!
-//! **What this governs is what crossed the wire**: a Frame on the Trace tab, a
-//! Timeline entry's raw evidence, a tool call's raw input and output. Two things
-//! that look like it are deliberately not on that list. An elicitation's property
-//! schema (`crate::elicitation`) is drawn indented always, because it is this
-//! window re-serializing a type it decoded rather than bytes an agent sent —
-//! there is no wire form of it to be faithful to. And a diff's two sides, or an
-//! embedded text resource (`crate::update`), are left exactly alone even where
-//! they hold JSON: that is file content, and a tool that re-spaced one half of a
-//! diff would be reporting a change nobody made.
+//! Not governed here: an elicitation schema (drawn indented always, since it is
+//! re-serialized rather than received) and diffs or embedded text resources
+//! (file content, never re-spaced).
 
 use std::collections::HashSet;
 
 use acp_inspector_core::Indentation;
 use dioxus::prelude::*;
 
-/// The disclosures the reader has turned over from the state their markup drew
-/// them in.
-///
-/// **Turned rather than open**, because a `<details>` is the platform's own
-/// control and this window means to keep it that way: nothing here sets whether
-/// one is open, and the summary's own activation — a pointer or the keyboard, on
-/// the control the reader pressed — is what says one changed. What the markup
-/// drew is known at the call site, and this is the other half of the answer.
-///
-/// A bit that goes astray costs a payload its whitespace and nothing else, which
-/// is why it may be kept this cheaply: the state this falls back to is the wire,
-/// and the wire is what the tool is for.
+/// The disclosures the reader has toggled away from the state their markup
+/// drew them in. The `<details>` stays the platform's own control; a lost bit
+/// only costs a payload its whitespace.
 #[derive(Clone, Copy)]
 struct Turned(Signal<HashSet<String>>);
 
-/// Puts the window's indentation, and what it has been asked to lay out, where
-/// every surface that draws bytes can find them. **Once, at the root**, which is
-/// also the one place the choice is written.
+/// Provides the window's indentation and the toggled set. Called once, at the
+/// root.
 pub fn provide(chosen: Indentation) -> Signal<Indentation> {
     use_context_provider(|| Turned(Signal::new(HashSet::new())));
     use_context_provider(|| Signal::new(chosen))
 }
 
-/// How this window is drawing payloads, from anywhere under the root.
+/// How this window is drawing payloads, or the wire outside a window (screen
+/// tests render without one).
 ///
-/// **Or the wire, where there is no window over this at all.** The screen tests
-/// in this crate build one component's markup with no renderer around it, and a
-/// frame row that panicked for want of a preference would make them hostage to a
-/// corner of the window they are not about — so the answer outside a window is
-/// the same answer a window nobody has switched gives.
-///
-/// Not a hook: this is called from the functions that draw one row, which are
-/// called in loops and behind conditions, and a hook there would be a hook whose
-/// position in the order depends on the traffic.
+/// Not a hook: it is called from row-drawing functions in loops and behind
+/// conditions.
 pub fn chosen() -> Indentation {
     if !rendering() {
         return Indentation::default();
@@ -84,22 +42,13 @@ pub fn chosen() -> Indentation {
         .map_or_else(Indentation::default, |chosen| chosen())
 }
 
-/// A payload as this window draws it inside the disclosure called `key`, whose
-/// markup was drawn `open`: laid out where it is JSON, the reader asked for
-/// that, and they have that disclosure open — and exactly as it arrived
-/// otherwise.
+/// A payload as drawn inside the disclosure `key`, whose markup was drawn
+/// `open`: laid out when the switch is on, the payload is JSON and the
+/// disclosure is open; the wire's bytes otherwise.
 ///
-/// The one call every surface drawing bytes makes, so that what "indented" means
-/// cannot come to differ between the two screens that draw the same frame, and so
-/// that no surface can lay out a payload nobody is looking at. **The key is one
-/// window-wide name**: a Frame's ordinal, an entry's identity, a tool call's id
-/// and which half of it — each surface spells its own and every one of them says
-/// which surface it came from.
-///
-/// **What a closed disclosure holds is the wire**, which is also what a bit gone
-/// astray falls back to. Nothing is read out of the store at all while the switch
-/// is off, so a window in its default state never subscribes to it and a
-/// disclosure opening on that window redraws nothing.
+/// `key` is window-wide, so each surface spells its own. With the switch off
+/// nothing is read from the toggled set, so opening a disclosure redraws
+/// nothing.
 pub fn drawn(key: &str, open: bool, text: &str) -> String {
     let chosen = chosen();
     if chosen == Indentation::Wire {
@@ -112,11 +61,7 @@ pub fn drawn(key: &str, open: bool, text: &str) -> String {
     chosen.draw(text).into_owned()
 }
 
-/// Remembers that a disclosure was turned over, which is the whole of what its
-/// summary's activation says.
-///
-/// Nothing where there is no window over this: a screen test that clicks a
-/// summary is not a test about the bar.
+/// Records that a disclosure was toggled. A no-op outside a window.
 pub fn toggled(key: &str) {
     let Some(turned) = turned() else {
         return;
@@ -139,21 +84,15 @@ fn turned() -> Option<Turned> {
     rendering().then(try_consume_context::<Turned>).flatten()
 }
 
-/// Whether there is a window over this at all — asked before reaching for
-/// context, because reaching for it outside one is the panic rather than the
-/// `None` (`dioxus_core::Runtime`).
+/// Whether there is a window over this at all. Asked first, because consuming
+/// context outside one panics rather than returning `None`.
 fn rendering() -> bool {
     dioxus::core::Runtime::try_current()
         .is_some_and(|runtime| runtime.try_current_scope_id().is_some())
 }
 
-/// The switch, in the bar beside the appearance: one control, "Pretty JSON",
-/// on or off (D7). Two segments named "wire" and "indent" asked the reader to
-/// know which of two jargon words was the default; a switch with a plain name
-/// says what turning it on does.
-///
-/// The tooltip says what it does not change: the bytes that crossed, which a
-/// copy and an export still carry.
+/// The "Pretty JSON" switch in the bar. The tooltip says what it does not
+/// change: the bytes a copy and an export carry.
 #[component]
 pub fn IndentationControl(chosen: Indentation, on_choose: EventHandler<Indentation>) -> Element {
     let on = chosen.indented();
@@ -220,10 +159,7 @@ mod tests {
 
     #[test]
     fn a_surface_with_no_window_over_it_draws_the_wire() {
-        // What every screen test in this crate renders into, and the reason
-        // this answers rather than panics: a frame row is not about the bar.
-        // Neither an open disclosure nor a closed one is a reason to reach for a
-        // preference that is not there.
+        // Screen tests render without a window: answer, don't panic.
         let frame = r#"{"jsonrpc":"2.0","id":1}"#;
         assert_eq!(chosen(), Indentation::Wire);
         assert_eq!(drawn("frame 0", true, frame), frame);
@@ -275,10 +211,8 @@ mod tests {
         assert_eq!(payload(false, false, frame), wire);
         assert_eq!(payload(false, true, frame), laid_out);
 
-        // And one drawn open — an entry whose evidence *is* its rendering (§8) —
-        // which is laid out from the first render, and stops being when the
-        // reader closes it. The event says only that a disclosure changed, which
-        // is why what is kept is the turning rather than the state.
+        // One drawn open is laid out from the first render and stops being when
+        // closed: the event only says a disclosure changed.
         assert_eq!(payload(true, false, frame), laid_out);
         assert_eq!(payload(true, true, frame), wire);
     }

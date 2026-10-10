@@ -1,34 +1,16 @@
-//! The window, rendered to a file, so a visual decision can be looked at.
+//! The window rendered to HTML from fixtures, for visual review without a
+//! running shell.
 //!
-//! **Not a test of anything.** `design/inspector-visual-audit.md` is a record of
-//! screenshots somebody took by hand from a running WebView, which is why it
-//! goes stale the moment a rail moves: recapturing it means building the shell,
-//! launching an agent and driving it to a populated state. This renders the same
-//! screens from fixtures with no window and no runtime under them — the
-//! components themselves, the committed stylesheet, and a session's worth of
-//! made-up traffic for every state a visual pass has to look at: a populated
-//! turn, the first run, the capabilities, a permission and an elicitation
-//! waiting on the reader, the evidence cards, a turn still streaming, and the
-//! three dialogs open.
-//!
-//! The two requests that wait on the reader are real ones: a scripted agent
-//! (`sh`, printing two frames) asks them of a real `Inspector`, because only
-//! the core can make a request that can be answered, and a picture of a panel
-//! that could not be answered would be a picture of something else.
-//!
-//! What it cannot show is what only an engine knows: real scrollbars, the
-//! disclosure that is a `<details>`, motion. **Every page is drawn still**: the
-//! writer marks the document `still`, and the rule that answers it lives in
-//! the page this writes rather than in the window's stylesheet, so a capture is
-//! the settled frame rather than one caught mid-fade.
+//! The two waiting requests come from a scripted agent talking to a real
+//! `Inspector`, since only core can make a request that can be answered. Pages
+//! are marked `still` so a capture is the settled frame.
 //!
 //! ```text
 //! INSPECTOR_MOCK=target/mock cargo test -p acp-inspector mock::writes
 //! ```
 //!
-//! It writes nothing unless that variable is set, so an ordinary `cargo test`
-//! runs it as a render that is thrown away — which is the assertion worth
-//! having here: every screen still renders.
+//! Without that variable the render is thrown away, which still asserts that
+//! every screen renders.
 
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
@@ -41,22 +23,22 @@ use acp_inspector_core::{
 };
 use dioxus::prelude::*;
 
+use crate::app::bar::TopBar;
 use crate::connect;
 use crate::console::{Console, Tab};
 use crate::rail::Rail;
 use crate::timeline::Timeline;
-use crate::{Focus, Spine, TopBar, rail, style};
+use crate::{Focus, Spine, rail, style};
 
-/// When the fixture traffic crossed. Fixed, so two renders of the same screen
-/// are the same bytes and a diff between them is a change somebody made.
+/// When the fixture traffic crossed. Fixed so renders are byte-identical.
 fn at(seconds: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(73_200 + seconds)
 }
 
 const SESSION: &str = "testy-session-1";
 
-/// The trace file the viewing page opened: an export of a short session, with
-/// one frame the recording dropped.
+/// The trace file the viewing page opened: a short session export with one
+/// dropped frame.
 const OPENED: &str = concat!(
     r#"{"type":"header","format":"acp-inspector-trace","version":1,"at":73200000,"frames":4,"dropped":1,"warning":"The agent's stderr was not exported."}"#,
     "\n",
@@ -143,14 +125,12 @@ enum Scene {
     Sessions,
     /// The populated window with the command palette open.
     Palette,
-    /// The wire as a workbench: the raw composer open, calls waiting for a
-    /// response, stderr merged among the frames, and a client service the
-    /// agent asked for waiting on the reader in the timeline.
+    /// The wire as a workbench: raw composer open, calls waiting, stderr
+    /// merged, and a client service waiting on the reader.
     Workbench,
     /// A trace opened from a file, with the banner that says so.
     Viewing,
-    /// The populated window with the rail open as a drawer — the narrow
-    /// layout's, captured at a width that has one.
+    /// The populated window with the rail open as a drawer.
     Drawer,
     /// The populated window with the capabilities open wide.
     Wide,
@@ -174,8 +154,7 @@ impl Scene {
         Scene::Wide,
     ];
 
-    /// The file a page of this scene is written to, before its scheme. The
-    /// populated page keeps the name it always had.
+    /// The file a page of this scene is written to, before its scheme.
     fn file(self) -> &'static str {
         match self {
             Scene::Populated => "",
@@ -221,8 +200,8 @@ impl Scene {
         }
     }
 
-    /// What the record says the session's turns came to: none before anything
-    /// was launched, and the live one open while it streams or waits.
+    /// The session's turns: none before a launch, and the live one open while
+    /// it streams or waits.
     fn turns(self) -> Vec<Turn> {
         let outcome = match self {
             Scene::FirstRun => return Vec::new(),
@@ -239,7 +218,7 @@ impl Scene {
 }
 
 /// The two requests a turn can stop on, asked by a scripted agent of a real
-/// `Inspector` — the only thing that can make one that can be answered.
+/// `Inspector`.
 struct Asked {
     _inspector: Inspector,
     permission: PermissionRequest,
@@ -419,8 +398,7 @@ fn entries(scene: Scene, asked: &Asked) -> Vec<TimelineEntry> {
                 4,
                 "The retry budget is four attempts with a 250ms floor, set in transport.rs.",
             ),
-            // And the thing a flat list could not show: the agent went on
-            // talking after it said the turn was over.
+            // The agent went on talking after it ended the turn.
             TimelineEntry {
                 turn: None,
                 ..entry(
@@ -453,8 +431,7 @@ fn frames() -> Vec<TracedFrame> {
         (Direction::FromAgent, r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"testy-session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"The retry budget"}}}}"#),
     ]
     .into_iter()
-    // Repeated until the list overflows: what a scroller does at its end is
-    // only visible on a list long enough to have one.
+    // Repeated until the list overflows, so the scroller's end is visible.
     .cycle()
     .take(36)
     .enumerate()
@@ -467,8 +444,7 @@ fn frames() -> Vec<TracedFrame> {
     .collect()
 }
 
-/// The other half of the Console: what the agent said about itself that was not
-/// a frame, beside what the transport said about the agent.
+/// The Console's diagnostics: the agent's stderr and the transport's notes.
 fn lines() -> Vec<Diagnostic> {
     [
         DiagnosticKind::Stderr("testy: listening on stdio".to_owned()),
@@ -505,8 +481,7 @@ fn described() -> v1::InitializeResponse {
         ))])
 }
 
-/// What a `session/list` came back with: two sessions, one of them the live
-/// one, so the dialog draws both states of a row.
+/// A `session/list` answer: two sessions, one of them live.
 fn listed() -> acp_inspector_core::SessionListing {
     let mut listing = acp_inspector_core::SessionListing::default();
     listing.sessions = vec![
@@ -548,8 +523,8 @@ fn launched() -> AgentCommand {
     }
 }
 
-/// A scene's timeline, carried as a prop. Never equal to another, so a render
-/// is always of the value it was given.
+/// A scene's timeline as a prop. Never equal to another, so every render uses
+/// the value it was given.
 #[derive(Clone)]
 struct Drawn(Vec<TimelineEntry>);
 
@@ -559,8 +534,8 @@ impl PartialEq for Drawn {
     }
 }
 
-/// The whole window, from fixtures — the same regions `App` composes, with the
-/// stores replaced by values.
+/// The whole window from fixtures: the regions `App` composes, with stores
+/// replaced by values.
 #[component]
 fn Window(scene: Scene, drawn: Drawn) -> Element {
     let live = scene.live();
@@ -569,9 +544,8 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
     } else {
         rail::Tab::Session
     };
-    // **A window with nothing behind it has nothing in it.** The first-run page
-    // is a window before anything was launched: no Timeline, no Session, no
-    // Frames, no turn — and no `turn 1` in a header over an empty screen.
+    // The first-run page has nothing launched: no timeline, session, frames or
+    // turn.
     let entries = use_signal(|| drawn.0.clone());
     let frames = use_signal(|| if live { frames() } else { Vec::new() });
     let lines = use_signal(|| if live { lines() } else { Vec::new() });
@@ -583,9 +557,6 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         scene,
         Scene::Permission | Scene::Elicitation | Scene::Workbench
     );
-    // The wire's own tools, as the window hands them to the Console: on the
-    // workbench, the raw composer open over calls still waiting, with the
-    // agent's stderr merged among the frames; on the viewing page, a file.
     let wire = use_hook(|| {
         let mut wire = crate::wire::Wire::detached(Trace::from_records(frames.peek().clone(), 0));
         match scene {
@@ -627,7 +598,6 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         }
         wire
     });
-    // The capabilities open wide, on the page that shows them so.
     use_context_provider(|| rail::WideCapabilities(Signal::new(scene == Scene::Wide)));
     let body = match scene {
         Scene::Drawer => format!("{} drawer-open", Focus::Turn.class()),
@@ -639,16 +609,11 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         view
     };
 
-    // One value for the two surfaces that draw it, exactly as the window builds
-    // it: the Agent screen says what was claimed, the dialog acts on what is
-    // there.
     let claims = crate::agent::Claims {
         session: session.clone(),
         listing: live.then(listed),
-        // The first-run page is a window with no agent behind it, so the
-        // surfaces that act on one are drawn the way that window draws them:
-        // the record still there, the controls inert, and each surface saying
-        // which of the two it is.
+        // No agent on the first-run page: the record stays, the controls are
+        // inert.
         connected: live,
         ..crate::agent::Claims::about(live.then(described))
     };
@@ -657,11 +622,8 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
         TopBar {
             status: if live { ConnectionStatus::Connected } else { ConnectionStatus::Disconnected },
             appearance: Appearance::System,
-            // The window as it opens: the wire, which is both the default and
-            // the state a visual pass should be looking at, since it is what
-            // every screen under this bar is drawn from (§8).
             indentation: Indentation::Wire,
-            subject: crate::subject(
+            subject: crate::app::bar::subject(
                 live.then(described).as_ref(),
                 live.then(launched).as_ref(),
             ),
@@ -711,9 +673,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                     held_frames: 0..6,
                     blocked,
                     problem: None,
-                    // The same call the window makes, so the fixture draws the
-                    // composer's mode control where the window has one.
-                    mode: crate::cycle(&configured(), live),
+                    mode: crate::app::settings::cycle(&configured(), live),
                     on_prompt: move |_| Ok(()),
                     on_stop: move |()| {},
                     on_set_mode: move |_| {},
@@ -723,7 +683,6 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                     on_reveal: move |_| {},
                     described: live,
                     turns: scene.turns(),
-                    // The first-run card's recent invocations, as the window passes them.
                     recent: (!live).then(|| rsx! {
                         crate::spawn::RecentList {
                             entries: vec![launched()],
@@ -752,19 +711,13 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
             }
         }
 
-        // The way between the three regions on a window too narrow for them,
-        // which the stylesheet draws only below the width where they stop
-        // fitting.
-        crate::RegionBar { selected: Focus::Turn, on_select: move |_| {} }
+        crate::app::layout::RegionBar { selected: Focus::Turn, on_select: move |_| {} }
 
         crate::session::Sessions { claims: claims.clone() }
         rail::CapabilitiesSheet { claims }
 
-        // Every command the window has, from the same list the window builds:
-        // the fixture draws the surface rather than a hand-written stand-in for
-        // it, so a capture of the palette is a capture of what is there.
         crate::palette::Palette {
-            commands: crate::commands(crate::PaletteWiring {
+            commands: crate::app::commands::commands(crate::app::commands::PaletteWiring {
                 connected: live,
                 described: live,
                 traced: live,
@@ -783,9 +736,8 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
     }
 }
 
-/// What the writer adds to the page so a capture is the settled frame: no
-/// animation and no transition, on a document the writer marks `still`. It is
-/// the page's rule and not the window's, so the window never carries it.
+/// Added by the writer so a capture is the settled frame: no animation or
+/// transition on a document marked `still`. Never part of the window's sheet.
 const STILL: &str = "html.still *, html.still *::before, html.still *::after { animation: none !important; transition: none !important; }";
 
 /// The rendered window inside the document the shell gives it, in one scheme.
@@ -799,12 +751,9 @@ fn page(theme: &str, scene: Scene, asked: &Asked) -> String {
     );
     dom.rebuild_in_place();
     let mut body = dioxus_ssr::render(&dom);
-    // A dialog drawn open, as `showModal` leaves it: the attribute the
-    // platform sets, which daisyUI's modal answers to. Only the attribute,
-    // because a class named here would be one Tailwind's scan of this crate
-    // compiles into the window's stylesheet.
-    // The launch form with its client services expanded, as a reader who
-    // opened the disclosure sees it.
+    // A dialog drawn open, as `showModal` leaves it. Only the attribute: a class
+    // named here would be compiled into the window's stylesheet by Tailwind.
+    // The launch form with its client services expanded.
     if scene == Scene::Connect {
         let closed = "<details class=\"client-services-disclosure\"";
         assert!(

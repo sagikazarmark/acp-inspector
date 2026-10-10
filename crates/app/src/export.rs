@@ -212,7 +212,7 @@ impl Work {
     }
 
     /// Whether frames recorded up to `recorded` include some no export has
-    /// written (F9).
+    /// written.
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn unexported(&self, recorded: usize) -> bool {
         recorded > self.exported

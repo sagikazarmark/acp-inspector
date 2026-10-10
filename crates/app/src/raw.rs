@@ -1,15 +1,10 @@
-//! The raw request composer (F2): a method, params as JSON, request or
-//! notification — sent on the inspector's own connection with an id from its
-//! own sequence, and the answer shown underneath, paired by the trace.
+//! The raw request composer: a method, params as JSON, request or notification,
+//! sent on the inspector's own connection with an id from its own sequence, and
+//! the paired answer shown underneath.
 //!
-//! **What is sent is what was typed.** The params are checked to be JSON and
-//! sent as written (core only takes the line breaks out), so key order and
-//! number spellings survive. Params that are valid JSON but not an object or an
-//! array are sent anyway, with a caution: an inspector is where you find out
-//! what an agent does with exactly that.
-//!
-//! **And nothing it sends changes what the window says the agent did**: core
-//! marks the frame hand-sent and keeps its answer out of every store
+//! The params are sent as typed (core only removes line breaks), so key order
+//! and number spellings survive; non-structured JSON is sent with a caution.
+//! Core marks the frame hand-sent and keeps its answer out of every store
 //! (`Inspector::send_raw`).
 
 use acp_inspector_core::{Direction, Frame, FrameKind, HandSent, Indentation, TracedFrame};

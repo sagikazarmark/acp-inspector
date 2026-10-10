@@ -1,25 +1,10 @@
-//! The Console (`docs/architecture.md` §9): the wire, beside the turn rather
-//! than beneath it, holding the Trace and the Diagnostic channel as tabs and
-//! showing one at a time.
+//! The Console: the Trace and the Diagnostic channel, as two tabs beside the
+//! turn. See `docs/architecture.md` §9 and ADR 0009.
 //!
-//! Both of its surfaces are what was captured *below* the typed layer, which is
-//! what makes them one panel and the timeline not part of it (`CONTEXT.md`,
-//! *Console*). What changed with the three-column instrument (ADR 0009) is
-//! where the panel is: it spanned the window because a frame is a long line,
-//! and it is a column now because a frame is read *whole* in the pane at the
-//! foot of the list rather than unfolded into the row it is in. The row keeps
-//! the ordinal, the direction, the envelope and the first line; the pane has
-//! the room.
-//!
-//! The diagnostic channel carries the agent's own stderr and the transport's
-//! remarks about the connection in one list, because they are one channel and
-//! reading them apart is how "the agent explained itself and then died" stops
-//! being legible.
-//!
-//! **One escalation into it** — the connection status, through
-//! [`surfaces_diagnostics`], applied by [`App`](crate::App) so that the console
-//! is a view of a store here too. Nothing else on this panel escalates: a tab
-//! says how much of it there is and never that the reader should look.
+//! Both surfaces are what was captured below the typed layer. The diagnostic
+//! channel holds the agent's stderr and the transport's remarks in one list,
+//! so their order is kept. The only automatic switch to it is a connection
+//! status, through [`surfaces_diagnostics`], applied by [`App`](crate::App).
 
 use std::collections::HashSet;
 
@@ -37,16 +22,11 @@ use crate::time::stamp;
 use crate::trace::{Kinds, TraceView, named_kind};
 use crate::wire::Wire;
 
-/// Which of the Console's two surfaces is on screen.
-///
-/// Window-session state and nothing else: it is never written to
-/// `settings.json`, because a window that opened onto an empty Diagnostic tab
-/// because of what was being debugged yesterday would be a window whose first
-/// screen is about the last session.
+/// Which of the Console's two surfaces is on screen. Window-session state,
+/// never persisted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
-    /// Every frame that crossed the wire. The default: it is the surface that
-    /// has something to say about every agent, including one that is behaving.
+    /// Every frame that crossed the wire.
     #[default]
     Trace,
     /// Everything the transport said about the Connection that was not a Frame.
@@ -54,8 +34,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// What the tab is called in the document, so the body on screen can name
-    /// the tab that selected it.
+    /// The tab's element id, which its panel is labelled by.
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Trace => "console-tab-trace",
@@ -83,9 +62,7 @@ impl Tab {
 #[component]
 pub fn Console(
     frames: ReadSignal<Vec<TracedFrame>>,
-    /// How many frames the trace captured and no longer holds — cleared, or
-    /// aged out of its cap. Named for what it counts, because the other surface
-    /// has one too.
+    /// How many frames the trace captured and no longer holds.
     dropped_frames: usize,
     /// What became of the last export: the file it wrote, or why it did not.
     saved: Option<crate::export::Outcome>,
@@ -97,20 +74,15 @@ pub fn Console(
     dropped_lines: usize,
     tab: Tab,
     on_select: EventHandler<Tab>,
-    /// The frames a Timeline entry was made of, sent here by somebody reading
-    /// that entry — and which of the trace's frames became one, so a row can
-    /// offer the way back.
+    /// The frames a Timeline entry asked to reveal, and which frames became
+    /// entries (so a row can link back).
     revealed: ReadSignal<Vec<u64>>,
     decoded: ReadSignal<HashSet<u64>>,
     on_seek: EventHandler<u64>,
-    /// The connection's tools beyond the frames: pairing, pending calls,
-    /// sending by hand, and the trace opened from a file (`crate::wire`).
+    /// Pairing, pending calls, sending by hand and opened traces (`crate::wire`).
     #[props(default)]
     wire: Option<Wire>,
 ) -> Element {
-    // Whether there is anything to export or clear. Read here rather than in
-    // the Trace because the controls are here, and it is the same question the
-    // tab's own count answers.
     let nothing_traced = frames.read().is_empty();
     let cannot_export = nothing_traced || export_pending;
     let viewing = wire.is_some_and(|wire| wire.view.is_open());
@@ -119,39 +91,20 @@ pub fn Console(
     let saved = saved.filter(|outcome| dismissed() != Some(outcome.id));
     let saved_id = saved.as_ref().map(|outcome| outcome.id);
     let composing = wire.is_some_and(|wire| (wire.composing)()) && !viewing;
-    // And whether the surface in front of the reader has captured anything at
-    // all, which is what decides whether there is anything to narrow.
     let empty = match tab {
         Tab::Trace => nothing_traced,
         Tab::Diagnostics => lines.read().is_empty(),
     };
 
-    // What the reader is looking for, narrowing whichever surface is on screen.
-    //
-    // **Presentation and nothing else** (§5): both stores keep everything, both
-    // counts on the tabs go on saying how much there is, and an export writes
-    // the whole trace whatever is typed here.
-    //
-    // One box for both surfaces rather than one each. They are two views of one
-    // connection behind two tabs in one panel, and a reader who narrows to a
-    // session id and switches tabs is asking the same question of the other
-    // account of it.
+    // One filter for both surfaces. Presentation only: stores, tab counts and
+    // exports are unaffected.
     let mut filter = use_signal(String::new);
-    // And which envelope shapes the Trace is showing, which is the same kind of
-    // narrowing said as chips because the answers are a closed set (`trace.rs`).
     let mut kinds = use_signal(Kinds::default);
-    // And which way they crossed (F8).
     let mut directions = use_signal(Directions::default);
-    // Which frame the pane under the list is reading. The Console's rather than
-    // the Trace's, because arriving from the Timeline changes it and that
-    // request is delivered to the panel.
+    // Held here, not in the Trace, because a reveal from the Timeline sets it.
     let mut selected = use_signal(|| None::<u64>);
 
-    // Except when somebody arrives from the Timeline. A row asked for by
-    // ordinal is a row this panel has been told to *show*, and a narrowing it
-    // does not match would answer that by showing nothing at all — so both
-    // narrowings give way to the request, and the frame it named is the one the
-    // pane reads.
+    // A reveal clears every narrowing, so the requested frame is shown.
     use_effect(move || {
         if let Some(first) = revealed().first().copied() {
             filter.set(String::new());
@@ -161,10 +114,8 @@ pub fn Console(
         }
     });
 
-    // Whether any frame is in none of the envelope's four shapes, which is what
-    // decides whether the fifth chip is worth drawing: a chip that can hide
-    // nothing is chrome, and one missing for traffic that exists would be a
-    // surface able to hide frames with nothing to press to bring them back.
+    // The Unreadable chip is drawn only when some frame has none of the four
+    // envelope shapes.
     let unreadable = frames.read().iter().any(|traced| {
         !matches!(
             traced.frame.summary().kind,
@@ -193,11 +144,8 @@ pub fn Console(
                 }
                 span { class: "grow" }
 
-                // What a reader does with a trace once they have one, on the bar
-                // that already names it — and only on the surface they act on:
-                // the diagnostic channel is neither exported nor cleared, and a
-                // control that did nothing on the tab in front of you is worse
-                // than one that is not there.
+                // Trace-only actions: the diagnostic channel is neither exported
+                // nor cleared.
                 if tab == Tab::Trace {
                     if let Some(wire) = wire {
                         if !viewing {
@@ -274,9 +222,6 @@ pub fn Console(
                 p { class: "saved", role: "status", "Writing the trace…" }
             }
 
-            // Only where there is something to narrow. A surface that has
-            // captured nothing says so in its own empty state, and a filter box
-            // over it is a control that can do nothing.
             if !empty {
                 div { class: "wire-filters",
                     if tab == Tab::Trace {
@@ -357,9 +302,6 @@ pub fn Console(
             }
 
             // Both panel identities stay in the document, so each tab's
-            // `aria-controls` always resolves. Only the selected one renders
-            // its live list.
-            // Both panel identities stay in the document, so each tab's
             // `aria-controls` always resolves; only the selected one renders a
             // live list.
             section {
@@ -414,13 +356,9 @@ pub fn Console(
 /// How long an armed Clear waits for its confirmation before it disarms.
 const CONFIRM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// Clear, confirmed in two steps (F9).
-///
-/// **A confirm rather than an Undo**, because the trace store has no way to
-/// put cleared frames back, and the frames it drops are the evidence a reader
-/// may not have exported yet. The first press arms it and the second clears;
-/// Cancel, Escape, or a few seconds of nothing disarm it. The label changes on
-/// the same button, so focus stays where it was pressed.
+/// Clear, confirmed in two steps: the trace store cannot restore cleared
+/// frames, so there is no Undo. Cancel, Escape or a timeout disarm it, and the
+/// label changes on the same button so focus stays put.
 #[component]
 fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
     let mut armed = use_signal(|| false);
@@ -442,9 +380,6 @@ fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
                 aria_label: if armed_now { "Confirm clearing the trace" } else { "Clear the trace" },
                 aria_disabled: nothing_traced.then_some("true"),
                 tabindex: nothing_traced.then_some("-1"),
-                // Said on the control, because it is the one thing about
-                // clearing that surprises people: a file already written is
-                // not this trace's any more.
                 title: "Drop the frames captured so far; exports already written are untouched",
                 onclick: move |_| {
                     if nothing_traced {
@@ -482,7 +417,7 @@ fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
     }
 }
 
-/// Which way a frame crossed, as the two chips that hide one direction (F8).
+/// Which directions the Trace shows, as two chips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Directions {
     pub sent: bool,
@@ -526,21 +461,13 @@ impl Directions {
     }
 }
 
-/// One tab: what it selects, and how much of it there is.
-///
-/// One control for both, so that "tabs carry counts and nothing else" (§9) is
-/// something this file says once rather than twice: what each tab counts is its
-/// own, and what a tab is allowed to be is not.
+/// One tab and its counts. Tabs carry counts and nothing else (§9).
 #[component]
 fn TabControl(
     tab: Tab,
-    /// Which tab the panel is showing — this one, or the other.
     selected: Tab,
-    /// How much of the surface there is to read.
     held: usize,
-    /// And how much of it was captured and is no longer held. Absent when there
-    /// is none, because a count that is not the whole session should never look
-    /// like one.
+    /// Captured and no longer held; drawn only when non-zero.
     gone: usize,
     on_select: EventHandler<Tab>,
 ) -> Element {
@@ -563,9 +490,6 @@ fn TabControl(
                 focus_tab(chosen);
             },
             "{tab.label()}"
-            // Nothing where there is nothing. A surface that has captured none
-            // of anything says so in the empty state the tab selects, and a
-            // badge reading zero is a count of the times it has said it.
             if held > 0 {
                 span { class: "count", "data-slot": "count", "{held}" }
             }
@@ -591,20 +515,15 @@ fn focus_tab(tab: Tab) {
     focus_id(tab.id());
 }
 
-/// Which way a set of roving-focus items is laid out, and so which arrows move
-/// through it.
+/// How a roving-focus set is laid out, and so which arrows move through it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Axis {
     /// A tablist: ←/→ move and wrap, the WAI-ARIA tabs pattern.
     Horizontal,
 }
 
-/// Where a key moves the focus in a set of `len` items, from `at` — or `None`
-/// for a key that does not move it.
-///
-/// One answer for the roving sets drawn in Rust (the Console's tabs, the
-/// elicitation's Form/Raw tabs, and the rail's tabs if it wants them). The
-/// Timeline and Trace lists rove in [`ROVE`], which moves the same way.
+/// Where a key moves focus in a set of `len` items from `at`, or `None`. Used by
+/// the tab sets drawn in Rust; the Timeline and Trace lists use [`ROVE`].
 pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize> {
     if len == 0 {
         return None;
@@ -620,15 +539,12 @@ pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize
     }
 }
 
-/// One Tab stop for a long list (A4): ↑/↓ move to the row above or below *on
-/// screen*, Home/End to the first and last, and Enter presses the row's
-/// `activate` control where one is named.
+/// One Tab stop for a long list: ↑/↓ move by on-screen position, Home/End to
+/// the ends, Enter presses the row's `activate` control.
 ///
-/// In the page rather than in Rust, because only the page knows which element
-/// a key landed on: a key typed into a field inside a row must stay the
-/// field's. Rows are ordered by where they are drawn — which is also their DOM
-/// order, oldest first (A3) — so ↓ is always the newer row. Which row
-/// holds `tabindex="0"` is the screen's to render; this only moves focus.
+/// In the page because only it knows which element a key landed on; keys in a
+/// field inside a row stay the field's. The screen renders which row holds
+/// `tabindex="0"`; this only moves focus.
 const ROVE: &str = r#"
 const [listSelector, rowSelector, activateSelector] = await dioxus.recv();
 await new Promise(requestAnimationFrame);
@@ -669,10 +585,8 @@ pub(crate) fn rove(list: &str, row: &str, activate: Option<&str>) {
     let _ = roving.send((list.to_owned(), row.to_owned(), activate.map(str::to_owned)));
 }
 
-/// Moves focus to the element with this id, once it is in the document.
-///
-/// The id is sent to the script rather than written into it, so an id built
-/// from agent-supplied text cannot become part of a program.
+/// Moves focus to the element with this id once it is in the document. The id
+/// is sent as data, never written into the script.
 pub(crate) fn focus_id(id: &str) {
     let focusing = document::eval(
         "const id = await dioxus.recv(); requestAnimationFrame(() => document.getElementById(id)?.focus());",
@@ -680,14 +594,8 @@ pub(crate) fn focus_id(id: &str) {
     let _ = focusing.send(id.to_owned());
 }
 
-/// Whether a row survives what the reader typed into the Console's bar.
-///
-/// **Case-insensitive substring, and deliberately nothing cleverer.** A glob or
-/// a regular expression is a language to get wrong in a box with no room to say
-/// what went wrong in, and what is typed here is a method name, a session id or
-/// a word out of a stderr line — all of which are found by containing them. An
-/// empty filter matches everything, which is what makes this one expression the
-/// whole of the feature rather than a branch at every call site.
+/// Whether a row matches the Console filter: a case-insensitive substring, and
+/// an empty filter matches everything.
 pub(crate) fn matching(text: &str, filter: &str) -> bool {
     let filter = filter.trim();
     filter.is_empty() || contains_folded(text, &filter.to_lowercase())
@@ -695,10 +603,8 @@ pub(crate) fn matching(text: &str, filter: &str) -> bool {
 
 /// Whether `text` contains `needle` (already lowercase), ignoring case.
 ///
-/// **Without lowercasing the text** (L1): a retained frame can be megabytes,
-/// and copying every one of them to search it was the cost of every keystroke.
-/// An ASCII needle — a method, an id, a session id — is compared byte by byte
-/// with ASCII folding; anything else falls back to Unicode lowercasing.
+/// An ASCII needle is compared with ASCII folding so a megabyte frame is not
+/// copied per keystroke; anything else falls back to Unicode lowercasing.
 pub(crate) fn contains_folded(text: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -712,17 +618,8 @@ pub(crate) fn contains_folded(text: &str, needle: &str) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// What a narrowing is hiding, said where the rows it hid would have been.
-///
-/// **A surface that is narrowed says so.** The tab's count goes on saying how
-/// much the surface holds — it is a fact about the connection and not about the
-/// reader — so without this line a filter that matched nothing would be
-/// indistinguishable from an agent that had gone quiet, on the one panel whose
-/// job is to say what crossed the wire.
-///
-/// `narrowing` rather than the filter text, because the Trace has two of them:
-/// a box that is typed in and a row of chips that are pressed, and a surface
-/// missing rows says so whichever took them (`trace.rs`).
+/// What a narrowing is hiding, so an empty filter result is not mistaken for a
+/// quiet agent. `narrowing` covers both the filter box and the Trace's chips.
 pub(crate) fn narrowed(shown: usize, held: usize, what: &str, narrowing: bool) -> Element {
     if !narrowing || held == 0 {
         return rsx! {};
@@ -738,8 +635,7 @@ pub(crate) fn narrowed(shown: usize, held: usize, what: &str, narrowing: bool) -
         p { class: "narrowed", "data-slot": "narrowed",
             "{count} "
             span { class: "hint", "The whole surface is still captured, exported and counted." }
-            // Said once the typing settles rather than on every keystroke
-            // (F8): a count read aloud per letter is noise.
+            // Announced once typing settles, not per keystroke.
             Settled { text: count.clone() }
         }
     }
@@ -768,25 +664,16 @@ fn Settled(text: String) -> Element {
     }
 }
 
-/// The diagnostic log, by the name the scroll watcher and its control know it
-/// under (`tail.rs`).
+/// The diagnostic log's name for the tail watcher (`tail.rs`).
 pub(crate) const LINES: &str = "lines";
 
 /// The diagnostic log, newest at the bottom.
 #[component]
-fn Diagnostics(
-    lines: ReadSignal<Vec<Diagnostic>>,
-    dropped: usize,
-    /// What the Console's bar is narrowing both surfaces to.
-    filter: String,
-) -> Element {
+fn Diagnostics(lines: ReadSignal<Vec<Diagnostic>>, dropped: usize, filter: String) -> Element {
     let anchor = use_signal(|| None);
     let held_lines = lines.read();
     let held = held_lines.len();
-    // The line as it is *rendered*, which is what the reader is looking at and
-    // therefore what they are searching: the transport's own remarks are part
-    // of this channel, and a filter that only read the agent's stderr would
-    // hide the line saying the agent never started.
+    // Filter the rendered text, which includes the transport's remarks.
     let ordinals: Vec<_> = held_lines
         .iter()
         .enumerate()
@@ -810,13 +697,9 @@ fn Diagnostics(
             div { class: "lines-scroll", "data-tail": LINES,
                 "data-page-latest": "{range.end == ordinals.len()}",
             ul { class: "lines", "data-slot": "diagnostics",
-                // Oldest first, in the DOM as on screen (A3). The scroller
-                // around the list is laid out bottom-up with the list as its
-                // one child, which keeps a streaming console pinned to its
-                // latest line without a scroll script.
-                //
-                // Keyed by the ordinal the line was captured under, the way the
-                // Trace's rows are, even as the retention budgets rotate it.
+                // Oldest first; the scroller is bottom-up, so it stays pinned to
+                // the latest line. Keyed by capture ordinal, stable under
+                // retention.
                 for ordinal in ordinals[range.clone()].iter().copied() {
                     { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
                     li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
@@ -834,9 +717,8 @@ fn Diagnostics(
     }
 }
 
-/// Ordinary rows carry only a literal prefix. Opening one mounts a bounded
-/// byte-window reader; Copy shares the original text and materializes it only
-/// on activation, never the preview or the current window.
+/// A line's text: long lines show a prefix and open a bounded reader; Copy
+/// takes the whole original text.
 #[component]
 fn DiagnosticEvidence(text: std::sync::Arc<str>) -> Element {
     let mut open = use_signal(|| false);
@@ -863,21 +745,14 @@ fn DiagnosticEvidence(text: std::sync::Arc<str>) -> Element {
     }
 }
 
-/// Whether a connection status is one the reader is owed the diagnostic channel
-/// for (§9).
-///
-/// The MCP Inspector flow worth copying verbatim: an agent that is gone without
-/// being asked to go puts its own reason on screen, so a launch that failed
-/// cannot be mistaken for one that is taking a while. Two states mean that —
-/// one for an agent that never ran, one for an agent that ran and died — and
-/// core is where they are told apart.
+/// Whether a status switches the Console to Diagnostics: an agent that failed
+/// to start or was lost, so its reason is on screen (§9).
 pub fn surfaces_diagnostics(status: ConnectionStatus) -> bool {
     diagnostics_announcement(status).is_some()
 }
 
-/// What the persistent live region says when a status automatically surfaces
-/// Diagnostics. One policy decides both the surface change and its words so a
-/// future status cannot do one without the other.
+/// What the live region says when a status surfaces Diagnostics. One policy
+/// decides both the switch and its words.
 pub fn diagnostics_announcement(status: ConnectionStatus) -> Option<&'static str> {
     match status {
         ConnectionStatus::FailedToStart => Some("Failed to start. Diagnostics opened."),
@@ -913,8 +788,8 @@ impl Tone {
     }
 }
 
-/// What a line says, in plain words: the agent's own stderr verbatim, and the
-/// transport's remarks as sentences about what happened to the record.
+/// A line's text: the agent's stderr verbatim, the transport's remarks as
+/// sentences.
 pub(crate) fn said(kind: &DiagnosticKind) -> String {
     use crate::trace::size;
     match kind {
@@ -967,8 +842,7 @@ fn tone(kind: &DiagnosticKind) -> Tone {
     }
 }
 
-/// Whose voice a Diagnostic line is in. The Agent's stderr stays verbatim; all
-/// other variants are the transport's account of the Connection.
+/// Whose voice a Diagnostic line is in.
 fn diagnostic_source(kind: &DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::Stderr(_) => "Agent stderr",
@@ -1081,8 +955,7 @@ mod tests {
 
     use super::*;
 
-    /// One line on the diagnostic channel, in one of the two tones the console
-    /// draws: the agent talking, and the connection's bad news.
+    /// One diagnostic line: the agent's stderr, or the connection's bad news.
     #[derive(Clone, PartialEq)]
     enum Said {
         Ordinary,
@@ -1101,9 +974,7 @@ mod tests {
         }
     }
 
-    /// One frame. Which frame it is matters to nothing below: what the Console
-    /// says about the trace is how many of them there are and what shapes they
-    /// were in.
+    /// One frame; only its count and shape matter below.
     fn frame(json: &str) -> TracedFrame {
         TracedFrame {
             at: SystemTime::UNIX_EPOCH,
@@ -1113,13 +984,11 @@ mod tests {
         }
     }
 
-    /// What the Console is being asked to show: which tab, and what each of the
-    /// two surfaces holds.
+    /// Which tab is shown, and what each surface holds.
     #[derive(Clone, PartialEq, Default)]
     struct Screen {
         tab: Tab,
-        /// The frames, by what each one said — which is how a test asks for a
-        /// shape without carrying a value that cannot be compared.
+        /// The frames, by their JSON text.
         frames: Vec<String>,
         dropped: usize,
         said: Vec<Said>,
@@ -1196,8 +1065,7 @@ mod tests {
             html.contains(r#"data-slot="trace""#) && !html.contains(r#"data-slot="diagnostics""#),
             "and the surface a window opens on is the one with something to say about every agent: {html}"
         );
-        // Tabs carry counts and nothing else — no unread badge, no activity
-        // dot, no severity mark when a bad diagnostic line arrives.
+        // Tabs carry counts and nothing else.
         assert!(
             html.contains(r#"data-slot="count""#) && html.contains(">2</span>"),
             "the count is the fact: {html}"
@@ -1236,10 +1104,7 @@ mod tests {
 
     #[test]
     fn the_traces_verbs_are_on_the_console_bar_and_only_on_its_own_surface() {
-        // One strip of chrome for one panel, and the two verbs of one surface:
-        // the Diagnostic channel is neither exported nor cleared, and a control
-        // that did nothing on the tab in front of you is worse than one that is
-        // not there.
+        // The Diagnostic channel is neither exported nor cleared.
         let traced = shown(Screen {
             frames: Screen::traced(1),
             ..Screen::default()
@@ -1257,9 +1122,7 @@ mod tests {
             "clearing says the one thing about it that surprises people: {clear}"
         );
 
-        // Unavailable rather than absent while there is nothing to act on, and
-        // ARIA-disabled rather than natively so, which is the rule every other
-        // guarded control here follows.
+        // Nothing to act on: ARIA-disabled, not absent and not natively disabled.
         let empty = shown(Screen::default());
         let export = action(&empty, "export").expect("the export control stays in the document");
         assert!(
@@ -1304,8 +1167,7 @@ mod tests {
             unreadable.contains(r#"data-kind="other""#),
             "and traffic in none of the four shapes has one, so nothing can be hidden with no way back: {unreadable}"
         );
-        // Every chip starts pressed: a surface that opened narrowed would be
-        // hiding traffic nobody asked it to hide.
+        // Every chip starts pressed, so nothing is hidden by default.
         assert_eq!(
             ordinary.matches(r#"aria-pressed=true"#).count(),
             6,
@@ -1315,10 +1177,7 @@ mod tests {
 
     #[test]
     fn the_filter_narrows_the_surface_in_front_of_the_reader_and_nothing_else() {
-        // One box for both surfaces: they are two views of one connection
-        // behind two tabs in one panel, and a reader who narrows to a session id
-        // and switches tabs is asking the same question of the other account of
-        // it.
+        // One filter box serves both surfaces.
         let html = shown(Screen {
             tab: Tab::Diagnostics,
             said: vec![Said::Ordinary],
@@ -1337,9 +1196,7 @@ mod tests {
             "the filter is one accessibly named field on the panel's own bar: {filter}"
         );
 
-        // Presentation and nothing else, which is what `matching` is: an empty
-        // filter matches everything, and what is typed is found by containing
-        // it rather than by a language to get wrong.
+        // An empty filter matches everything; otherwise a substring match.
         assert!(matching("session/prompt", ""));
         assert!(matching("session/prompt", "PROMPT"));
         assert!(!matching("session/prompt", "cancel"));
@@ -1419,9 +1276,7 @@ mod tests {
 
     #[test]
     fn a_narrowed_surface_says_what_it_is_hiding() {
-        // Without this line a filter that matched nothing would be
-        // indistinguishable from an agent that had gone quiet, on the one panel
-        // whose job is to say what crossed the wire.
+        // A filter that matched nothing must not look like a quiet agent.
         let none = dioxus_ssr::render_element(narrowed(0, 12, "frames", true));
         assert!(
             none.contains("No frames match")
@@ -1454,8 +1309,7 @@ mod tests {
             html.contains(r#"class="line agent"#) && html.contains(r#"class="line bad"#),
             "and the tone repeats what the row already says: {html}"
         );
-        // The agent's own words about why it would not start are the thing a
-        // reader pastes into an issue.
+        // The agent's own words about why it would not start.
         assert_eq!(
             html.matches(r#"aria-label="Copy this line""#).count(),
             2,
@@ -1511,9 +1365,7 @@ mod tests {
 
     #[test]
     fn an_automatic_surface_change_is_a_connection_state_and_never_a_volume() {
-        // The MCP Inspector flow worth copying verbatim: an agent that is gone
-        // without being asked to go puts its own reason on screen. Two states
-        // mean that, and core is where they are told apart.
+        // An agent gone without being asked to go puts its reason on screen.
         for status in [ConnectionStatus::FailedToStart, ConnectionStatus::Lost] {
             assert!(surfaces_diagnostics(status));
             assert!(diagnostics_announcement(status).is_some());

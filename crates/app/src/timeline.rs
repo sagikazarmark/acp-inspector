@@ -1,30 +1,11 @@
-//! The turn timeline (`docs/architecture.md` §9): the center screen, where a
-//! turn is watched as it happens.
+//! The turn timeline: the centre screen, a rendering of core's timeline store.
+//! See `docs/architecture.md` §9.
 //!
-//! **A rendering of core's timeline store and nothing more.** Entries arrive
-//! decoded as v1 where the typed layer recognized them and raw where it did
-//! not; a tool call that streamed four updates arrives as one entry that
-//! changed four times, because merging is the store's job (§11 seam 3) and this
-//! window would only be guessing at it. What is decided here is what a reader
-//! sees, which is the one thing core has no opinion about.
-//!
-//! Two of those decisions are worth naming. **Chunks are gathered into the
-//! message they are chunks of** — a stream of forty `agent_message_chunk`
-//! entries is one paragraph and not forty rows, and every entry behind it is
-//! still there under the disclosure. That is not the store's merge moved up
-//! here: the store keeps every chunk as its own entry on purpose, because each
-//! one is a frame that has to stay readable as itself (§8), and this only
-//! decides how they *read* — which is the question core has no opinion about.
-//! What core owns is identity, and this file never invents any: it groups what
-//! the agent already said belongs together, by `messageId` and by adjacency,
-//! and keys its rows by the ids core gave them. And **an entry whose point is
-//! the frames shows them without being asked**, which is two cases. Traffic
-//! this window cannot name is one (§8): an unrecognized entry, or a v1 update
-//! variant this file has no arm for, is opened rather than summarized, because
-//! for traffic nobody has a name for yet the raw *is* the rendering. A
-//! conformance annotation (§15 q7) is the other: its whole claim is about the
-//! frames it carries, and evidence a click away would be an assertion the
-//! reader has to take on trust.
+//! Merging is the store's job (§11 seam 3); this file decides only how entries
+//! read. Streamed chunks are gathered into the message they belong to (by
+//! `messageId` and adjacency) while every chunk stays an entry underneath.
+//! Unrecognized traffic and conformance annotations show their frames without
+//! being asked, because for them the raw frames are the point (§8).
 
 use std::collections::HashSet;
 use std::time::SystemTime;
@@ -42,8 +23,7 @@ use crate::permission::{self, Answer};
 use crate::time::stamp;
 use crate::update::{self, Voice};
 
-/// The entry list, by the name the scroll watcher and its control know it
-/// under (`tail.rs`).
+/// The entry list's name for the scroll watcher (`tail.rs`).
 pub(crate) const ENTRIES: &str = "entries";
 
 /// Focus a Timeline entry after it has rendered.
@@ -59,41 +39,28 @@ pub fn Timeline(
     #[props(default)] retention: acp_inspector_core::Retention,
     turn: TurnState,
     session: Option<v1::SessionId>,
-    /// Whether the agent that opened the session is still there. A session
-    /// outlives its agent in the store on purpose — what happened stays
-    /// readable — so it is not on its own an answer to "can this prompt".
+    /// Whether the agent is still there. A session outlives its agent in the
+    /// store, so a session alone does not mean it can be prompted.
     connected: bool,
     /// The half-open ordinal range the bounded Trace still holds. Timeline
     /// entries outlive cleared or aged-out Frames, so Reach is offered only
     /// while at least one Frame it names still has a destination.
     held_frames: std::ops::Range<u64>,
-    /// Whether the agent is waiting on an answer — core's count of the requests
-    /// nobody has answered yet, not a scan of the rows below.
+    /// Whether the agent is waiting on an answer: core's count, not a scan.
     blocked: bool,
-    /// Which trace row's entry the reader asked to be shown, sent from the
-    /// Console by somebody reading the wire (§9's two screens, asked to point
-    /// at each other). The ordinal the frame was captured under, which is what
-    /// an entry keeps about its own frames.
+    /// The captured ordinal of a frame the Console asked this screen to show.
     sought: Option<u64>,
     /// The frames of an entry, on their way to the Console.
     on_reveal: EventHandler<Vec<u64>>,
-    /// Whether there is an agent that has described itself, which is what makes
-    /// the session control in the header answerable. The two accounts of what
-    /// was claimed are the rail's now (`crate::rail`); this screen needs to know
-    /// only that there is somebody to open a session on.
+    /// Whether an agent has described itself, so a session can be opened.
     described: bool,
-    /// The turns this session has had, and what each came to — core's record,
-    /// read beside the entries it stamped. The lines between the groups are
-    /// drawn from this and never worked out from the rows, which is the same
-    /// rule every other reading on this screen follows (§5).
+    /// The session's turns and their outcomes, from core. The lines between
+    /// turns are drawn from this, never worked out from the rows (§5).
     turns: Vec<Turn>,
     /// Why there is no session, when the handshake that opens one failed.
     problem: Option<CallError>,
-    /// How to open one from here, where there is an agent that could — the same
-    /// call the Agent screen's own affordance makes, offered where the absence
-    /// is stated. `None` while there is no agent that has described itself,
-    /// which is the same gate that button is drawn behind: an empty screen must
-    /// not offer a call nobody can answer.
+    /// Opens a session from the empty state; `None` until an agent has
+    /// described itself.
     on_new_session: Option<EventHandler<()>>,
     /// The mode the next prompt goes out under, for the composer's own control
     /// (`composer::Cycle`).
@@ -108,18 +75,12 @@ pub fn Timeline(
     /// A permission option the user picked, on its way back to core.
     on_answer: EventHandler<Answer>,
     /// What a reader said to an elicitation, on its way back to core (§7.8).
-    /// Its own handler rather than one widened callback: the two answers are
-    /// different sentences and core takes them by different methods.
     on_elicit: EventHandler<elicitation::Answer>,
-    /// The agent's login guidance and its Authenticate actions, when it has
-    /// said it wants a login (X5). Drawn by the Capabilities surface's own
-    /// function (`agent::login_guidance`) so the two places say the same
-    /// thing; shown here in the empty state, because a session/new refused
-    /// for want of a login leaves this screen with nothing else to say.
+    /// The agent's login guidance (`agent::login_guidance`), shown in the empty
+    /// state when the agent wants a login.
     #[props(default)]
     login: Option<Element>,
-    /// Recent invocations, each a way to launch again, for the first-run
-    /// card (D10). The launcher owns the list; `None` draws the card without.
+    /// Recent invocations for the first-run card; `None` draws it without.
     #[props(default)]
     recent: Option<Element>,
 ) -> Element {
@@ -133,15 +94,13 @@ pub fn Timeline(
         held: (held_frames.start, held_frames.end),
     };
 
-    // The rows, a page at a time (L1): a long session is thousands of rows,
-    // and each of them is laid out again whenever the agent streams. Row
-    // positions are the ordinals, which is what `crate::page` pages by.
+    // Paged, because every drawn row is laid out again whenever the agent
+    // streams. Row positions are the ordinals `crate::page` pages by.
     let mut anchor = use_signal(|| None::<u64>);
     let positions: Vec<u64> = (0..rows.len() as u64).collect();
     let total_rows = rows.len();
-    // Arriving from the Console names a frame; the page that holds its row is
-    // the one to show. Keyed on what was asked for, so paging away afterwards
-    // is not undone by the next render.
+    // Show the page holding the frame the Console asked for. Keyed on the ask,
+    // so paging away afterwards is not undone by the next render.
     let sought_row = sought.and_then(|ordinal| rows.iter().position(|row| row.holds(ordinal)));
     use_effect(use_reactive!(|sought| {
         if sought.is_some()
@@ -152,14 +111,11 @@ pub fn Timeline(
     }));
     let range = crate::page::range(&positions, anchor());
 
-    // Which row is the list's one Tab stop (A4): the one the reader last
-    // focused while it is still on the page, and the newest otherwise.
+    // The list's one Tab stop: the last focused row while it is on the page,
+    // else the newest.
     let focused = use_signal(|| None::<String>);
-    // Which rows fade up as they arrive (D12): only those first drawn after
-    // this list was. The rows already there when it mounted never do, and a
-    // row that has faded up once is settled, so a region shown again — a
-    // narrow window's Timeline coming back, the turn coming back from the
-    // trace-only layout — does not replay every arrival it holds.
+    // Only rows first drawn after the list mounted fade up, and only once, so
+    // a region shown again does not replay every arrival.
     let baseline = use_hook(|| rows.iter().map(Row::key).collect::<HashSet<String>>());
     let settled = use_signal(HashSet::<String>::new);
     let page: Vec<&Row> = rows[range.clone()].iter().collect();
@@ -172,12 +128,8 @@ pub fn Timeline(
                 .map(|row| row.key())
         });
 
-    // Where the tool stopped, if it has. Read off the rows rather than from
-    // `blocked`, because what this reaches is a row: the flag says a request is
-    // unanswered and this says which frame the row that asks it was made of.
-    // The newest of *either* kind (§7.8), because what a reader is being sent to
-    // is the question nobody has answered, and which sort of question it is is
-    // not a distinction their next action turns on.
+    // The frame of the newest waiting request of either kind (§7.8): `blocked`
+    // says one is waiting, this finds the row to go to.
     let waiting = blocked
         .then(|| {
             entries
@@ -203,22 +155,15 @@ pub fn Timeline(
             tabindex: "-1",
             header { class: "pane-head",
                 h2 { class: "pane-title", "Timeline" }
-                // Which turn the rows under this belong to, and once it is over,
-                // that it is: a header still naming the prompt call after the
-                // answer came back reads as a turn that is still running.
+                // The current turn, and once it is over, how it ended.
                 if let Some(turn) = turns.last() {
                     span { class: "pane-scope", "data-slot": "turn-scope",
                         title: "{v1::AGENT_METHOD_NAMES.session_prompt}",
                         if turn.outcome.is_some() { "turn {turn.id} · {over(turn)}" } else { "turn {turn.id}" }
                     }
                 }
-                // **The session is named where the session is drawn**, which is
-                // the rail (`crate::rail`); this header names the screen and
-                // says where the turn stands, at the far end where a desktop
-                // application puts the state of what a region is showing.
                 span { class: "grow" }
-                // How permission requests are answered in this session (F11):
-                // only while there is a session for it to belong to.
+                // The session's permission policy, only while there is one.
                 if connected && session.is_some() {
                     crate::client_services::PolicyControl {}
                 }
@@ -232,14 +177,10 @@ pub fn Timeline(
             }
             if count == 0 {
                 div { class: "empty", "data-slot": "timeline-empty",
-                    // Each empty state says what it is and offers the one thing
-                    // that resolves it, where there is one. Waiting on the agent
-                    // offers nothing: a button there would be a button for *be
-                    // patient*.
+                    // Each empty state offers the one action that resolves it,
+                    // where there is one.
                     if let Some(login) = login.filter(|_| session.is_none()) {
-                        // The agent refused to open a session until somebody
-                        // logs in. Saying "no session" here would send the
-                        // reader to a button that will be refused again.
+                        // A new session would be refused again until a login.
                         h3 { "Log in to continue" }
                         div { class: "empty-login", "data-slot": "empty-login", {login} }
                     } else if session.is_none() && connected {
@@ -268,19 +209,16 @@ pub fn Timeline(
                 div { class: "turn-stream", "data-tail": ENTRIES,
                     "data-page-latest": "{latest_page}",
                 ol { class: "stream",
-                    // One Tab stop for the list (A4): ↑/↓/Home/End move
-                    // between rows and Enter shows a row's frames.
+                    // One Tab stop for the list: ↑/↓/Home/End move between rows
+                    // and Enter shows a row's frames.
                     onmounted: move |_| crate::console::rove(
                         &format!(r#"[data-tail="{ENTRIES}"] .stream"#),
                         "article.row",
                         Some(r#"[data-slot="reach"]"#),
                     ),
-                    // Oldest first, in the DOM as on screen (A3), so reading
-                    // and focus order are the conversation's. The scroller
-                    // around the list is laid out bottom-up with the list as
-                    // its one child, which keeps a streaming turn in view
-                    // without a scroll script and leaves it where the reader
-                    // put it once they scroll back.
+                    // Oldest first in the DOM, so reading and focus order follow
+                    // the conversation. The scroller is laid out bottom-up, which
+                    // keeps a streaming turn in view without a scroll script.
                     for row in page.into_iter() {
                         li {
                             key: "{row.key()}",
@@ -305,18 +243,13 @@ pub fn Timeline(
                     }
                 }
                 }
-                // Beside the list and not in it: a control inside the scroller
-                // is a row of it, and this is about the list rather than in it.
+                // Outside the scroller, so it is not one of the rows.
                 {crate::tail::to_latest(ENTRIES, "entry", Some(anchor))}
                 }
             }
 
-            // That the agent is waiting on the reader, said where a screen
-            // reader hears it and drawn where the reader can act on it (§7.2).
-            //
-            // **The region is always here, and mostly empty.** An announcement
-            // is made by text *changing* inside a live region, so one that
-            // appeared along with its sentence would announce nothing at all.
+            // That the agent is waiting on the reader (§7.2). The live region is
+            // always present: only text changing inside one is announced.
             div { class: "waiting", "data-slot": "waiting", role: "status", aria_live: "polite",
                 if blocked {
                     span { "The agent is waiting on you." }
@@ -337,9 +270,8 @@ pub fn Timeline(
                 }
             }
 
-            // The composer belongs to the turn, so it is drawn where the turn
-            // is — and only where there is a turn to have, or a failed
-            // handshake whose reason it is the surface for.
+            // Only where there is a session, or a failed handshake whose reason
+            // the composer shows.
             if session.is_some() || problem.is_some() {
                 Composer {
                     key: "{prompt_epoch}-{session:?}",
@@ -380,15 +312,8 @@ fn over(turn: &Turn) -> &'static str {
     }
 }
 
-/// The first-run card (D10): what this window is for, and the one way to
-/// start.
-///
-/// The button opens the launch fields rather than filling them: nothing is
-/// typed for the reader and nothing is spawned. It says `Connect…`, the bar's
-/// word for the same dialog, so the two offers read as one.
-///
-/// `recent` is the launcher's list of recent invocations, drawn under the
-/// actions where the window has one to pass (`main.rs` owns that list).
+/// The first-run card: what this window is for, a `Connect…` button that
+/// opens the launch dialog, and the recent invocations where there are any.
 fn onboarding(recent: Option<Element>) -> Element {
     let palette = if cfg!(target_os = "macos") {
         "⌘K"
@@ -425,7 +350,7 @@ fn onboarding(recent: Option<Element>) -> Element {
     }
 }
 
-/// What a row needs to be the list's one Tab stop or one of the others (A4).
+/// What a row needs for the list's roving Tab stop and its fade-up.
 #[derive(Clone)]
 struct Roving {
     /// Whether this row is the list's Tab stop.
@@ -434,7 +359,7 @@ struct Roving {
     key: String,
     focused: Signal<Option<String>>,
     /// Whether the row arrived after the list was drawn and has not yet
-    /// finished fading up (D12).
+    /// finished fading up.
     arrived: bool,
     /// The rows that have finished fading up, so they never do again.
     settled: Signal<HashSet<String>>,
@@ -450,9 +375,8 @@ impl Roving {
         self.arrived.then_some("true")
     }
 
-    /// Settles the row once its fade has run, so showing the list again does
-    /// not replay it. Only the row's own animation: an animation inside it
-    /// bubbles here too and is not the row arriving.
+    /// Settles the row once its own fade has run. Animations inside the row
+    /// bubble here too and are ignored.
     fn settle(&self) -> impl FnMut(AnimationEvent) + 'static {
         let mut settled = self.settled;
         let key = self.key.clone();
@@ -465,11 +389,7 @@ impl Roving {
     }
 }
 
-/// What the two screens need of each other, carried to the row that draws it.
-///
-/// One value rather than two parameters through four functions: the reveal and
-/// the mark are one feature — the screens point at each other — and a renderer
-/// that took them apart would be able to draw half of it.
+/// How the Timeline and the Console point at each other, carried to each row.
 #[derive(Clone, Copy)]
 struct Crossing {
     /// The frame a reader came here to find, from the Console.
@@ -481,12 +401,8 @@ struct Crossing {
 }
 
 impl Crossing {
-    /// The ordinals of the frames these entries were made of, in order.
-    ///
-    /// Only the ones the trace numbered: a Conformance Annotation is read
-    /// beside a call this client *sent*, and the send path does not carry an
-    /// ordinal back up (`acp_inspector_core::Recorded`). An entry made of nothing
-    /// but those has no row to reach, and says so by offering no control.
+    /// The ordinals of the frames these entries were made of, in order. Frames
+    /// this client sent carry no ordinal (`acp_inspector_core::Recorded`).
     fn ordinals(entries: &[TimelineEntry]) -> Vec<u64> {
         entries
             .iter()
@@ -504,8 +420,7 @@ impl Crossing {
         (self.held.0..self.held.1).contains(&ordinal)
     }
 
-    /// The ordinals of these frames the Trace can still be sent to — which is
-    /// what a row leads to, and empty for a row that leads nowhere.
+    /// The ordinals the Trace still holds a row for.
     fn linking(self, ordinals: &[u64]) -> Vec<u64> {
         ordinals
             .iter()
@@ -517,10 +432,8 @@ impl Crossing {
 
 /// One thing on screen: an entry, or the message a run of chunks makes up.
 #[derive(Debug)]
-// An entry is the big variant and also the common one, so boxing it would buy a
-// smaller enum at the price of an allocation per entry, every render — the
-// wrong way round. The size is the schema's own, and core's `EntryKind` carries
-// this same allowance for the same reason.
+// The big variant is also the common one; boxing it would allocate per entry
+// on every render. Core's `EntryKind` carries the same allowance.
 #[allow(clippy::large_enum_variant)]
 enum Block {
     /// Consecutive chunks in one voice, belonging to one message.
@@ -536,13 +449,9 @@ enum Block {
 
 /// The entries, with consecutive chunks of one message gathered into it.
 ///
-/// Grouping is by adjacency *and* identity: the same voice, and the same
-/// `messageId` — which the protocol carries exactly so that a new message can
-/// be told from a continuation. Chunks carrying no id group by adjacency alone,
-/// because an agent that streams without ids has said nothing to separate them
-/// by, and one sentence spread over forty rows is not what it said either.
-/// Anything between two chunks ends the run, so the order on screen stays the
-/// order on the wire.
+/// A run shares a voice and a `messageId` (chunks without ids group by
+/// adjacency alone). Anything between two chunks ends the run, so screen order
+/// stays wire order.
 fn blocks(entries: Vec<TimelineEntry>) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
 
@@ -570,14 +479,8 @@ fn blocks(entries: Vec<TimelineEntry>) -> Vec<Block> {
     blocks
 }
 
-/// What the agent last said it can be asked to run.
-///
-/// **The newest announcement whole, and never a merge of them.** An
-/// `available_commands_update` carries the complete list the agent is offering
-/// now, so a later one *replaces* the earlier: a composer that accumulated them
-/// would offer a command the agent had stopped publishing, which is this window
-/// inventing an affordance. The entries are the record either way — every
-/// announcement is still a row, and the frames are in the trace.
+/// The commands in the newest `available_commands_update`. Each announcement
+/// replaces the last, so they are never merged.
 pub(crate) fn commands(entries: &[TimelineEntry]) -> Vec<composer::Command> {
     entries
         .iter()
@@ -598,8 +501,7 @@ pub(crate) fn commands(entries: &[TimelineEntry]) -> Vec<composer::Command> {
         .unwrap_or_default()
 }
 
-/// The voice and the message of an entry that is a streamed chunk, if it is
-/// one.
+/// The voice and message of a streamed-chunk entry.
 fn chunk(entry: &TimelineEntry) -> Option<(Voice, Option<&v1::MessageId>)> {
     let EntryKind::Update(update) = &entry.kind else {
         return None;
@@ -608,38 +510,28 @@ fn chunk(entry: &TimelineEntry) -> Option<(Voice, Option<&v1::MessageId>)> {
     update::spoken(update).map(|(voice, chunk)| (voice, chunk.message_id.as_ref()))
 }
 
-/// A row of the centre screen: something that happened, or the line between one
-/// turn and the next.
+/// A row of the centre screen: a block, or the line between turns. Turn
+/// boundaries come from core's `TimelineEntry::turn` stamp and [`Turn`] record,
+/// never inferred from the rows.
 ///
-/// **The boundaries are read off the record and never inferred from the rows.**
-/// Which turn an entry arrived in is core's stamp (`TimelineEntry::turn`) and
-/// what a turn came to is core's record ([`Turn`]); what is decided here is
-/// only where the line is drawn and what it says.
-/// The variants are not the same size, and boxing the big one would trade the
-/// bytes a `Vec<Block>` already spends for an allocation per row on a list that
-/// is rebuilt as the agent streams into it.
+/// Unboxed for the same reason as [`Block`]: the list is rebuilt as the agent
+/// streams.
 #[allow(clippy::large_enum_variant)]
 enum Row {
     /// Something the agent said, or the inspector said about it.
     Block(Block),
-    /// A turn that is over, and what it came to. Drawn under its last row,
-    /// because how a turn ended is something known at the end of it.
+    /// A turn that is over, and what it came to; drawn under its last row.
     Ended(Turn),
-    /// The start of a run of traffic belonging to no turn. Drawn above it,
-    /// because what those rows *are* is known before reading them — and because
-    /// a run that is still arriving has no end to hang a label on.
+    /// The start of a run of traffic belonging to no turn; drawn above it,
+    /// since a run still arriving has no end to label.
     Outside,
 }
 
-/// The blocks with the turns they happened in marked between them.
-///
-/// A turn that ended having said nothing still gets its line: a `refusal` that
-/// produced no updates is a turn that happened, and a screen that drew nothing
-/// for it would be a screen where the prompt vanished.
+/// The blocks with turn boundaries between them. A turn that ended with no
+/// updates still gets its line.
 fn rows(blocks: Vec<Block>, turns: &[Turn]) -> Vec<Row> {
     let mut rows = Vec::new();
-    // The last turn whose ending has been drawn, so a turn is closed once and
-    // whether or not it had anything in it.
+    // The last turn whose ending has been drawn, so each is closed once.
     let mut closed = 0;
     let close_through = |rows: &mut Vec<Row>, upto: u64, closed: &mut u64| {
         for turn in turns {
@@ -651,9 +543,8 @@ fn rows(blocks: Vec<Block>, turns: &[Turn]) -> Vec<Row> {
     };
 
     let mut current: Option<Option<u64>> = None;
-    // The highest turn any row has been in, which is how far *outside a turn*
-    // is allowed to close: traffic between turn one and turn two ends the
-    // first and says nothing about the second.
+    // The highest turn any row has been in: traffic outside a turn closes
+    // turns up to here and no further.
     let mut reached = 0;
 
     for block in blocks {
@@ -674,15 +565,13 @@ fn rows(blocks: Vec<Block>, turns: &[Turn]) -> Vec<Row> {
         rows.push(Row::Block(block));
     }
 
-    // And whatever finished after the last row, which is the ordinary case: the
-    // turn the reader just watched.
+    // And whatever finished after the last row.
     close_through(&mut rows, u64::MAX, &mut closed);
     rows
 }
 
 impl Row {
-    /// Whether this row is something said, which is what the list's keyboard
-    /// moves between; the turn lines are read past.
+    /// Whether the list's keyboard stops on this row (turn lines are skipped).
     fn is_block(&self) -> bool {
         matches!(self, Self::Block(_))
     }
@@ -704,19 +593,14 @@ impl Row {
         match self {
             Self::Block(block) => block.key(),
             Self::Ended(turn) => format!("turn {} ended", turn.id),
-            // One per run, and a run is identified by what follows it — which
-            // is the next block's key, assigned by the list rather than here.
             Self::Outside => "outside a turn".to_owned(),
         }
     }
 }
 
 impl Block {
-    /// The turn this happened in, which is the turn its first entry arrived in.
-    ///
-    /// A block is consecutive chunks of one message, and a message that
-    /// streamed across the end of a turn belongs to the turn it started in —
-    /// the same rule the entry itself is stamped under.
+    /// The turn its first entry arrived in: a message streamed across a turn's
+    /// end belongs to the turn it started in.
     fn turn(&self) -> Option<u64> {
         match self {
             Self::Speech { entries, .. } => entries.first().and_then(|entry| entry.turn),
@@ -737,10 +621,8 @@ impl Block {
         }
     }
 
-    /// Which row this is, for the list that renders it: what its first entry is
-    /// called ([`named`], on why it is the entry's own identity). The first
-    /// chunk names a message, because a message keeps its first chunk however
-    /// many follow it.
+    /// The row's key: its first entry's [`named`] identity, which is stable
+    /// however many chunks follow.
     fn key(&self) -> String {
         let identity = match self {
             Self::Speech { entries, .. } => entries.first().map(|entry| &entry.id),
@@ -751,31 +633,22 @@ impl Block {
     }
 }
 
-/// What an entry is called wherever one row has to be told from another: the row
-/// it is drawn as, and the disclosure its evidence is read in
-/// ([`wire`]).
+/// An entry's stable name, used as its row key and disclosure name.
 ///
-/// **The entry's own identity, not where it turned up** (§11 seam 3): a tool call
-/// that changes in place keeps its name, and with it whatever the reader had
-/// opened on it — where a name counted off the list would hand that open
-/// disclosure to whichever entry happened to land there next.
+/// Built from the entry's own id, not its position (§11 seam 3), so an entry
+/// that changes in place keeps whatever the reader had opened on it.
 fn named(id: &EntryId) -> String {
     match id {
         EntryId::ToolCall(session, call) => format!("tool call {session} {call}"),
-        // The id the request arrived under, which is what a panel keeps its
-        // buttons — and whatever the reader has opened on it — across the
-        // re-render that answering it causes.
+        // Keyed on the request id so the panel survives the re-render that
+        // answering it causes.
         EntryId::Permission(request) => format!("permission {request}"),
-        // And the same for an elicitation, which keeps more across the
-        // re-render answering causes: a half-filled form is the reader's
-        // work, and a name that moved would hand it to another row.
+        // Likewise, so a half-filled form stays with its row.
         EntryId::Elicitation(request) => format!("elicitation {request}"),
         EntryId::Service(request) => format!("service {request}"),
         EntryId::Compaction(session, compaction) => format!("compaction {session} {compaction}"),
         EntryId::Arrival(arrival) => format!("arrival {arrival}"),
-        // `EntryId` is non-exhaustive, and an identity this window has not
-        // been taught still has to be one: two rows sharing a name is worse
-        // than a name nobody can read.
+        // Non-exhaustive: an unknown id still needs a distinct name.
         other => format!("{other:?}"),
     }
 }
@@ -805,24 +678,18 @@ fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing, roving: Rov
             class: "{drawn_as(tone, crossing.found(&ordinals), !linking.is_empty())}",
             tabindex,
             "data-entry": "{tone}",
-            // Every ordinal this row was made of, so the Console can name one
-            // and the row can be found by it. A list, because a streamed
-            // message is one row and as many frames as it arrived in.
+            // Every ordinal this row was made of, so the Console can find it.
             "data-frames": frames_attribute(&ordinals),
             "data-arrived": roving.arrived(),
             onanimationend: roving.settle(),
             onfocus: move |_| focused.set(Some(key.clone())),
-            // **The row is the way to the frames it was made of**, which is how
-            // the drawing links the two screens: pressing a message shows the
-            // traffic it came from, rather than a chip on the row saying so.
+            // Pressing the row shows the frames it was made of.
             onclick: move |event| pressed(&event, crossing, linked.clone()),
             {marked(tone)}
             div { class: "row-body",
                 {kind_said(label, at)}
                 div { class: "said",
-                    // One flow rather than one paragraph per chunk: the pieces
-                    // a message arrived in are how it was sent, not how it
-                    // reads.
+                    // One flow, not one paragraph per chunk.
                     for (position, block) in content.into_iter().enumerate() {
                         span { key: "{position}", {update::content(block)} }
                     }
@@ -833,12 +700,11 @@ fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing, roving: Rov
     }
 }
 
-/// Whether a click on a row is a press of the row (B1).
+/// Whether a click on a row is a press of the row.
 ///
-/// Controls inside a row stop their own clicks, but a row also holds controls
-/// this file does not draw, and text a reader is selecting. So the click is
-/// checked where it landed: on a control, or with text selected, it is not a
-/// press. The point goes to the script as data.
+/// A row holds controls this file does not draw, and selectable text, so the
+/// click is checked where it landed: on a control, or ending a selection, it
+/// is not a press. The point goes to the script as data.
 const ROW_PRESS: &str = r#"
 const [x, y] = await dioxus.recv();
 const selection = window.getSelection();
@@ -866,17 +732,9 @@ fn pressed(event: &Event<MouseData>, crossing: Crossing, linked: Vec<u64>) {
     });
 }
 
-/// The line under a turn that is over, saying what it came to.
-///
-/// **The agent's own word for it**, in the register the composer says it in —
-/// `stopped` is shared with that surface so the record of a turn and the state
-/// of the live one cannot describe the same stop two ways. A turn that failed
-/// says so with the error, because an inspector reporting a stop reason the
-/// agent never gave is the one thing it may not do.
+/// The line under a turn that is over: the agent's stop reason (worded by
+/// `composer::stopped`, as the composer does), or the error it failed with.
 fn ended(turn: &Turn) -> Element {
-    // The agent's own word for it, in the shape the drawing closes a turn with:
-    // the field the answer carried, in the tone of what it says, and which turn
-    // it was at the far end.
     let (what, tone) = match &turn.outcome {
         Some(TurnOutcome::Ended(reason)) => (
             format!("stopReason: {}", crate::composer::stopped(reason)),
@@ -887,12 +745,9 @@ fn ended(turn: &Turn) -> Element {
             },
         ),
         Some(TurnOutcome::Failed(error)) => (format!("failed: {error}"), "bad"),
-        // Not drawn for a turn that is still running: where the live turn
-        // stands is the composer's to say, and this is the record of one that
-        // is over.
+        // A running turn's state is the composer's to say.
         None => return rsx! {},
-        // `TurnOutcome` is non-exhaustive. An ending this window has not been
-        // taught is still an ending, and the frames behind it are in the trace.
+        // Non-exhaustive: an unknown ending is still an ending.
         _ => (
             "ended in a way this window has no name for".to_owned(),
             "warn",
@@ -907,14 +762,8 @@ fn ended(turn: &Turn) -> Element {
     }
 }
 
-/// The line above a run of traffic that belongs to no turn.
-///
-/// **The finding this whole record exists for.** An agent that goes on
-/// streaming into a turn it has resolved, or starts talking before anything was
-/// asked, produces rows that look exactly like the rows above them on a flat
-/// list. Said in words rather than by a stripe, because it is a statement about
-/// the traffic and not a severity: a replayed session is entirely out of turn
-/// and entirely correct.
+/// The line above a run of traffic that belongs to no turn. Said in words, not
+/// as a severity: a replayed session is entirely out of turn and correct.
 fn outside() -> Element {
     rsx! {
         div { class: "boundary outside", "data-slot": "outside-turn",
@@ -925,10 +774,7 @@ fn outside() -> Element {
 }
 
 /// The ordinals a row was made of, as the attribute both screens read.
-///
-/// Space-separated, which is what makes `[data-frames~="12"]` a match on one of
-/// them rather than a match on a row whose list happens to contain those
-/// characters — a row made of frame 3 must not answer to a search for frame 31.
+/// Space-separated, so `[data-frames~="3"]` cannot match frame 31.
 fn frames_attribute(ordinals: &[u64]) -> String {
     ordinals
         .iter()
@@ -946,21 +792,13 @@ fn happened(
     crossing: Crossing,
     roving: Roving,
 ) -> Element {
-    // Whether this window has a rendering is what decides everything about the
-    // row, the disclosure included: an entry it cannot name shows its JSON
-    // without being asked, because not having a rendering is no reason to show
-    // the reader less than the agent sent (§8).
+    // An entry with no rendering shows its JSON without being asked (§8).
     let rendered = match &entry.kind {
         EntryKind::Update(update) => update::render(update),
-        // A blocking request is not something that happened, it is something
-        // happening: it renders in the flow like everything else, and the
-        // buttons in it are what let the turn go on (§7.2).
+        // Blocking requests render in the flow (§7.2, §7.8).
         EntryKind::Permission(request) => {
             Some(("permission", "ask", permission::panel(request, on_answer)))
         }
-        // And the other one, which is the same kind of row for the same reason
-        // (§7.8): the agent stopped here, and what is in this one is how it goes
-        // on.
         EntryKind::Elicitation(request) => Some((
             "elicitation",
             "ask",
@@ -971,16 +809,13 @@ fn happened(
                 }
             },
         )),
-        // A client-service request (F3): the third kind of row the agent waits
-        // on, answered from the card in it.
+        // A client-service request, answered from its card.
         EntryKind::Service(request) => {
             Some(("service", "ask", crate::client_services::card(request)))
         }
-        // A conformance annotation, in the flow where the traffic it is about
-        // was — never a modal, a toast, or a lane of its own (§15 q7).
+        // In the flow beside the traffic it is about (§15 q7).
         EntryKind::Annotation(annotation) => Some(("conformance", "spec", claim(annotation))),
-        // `EntryKind` is non-exhaustive, and a kind of entry this window has
-        // not been taught goes the way an unrecognized one does.
+        // Non-exhaustive: an unknown kind is drawn as unrecognized.
         _ => None,
     };
     let named = rendered.is_some();
@@ -989,9 +824,7 @@ fn happened(
 
     let entries = std::slice::from_ref(entry);
     let ordinals = Crossing::ordinals(entries);
-    // The id a tool call carries, so an elicitation raised inside one can be a
-    // control that takes the reader to it (§7.8). Only tool calls have one, and
-    // only they are ever named this way.
+    // So an elicitation raised inside a tool call can link to it (§7.8).
     let tool_call = match &entry.id {
         EntryId::ToolCall(_, call) => Some(call.to_string()),
         _ => None,
@@ -999,11 +832,8 @@ fn happened(
 
     let linking = crossing.linking(&ordinals);
     let linked = linking.clone();
-    // The frames, drawn under the row only where they *are* the rendering:
-    // traffic this window cannot name, and a conformance annotation whose claim
-    // is about the frames themselves (§8). Everywhere else the row leads to
-    // them and the wire log draws them whole, which is the arrangement §9 asks
-    // the two screens for.
+    // Frames are drawn under the row only where they are the rendering;
+    // elsewhere the row leads to the wire log.
     let shows_frames = evidence(entry, named);
     let tabindex = roving.tabindex();
     let mut focused = roving.focused;
@@ -1042,16 +872,8 @@ fn drawn_as(tone: &str, sought: bool, linked: bool) -> String {
     format!("row{sought}{linked} {tone}")
 }
 
-/// The mark in an entry's gutter, which is what makes a streamed conversation
-/// scannable: the eye runs down one column of glyphs rather than reading every
-/// kind word on every row.
-///
-/// **Decoration, and said to be.** Every mark repeats a word the row already
-/// carries — the entry kind is beside it, in text, on every row — so a reader
-/// who cannot see the glyph loses nothing and one who would otherwise hear it
-/// named gains nothing. It is keyed on the tone rather than on the kind because
-/// the tone is what one row shares with another of its sort, which is exactly
-/// what a column of marks is for.
+/// The decorative mark in an entry's gutter, keyed on its tone. Hidden from
+/// assistive technology: the row's kind is always also said in text.
 fn marked(tone: &str) -> Element {
     use crate::disclosure::{Role, icon};
 
@@ -1064,7 +886,7 @@ fn marked(tone: &str) -> Element {
         "ask" => Role::Ask,
         "spec" => Role::Spec,
         "unnamed" => Role::Unnamed,
-        // `note` and anything a later ring adds.
+        // `note` and anything unrecognised.
         _ => Role::Note,
     };
 
@@ -1074,12 +896,6 @@ fn marked(tone: &str) -> Element {
 }
 
 /// A conformance annotation, in the two sentences core wrote for it (§15 q7).
-///
-/// **The wording is not this window's.** What the specification requires and
-/// what was observed instead are computed below the presentation layer and
-/// asserted there, so a second surface says the same thing — and the day
-/// another qualifying MUST is admitted, the rule is a variant in core and
-/// nothing here changes at all.
 fn claim(annotation: &Annotation) -> Element {
     rsx! {
         p { class: "requires", "{annotation.requires()}" }
@@ -1087,24 +903,15 @@ fn claim(annotation: &Annotation) -> Element {
     }
 }
 
-/// Whether an entry's raw JSON is part of its rendering rather than a
-/// disclosure under it.
-///
-/// True wherever the frames are the point. Traffic this window cannot name is
-/// one case (§8): not having a rendering is no reason to show the reader less
-/// than the agent sent. A conformance annotation is the other — its whole claim
-/// is about the frames it carries, and evidence a click away would be an
-/// assertion the reader has to take on trust.
+/// Whether an entry's frames are part of its rendering: true for traffic with
+/// no rendering (§8) and for a conformance annotation, whose claim is about
+/// the frames.
 fn evidence(entry: &TimelineEntry, named: bool) -> bool {
     !named || matches!(entry.kind, EntryKind::Annotation(_))
 }
 
-/// An entry with no rendering, said in words (§8).
-///
-/// It is a finding, not an error: an agent calling a service this client
-/// declined by advertising no capability, or sending an update v1 has no name
-/// for, is the most interesting thing that can happen in an inspector — so the
-/// entry says what happened, and its JSON is open underneath.
+/// An entry with no rendering, said in words; its JSON is open underneath
+/// (§8).
 fn unnamed(kind: &EntryKind) -> Element {
     rsx! {
         p { class: "unnamed",
@@ -1149,13 +956,11 @@ fn unnamed(kind: &EntryKind) -> Element {
                     code { "{method}" }
                     " was refused."
                 },
-                // A `session/update` variant this window has no arm for: an
-                // unstable-v1 one, an extension, or v2 arriving early.
+                // An unstable-v1 variant, an extension, or v2 arriving early.
                 EntryKind::Update(_) => rsx! {
                     "A v1 update this window has no rendering for."
                 },
-                // Both enums are non-exhaustive, and evidence this window has
-                // not heard of is still evidence.
+                // Both enums are non-exhaustive.
                 _ => rsx! { "Something this window has no rendering for." },
             }}
             " What arrived is below, as it arrived."
@@ -1188,19 +993,9 @@ fn id_kind(id: &str) -> &'static str {
     }
 }
 
-/// The kind of a row, in words, and the visible label where the drawing gives
-/// one.
-///
-/// **The mark in the gutter is decoration, so this is what carries the kind**
-/// — and where the drawing draws no label the word is in the accessibility
-/// tree rather than gone. Three rows are drawn bare: the agent's message,
-/// which is the message and nothing else, and the cards that name themselves
-/// in their own head (a tool call, a plan, a request the turn stopped on),
-/// where a second word above the card would be the same fact twice.
-///
-/// The time is not on the row at all. Every frame in the wire log carries one,
-/// which is where a reader asking *when* is asking, and a column of stamps down
-/// a conversation is a column nobody reads.
+/// The kind of a row, in words: a visible label, or a screen-reader-only one
+/// for rows whose body already names them. The time is screen-reader-only;
+/// the wire log carries the visible stamps.
 fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
     /// The rows whose body says what they are.
     const NAMED_BY_ITS_BODY: [&str; 7] = [
@@ -1219,9 +1014,6 @@ fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
         } else {
             div { class: "row-head",
                 span { class: "wire-name", "{label}" }
-                // Kept out of sight rather than dropped: what the row is
-                // *about* has a time in the record, and a reader who cannot see
-                // the flow still hears the order it happened in.
                 if let Some(at) = at {
                     span { class: "sr-only", " at {stamp(at)}" }
                 }
@@ -1230,27 +1022,17 @@ fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
     }
 }
 
-/// The frames an entry was decoded from, drawn where they are the rendering.
+/// The frames an entry was decoded from, drawn where they are the rendering
+/// (see [`evidence`]).
 ///
-/// Every entry keeps its frames (§8) and most of them keep them *in the wire
-/// log*, which the drawing puts beside the turn for exactly this: a row leads
-/// to its traffic ([`reach`]) and the pane there reads it whole. What is drawn
-/// here is the case where the frames are not evidence *for* a rendering but the
-/// rendering itself — traffic this window cannot name, and a conformance
-/// annotation whose claim is about the bytes.
-///
-/// Laid out where the reader asked for that (`crate::indent`) — the same call
-/// the wire log makes about the same frame, so the two screens cannot come to
-/// draw one frame two ways. What the copy beside it takes is the frame's own
-/// text regardless: whitespace is for reading, and what leaves this window has
-/// to be what crossed.
+/// Laid out through `crate::indent`, as the wire log does; the copy always
+/// takes the frame's own text.
 fn frames_of(entries: &[TimelineEntry]) -> Element {
     let frames: Vec<Recorded> = entries
         .iter()
         .flat_map(|entry| entry.frames.iter().cloned())
         .collect();
-    // One window-wide name for the layout the reader asked for, which is this
-    // entry's own identity rather than where it turned up (§11 seam 3).
+    // Named by the entry's identity, not its position (§11 seam 3).
     let key = entries
         .first()
         .map(|entry| format!("evidence {}", named(&entry.id)))
@@ -1275,23 +1057,9 @@ fn frames_of(entries: &[TimelineEntry]) -> Element {
     }
 }
 
-/// The way from a row to the frames it was made of, for a reader who is not
-/// pointing at anything.
-///
-/// **The row itself is the control** — the drawing puts no chip on a message,
-/// and pressing one shows the traffic it came from — so what is left to give is
-/// the same act, named, to a keyboard and to anything reading the document. It
-/// is off screen until it has focus, which is the skip link's pattern and the
-/// opposite of the hidden-until-hover one this window forbids: what is revealed
-/// by *arriving at it* can be looked for, and what is revealed by sweeping a
-/// pointer over the page cannot.
-///
-/// Nothing at all where the trace no longer holds the frames: a bounded store
-/// drops its oldest rows, and a control that led nowhere would be worse than
-/// none.
-///
-/// It is a Tab stop only on the row that is the list's own (A4), so a reader
-/// tabs from the row into it; Enter on the row does the same.
+/// The keyboard's way from a row to its frames: the row press, named. Off
+/// screen until focused (the skip-link pattern), and absent once the trace no
+/// longer holds the frames. A Tab stop only on the list's current row.
 fn reach(ordinals: &[u64], crossing: Crossing, current: bool) -> Element {
     let reach = ordinals.to_vec();
     let count = reach.len();
@@ -1306,7 +1074,7 @@ fn reach(ordinals: &[u64], crossing: Crossing, current: bool) -> Element {
                 // `navigation_tests.rs` finds the control by this title.
                 title: if count == 1 { "Find this frame in the wire log" } else { "Find these frames in the wire log" },
                 onclick: move |event| {
-                    // The row's own press would reveal the same frames again.
+                    // The row's own press would reveal them again.
                     event.stop_propagation();
                     crossing.reveal.call(reach.clone());
                 },
@@ -1324,19 +1092,10 @@ mod tests {
 
     use super::*;
 
-    /// The conformance annotation's own row, read by what the entry is rather
-    /// than by what paints it: every entry publishes its kind, and `spec` is
-    /// the inspector's own voice among the agent's (§15 q7).
+    /// A conformance annotation's row, by its published kind.
     const ANNOTATION: &str = r#"data-entry="spec""#;
 
-    /// Every raw-JSON disclosure on the screen, in order, and whether each one
-    /// is open.
-    ///
-    /// The disclosure says which it is on the element itself, so this reads the
-    /// tag rather than the class: whether an entry's evidence is on screen is
-    /// the assertion, and how a `details` is drawn is not.
-    /// How many rows draw their frames under them, which is how many rows the
-    /// frames are the rendering *of*.
+    /// How many rows draw their frames under them.
     fn wires(html: &str) -> usize {
         html.matches(r#"data-slot="wire""#).count()
     }
@@ -1345,8 +1104,7 @@ mod tests {
         in_turn(kind, Some(1))
     }
 
-    /// The same, saying which turn it arrived in — `None` for traffic that
-    /// belongs to no turn at all.
+    /// An entry in `turn`, or in no turn for `None`.
     fn in_turn(kind: EntryKind, turn: Option<u64>) -> TimelineEntry {
         TimelineEntry {
             id: EntryId::Arrival(1),
@@ -1386,8 +1144,7 @@ mod tests {
         )))
     }
 
-    /// How many chunks each block gathered — zero for a block that is one
-    /// entry of something else.
+    /// How many chunks each block gathered; zero for a non-chunk block.
     fn gathered(blocks: &[Block]) -> Vec<usize> {
         blocks
             .iter()
@@ -1411,9 +1168,6 @@ mod tests {
 
     #[test]
     fn chunks_without_a_message_id_group_by_adjacency() {
-        // An agent that streams without ids has said nothing to separate its
-        // chunks by, and one sentence spread over four rows is not what it said
-        // either.
         let blocks = blocks(vec![spoke("one ", None), spoke("sentence", None)]);
 
         assert_eq!(gathered(&blocks), [2]);
@@ -1421,8 +1175,6 @@ mod tests {
 
     #[test]
     fn a_new_message_id_starts_a_new_block() {
-        // What `messageId` is for: a change of id is a new message, which is
-        // the one thing adjacency cannot tell.
         let blocks = blocks(vec![
             spoke("first", Some("m1")),
             spoke("second", Some("m2")),
@@ -1440,8 +1192,7 @@ mod tests {
 
     #[test]
     fn anything_between_two_chunks_ends_the_run() {
-        // The order on screen is the order on the wire: a tool call that
-        // happened mid-message is not something to render around.
+        // Screen order is wire order.
         let blocks = blocks(vec![
             spoke("before", None),
             tool_call(),
@@ -1451,12 +1202,7 @@ mod tests {
         assert_eq!(gathered(&blocks), [1, 0, 1]);
     }
 
-    /// A message, and an annotation about the traffic around it, rendered — the
-    /// screen itself and not a value on the way to it.
-    ///
-    /// It takes the annotation because there is more than one rule now (§15
-    /// q7), and how a rule is surfaced is the thing that was promised not to
-    /// change when the list grew: every rule takes this same path.
+    /// The rendered screen: a message, and an annotation after it.
     fn shown(annotation: Annotation) -> String {
         #[component]
         fn Host(annotation: Annotation) -> Element {
@@ -1483,8 +1229,6 @@ mod tests {
                     on_elicit: move |_: elicitation::Answer| {},
                     sought: None,
                     on_reveal: move |_: Vec<u64>| {},
-                    // These are about a row rather than about the turns it sat
-                    // in, so there is no record and no line is drawn.
                     described: false,
                     turns: Vec::new(),
                 }
@@ -1503,10 +1247,7 @@ mod tests {
 
     #[test]
     fn a_conformance_annotation_is_read_in_the_flow_beside_the_traffic() {
-        // Where the ring's rule about annotations lands on a screen: it is a
-        // row among the rows, carrying what the specification requires, what
-        // was observed instead, and the frames that decide it — never a modal,
-        // a toast, or a panel of its own (§15 q7).
+        // A row among the rows, never a modal or toast (§15 q7).
         let html = shown(cancelled());
 
         assert!(
@@ -1518,10 +1259,6 @@ mod tests {
             "and what was observed instead: {html}"
         );
 
-        // A row among the rows: the message and the annotation are two `li` of
-        // the one list, so the annotation is drawn where the traffic was rather
-        // than lifted out of it. Nothing here opens a layer over the screen —
-        // the two shapes an annotation was told not to take.
         let rows = html.matches(r#"<article class="row"#).count();
         assert_eq!(
             rows, 2,
@@ -1535,11 +1272,8 @@ mod tests {
 
     #[test]
     fn an_annotations_evidence_is_under_it_rather_than_a_screen_away() {
-        // The frames are the claim's evidence, so they are on screen with it:
-        // an assertion about traffic the reader has to go looking for is one
-        // they have to take on trust. The message above it keeps none — its
-        // frames are in the wire log, one press of the row away — which is what
-        // makes this a property of annotations rather than of the whole screen.
+        // The frames are the claim's evidence; the message above keeps its
+        // frames in the wire log.
         let html = shown(cancelled());
 
         let annotation = html
@@ -1556,12 +1290,7 @@ mod tests {
 
     #[test]
     fn evidence_that_is_the_rendering_is_drawn_plainly_and_stays_copyable() {
-        // **No disclosure over it, because there is nothing to disclose**: these
-        // frames are not evidence *for* a rendering, they are the rendering, and
-        // a chevron over them would be a control whose closed state hides the
-        // whole of what the row says. The drawing has no such control anywhere
-        // in the flow, and the rows that keep their frames elsewhere reach them
-        // through the wire log instead.
+        // No disclosure: these frames are the rendering itself.
         let html = shown(cancelled());
         let frames = html
             .split_once(r#"data-slot="wire""#)
@@ -1581,10 +1310,7 @@ mod tests {
 
     #[test]
     fn a_second_rule_is_surfaced_by_the_same_row_as_the_first() {
-        // What #79 promised the day another qualifying MUST was admitted: the
-        // rule is a variant in core, its two sentences are core's, and nothing
-        // here changed to draw it (§15 q7). The load-ordering rule takes the
-        // same row, with the frames that decide it open beneath it.
+        // Every rule takes the same row, with its words from core (§15 q7).
         let html = shown(Annotation::Replay(Replay::Nothing));
 
         assert!(
@@ -1605,9 +1331,6 @@ mod tests {
 
     #[test]
     fn a_third_rule_takes_the_same_row_as_the_two_before_it() {
-        // The same promise kept a second time (§15 q7): the incomplete-option-set
-        // rule is a variant in core, its two sentences are core's, and nothing
-        // here changed to draw it — the row, and its evidence open beneath it.
         let html = shown(Annotation::OptionSet(OptionSet::Missing(
             v1::SessionConfigId::new("verbosity"),
         )));
@@ -1637,8 +1360,7 @@ mod tests {
         }
     }
 
-    /// What the row stream is, as the kinds of row it is made of — which is
-    /// what the boundaries are: rows among the rows, in the order they are read.
+    /// The row stream, as the kinds of row in order.
     fn shape(blocks: Vec<Block>, turns: &[Turn]) -> Vec<&'static str> {
         rows(blocks, turns)
             .iter()
@@ -1669,9 +1391,7 @@ mod tests {
             "the line goes under the turn, because how one ended is known at its end"
         );
 
-        // And a turn still running has no line: where the live turn stands is
-        // the composer's to say, and a boundary drawn under a turn that has not
-        // finished would be this screen answering for the agent.
+        // A turn still running has no line; its state is the composer's.
         assert_eq!(
             shape(vec![spoke_in(Some(1))], &[turn_record(1, None)]),
             ["block"],
@@ -1685,17 +1405,14 @@ mod tests {
             Some(TurnOutcome::Ended(v1::StopReason::EndTurn)),
         )];
 
-        // The finding the record exists for: the agent went on talking after it
-        // said the turn was over. The turn closes first, and what follows says
-        // what it is.
+        // The agent went on talking after the turn was over: the turn closes
+        // first, then the run is marked.
         assert_eq!(
             shape(vec![spoke_in(Some(1)), spoke_in(None)], &ended),
             ["block", "ended", "outside", "block"],
         );
 
-        // One marker per run rather than one per row: it is a statement about
-        // what follows, and repeating it on every row would be the texture this
-        // screen just had taken off it.
+        // One marker per run, not per row.
         assert_eq!(
             shape(vec![spoke_in(None), spoke_in(None)], &[]),
             ["outside", "block", "block"],
@@ -1704,8 +1421,6 @@ mod tests {
 
     #[test]
     fn a_turn_that_said_nothing_still_says_it_happened() {
-        // A `refusal` that produced no updates is a turn that happened, and a
-        // screen that drew nothing for it is a screen where the prompt vanished.
         let turns = [
             turn_record(1, Some(TurnOutcome::Ended(v1::StopReason::Refusal))),
             turn_record(2, Some(TurnOutcome::Ended(v1::StopReason::EndTurn))),
@@ -1743,8 +1458,8 @@ mod tests {
             "the field the answer carried, verbatim: {stopped}"
         );
 
-        // A turn with no stop reason says what happened instead, because a
-        // reason the agent never gave is the one thing this may not report.
+        // A failed turn reports the error, never a stop reason the agent did
+        // not give.
         let failed = shown(TurnOutcome::Failed(CallError::Disconnected));
         assert!(
             failed.contains("failed") && !failed.contains("end_turn"),
@@ -1752,14 +1467,12 @@ mod tests {
         );
     }
 
-    /// The center screen with nothing on it: an agent that may or may not be
-    /// there, and a session that is not.
+    /// The centre screen with no session open.
     fn nothing_open(connected: bool) -> String {
         nothing_open_on(connected, false)
     }
 
-    /// The same, saying whether there is an agent that has described itself —
-    /// which is the gate the offer to open a session is drawn behind.
+    /// The same, saying whether a session can be opened.
     fn nothing_open_on(connected: bool, openable: bool) -> String {
         #[component]
         fn Host(connected: bool, openable: bool) -> Element {
@@ -1781,8 +1494,6 @@ mod tests {
                     on_elicit: move |_: elicitation::Answer| {},
                     sought: None,
                     on_reveal: move |_: Vec<u64>| {},
-                    // These are about a row rather than about the turns it sat
-                    // in, so there is no record and no line is drawn.
                     described: false,
                     turns: Vec::new(),
                     on_new_session: openable.then(|| EventHandler::new(move |()| {})),
@@ -1812,9 +1523,6 @@ mod tests {
 
     #[test]
     fn an_empty_screen_offers_the_one_thing_that_resolves_it() {
-        // A screen that names a state and offers nothing has told the reader to
-        // go and find the control themselves — a tab away, and in the
-        // disconnected case behind a dialog that has to be opened first.
         let openable = nothing_open_on(true, true);
         let offer = empty_action(&openable).expect("a session can be opened from here");
         assert!(
@@ -1822,32 +1530,26 @@ mod tests {
             "the offer is the call the Agent screen would make: {offer}"
         );
 
-        // And it is drawn behind the same gate the Agent screen's button is: an
-        // agent that has not described itself cannot answer this call, and a
-        // screen offering it anyway would be a control that does nothing.
+        // Behind the same gate as the Agent screen's button.
         assert!(
             empty_action(&nothing_open(true)).is_none(),
             "no agent has described itself, so nothing is offered"
         );
 
-        // The other absence has a different answer, and it is a move rather
-        // than a call: there is nothing to open a session *on* yet.
+        // With no agent, the offer is the launch dialog.
         let unlaunched = nothing_open(false);
         let launch = empty_action(&unlaunched).expect("the launch form is offered");
         assert!(
             launch.contains("Connect\u{2026}"),
             "an unlaunched window is sent to the fields: {launch}"
         );
-        // In the bar's word rather than in a third one. The offer here and the
-        // offer up there open the same dialog, and a reader should be able to
-        // see that without pressing one of them.
+        // In the bar's word, since both open the same dialog.
         assert!(
             !launch.contains("Launch"),
             "and `Launch` is left to the control inside the form that does it: {launch}"
         );
 
-        // And the state that is waiting on the agent offers nothing, because a
-        // control there would be a button for *be patient*.
+        // Waiting on the agent offers nothing.
         assert!(
             empty_action(&waiting_on_the_agent()).is_none(),
             "a session with nothing said in it yet has nothing to offer"
@@ -1876,8 +1578,6 @@ mod tests {
                     on_elicit: move |_: elicitation::Answer| {},
                     sought: None,
                     on_reveal: move |_: Vec<u64>| {},
-                    // These are about a row rather than about the turns it sat
-                    // in, so there is no record and no line is drawn.
                     described: false,
                     turns: Vec::new(),
                     on_new_session: Some(EventHandler::new(move |()| {})),
@@ -1892,10 +1592,8 @@ mod tests {
 
     #[test]
     fn having_no_live_session_reads_as_itself_rather_than_as_an_empty_one() {
-        // Where closing or deleting the live session leaves the screen (§7.5).
-        // The agent is still there and nothing is open in it, which is neither
-        // a session with nothing in it nor a window waiting to be launched — so
-        // it says which of the three it is, and where what was said went.
+        // After the live session is closed or deleted (§7.5): an agent, and no
+        // session. Each of the three empty states reads as itself.
         let ended = nothing_open(true);
 
         assert!(
@@ -1908,9 +1606,7 @@ mod tests {
             "and not to start an agent, which is right there: {ended}"
         );
 
-        // The other side of the same sentence: before a launch there is nothing
-        // to open a session *on*, and that is what to do about it — on the
-        // first-run card, with the palette's shortcut beside it.
+        // Before a launch: the first-run card, with the palette's shortcut.
         let unlaunched = nothing_open(false);
         assert!(
             unlaunched.contains(r#"data-slot="onboarding""#)
@@ -1935,9 +1631,8 @@ mod tests {
 
     #[test]
     fn a_login_the_agent_asked_for_is_offered_where_the_session_would_be() {
-        // X5: a session/new refused for want of a login leaves the timeline
-        // empty, and "no session" there would send the reader to a button
-        // that is refused again.
+        // A session/new refused for want of a login: offer the login, not a
+        // button that would be refused again.
         #[component]
         fn Host() -> Element {
             let entries = use_signal(Vec::<TimelineEntry>::new);
@@ -2067,9 +1762,8 @@ mod tests {
 
     #[test]
     fn the_header_names_the_screen_the_session_and_where_the_turn_stands() {
-        // A region's own header says what the region is showing and what state
-        // it is in (ADR 0009). The *sentence* about that state stays above the
-        // composer, so nothing is drawn twice.
+        // ADR 0009: the header names the region and its state; the sentence
+        // about the state stays above the composer.
         let html = screen(vec![vec![Some(0)]], true, None);
         let header = html
             .split_once("<header class=\"pane-head\">")
@@ -2097,10 +1791,7 @@ mod tests {
 
     #[test]
     fn an_entry_leads_with_a_mark_that_repeats_what_the_row_already_says() {
-        // The gutter is what makes a streamed conversation scannable — the eye
-        // runs down one column of glyphs rather than reading every kind word —
-        // and the glyph is decoration, because the kind is beside it in text on
-        // every row.
+        // The gutter glyph is decoration; the kind is always in text.
         let html = screen(vec![vec![Some(0)]], false, None);
         assert!(
             html.contains(r#"<span class="row-mark" aria-hidden="true">"#),
@@ -2124,9 +1815,7 @@ mod tests {
 
     #[test]
     fn an_unrecognized_entry_is_a_block_of_its_own() {
-        // Never gathered into anything: an entry the typed layer could not read
-        // is first-class, and folding it into a neighbour would be this window
-        // interpreting traffic core just said it could not (§8).
+        // Never folded into a neighbour (§8).
         let blocks = blocks(vec![
             spoke("hello", None),
             entry(EntryKind::Unrecognized(Unrecognized::Unsolicited)),
@@ -2136,14 +1825,9 @@ mod tests {
         assert_eq!(gathered(&blocks), [1, 0, 1]);
     }
 
-    /// The centre screen, over entries made of frames the trace captured under
-    /// those ordinals — the screen itself, because what these rings are about
-    /// is what a reader can see and reach.
-    ///
-    /// The props are the ordinals rather than the entries, because a component's
-    /// props are compared and `TimelineEntry` is core's and not comparable. Each
-    /// inner list is one row's frames; `None` is a frame the trace never
-    /// numbered, which is what an annotation's are.
+    /// The rendered centre screen. Each inner list is one row's frame ordinals
+    /// (`None` for a frame the trace never numbered); props are ordinals because
+    /// `TimelineEntry` is not comparable.
     fn screen(rows: Vec<Vec<Option<u64>>>, blocked: bool, sought: Option<u64>) -> String {
         screen_with_held(rows, blocked, sought, 0..u64::MAX)
     }
@@ -2213,17 +1897,13 @@ mod tests {
         dioxus_ssr::render(&dom)
     }
 
-    /// One entry whose evidence is open, in a window switched to indented —
-    /// `closed` for the one the reader has since clicked shut.
+    /// One entry whose evidence is open, indented; `closed` once clicked shut.
     fn indented_evidence(frame: &str, closed: bool) -> String {
         #[component]
         fn Host(frame: String, closed: bool) -> Element {
             crate::indent::provide(acp_inspector_core::Indentation::Indented);
             if closed {
-                // The same call the summary makes when it is activated, by the
-                // name this entry gives its disclosure: the event says only that
-                // one was turned over, which is what an entry drawn open has to
-                // be read against.
+                // What activating the summary does.
                 crate::indent::toggled(&format!("evidence {}", named(&EntryId::Arrival(1))));
             }
             let entries = use_signal(move || {
@@ -2232,9 +1912,7 @@ mod tests {
                         frame: acp_inspector_core::Frame::new(frame.clone()),
                         captured: Some(0),
                     }],
-                    // An unrecognized entry, because its evidence is open
-                    // without being asked (§8) — which is the entry a reader
-                    // most wants laid out, since the raw *is* the rendering.
+                    // Unrecognized, so its evidence is open without being asked.
                     ..entry(EntryKind::Unrecognized(Unrecognized::NotServiced {
                         method: "fs/read_text_file".to_owned(),
                     }))
@@ -2287,11 +1965,7 @@ mod tests {
 
     #[test]
     fn an_entrys_evidence_is_laid_out_where_it_is_open() {
-        // The same call the Trace makes about the same frame (`crate::indent`),
-        // so one frame cannot be drawn two ways by the two screens §9 asks to
-        // point at each other. This entry is one whose evidence *is* its
-        // rendering (§8), so it is open from the first render and laid out
-        // without anybody clicking anything.
+        // The same layout call the Trace makes (`crate::indent`).
         let frame = r#"{"jsonrpc":"2.0","method":"fs/read_text_file"}"#;
         let html = indented_evidence(frame, false);
 
@@ -2305,8 +1979,7 @@ mod tests {
             "and what a copy takes is still the frame: {html}"
         );
 
-        // And closed again by the reader, it is the bytes: the layout is spent
-        // where somebody is looking, which is the same rule on both screens.
+        // Closed by the reader, it is the bytes as they arrived.
         assert_eq!(
             evidence_block(&indented_evidence(frame, true)),
             "{&#34;jsonrpc&#34;:&#34;2.0&#34;,&#34;method&#34;:&#34;fs/read_text_file&#34;}"
@@ -2315,8 +1988,6 @@ mod tests {
 
     #[test]
     fn evidence_that_is_not_json_is_drawn_as_it_arrived_either_way() {
-        // A frame can be anything (§8), and an entry made of one that is not
-        // JSON is the entry a reader came for.
         for closed in [true, false] {
             assert_eq!(
                 evidence_block(&indented_evidence("not json at all", closed)),
@@ -2327,27 +1998,18 @@ mod tests {
 
     #[test]
     fn a_row_says_which_frames_it_was_made_of_and_offers_the_way_to_them() {
-        // The half of the two screens pointing at each other that lives here:
-        // an entry carries the ordinals the trace captured its frames under
-        // (`acp_inspector_core::Recorded`), so the Console can be told which rows to
-        // mark — and the control that tells it sits on the disclosure that
-        // names those frames rather than on the row, because the row is about
-        // what the agent said and this is about what it sent.
         let html = screen(vec![vec![Some(4), Some(5)]], false, None);
 
         assert!(
             html.contains(r#"data-frames="4 5""#) && html.contains(r#"tabindex="0""#),
             "the row names its frames and accepts destination focus: {html}"
         );
-        // **The row is the control**, which is how the drawing links the two
-        // screens: pressing a message shows the traffic it came from, and the
-        // row says so by being drawn as something that can be pressed.
+        // The row itself is the control.
         assert!(
             html.contains(r#"class="row linked agent""#),
             "the row leads to its frames: {html}"
         );
-        // And the same act is named for a reader who is not pointing at
-        // anything, which is what a click on a row cannot be.
+        // And the same act is named for the keyboard.
         assert!(
             html.contains(r#"data-slot="reach""#) && html.contains("Show 2 frames"),
             "and offers the way to them by name: {html}"
@@ -2360,10 +2022,8 @@ mod tests {
 
     #[test]
     fn an_entry_made_of_frames_the_trace_never_numbered_offers_no_way_to_them() {
-        // A Conformance Annotation is read beside a call this client *sent*,
-        // and the send path carries no ordinal back up. A control that led
-        // nowhere would be worse than none: a reader who followed it and found
-        // nothing marked would read that as a fact about the trace.
+        // Frames this client sent carry no ordinal, so there is nothing to
+        // reach.
         let html = screen(vec![vec![None]], false, None);
 
         assert!(
@@ -2396,9 +2056,6 @@ mod tests {
             1,
             "one row is marked: {html}"
         );
-        // And it is the row that carries frame 9. The list is laid out
-        // bottom-up, so the order in the document is not the order on screen —
-        // which is exactly why this asks the row and not the position.
         let marked = html
             .split("<article")
             .find(|row| row.contains("row sought"))
@@ -2411,20 +2068,9 @@ mod tests {
 
     #[test]
     fn a_turn_waiting_on_the_reader_says_so_where_it_can_be_heard() {
-        // The entry list is deliberately not scrolled for the reader
-        // (`.blocks`), so a request arriving while they are reading further
-        // back arrives off screen. The turn stopping is announced rather than
-        // only drawn, because the tool has stopped and is waiting to be told
-        // what to do.
-        //
-        // The control beside the sentence needs a real blocking request to
-        // reach, and only core can mint one, so what a screen test can hold is
-        // the announcement.
-        //
-        // **One sentence for either kind** (§7.8). A permission request and an
-        // elicitation both stop the tool, and naming which of them did would
-        // split the reader's next action along a distinction that does not
-        // change it.
+        // A request may arrive off screen, so the stop is announced; one
+        // sentence for either kind (§7.8). The control beside it needs a real
+        // request, which only core can mint.
         let html = screen(vec![vec![Some(1)]], true, None);
 
         assert!(
@@ -2439,9 +2085,7 @@ mod tests {
 
     #[test]
     fn a_turn_nobody_is_waiting_on_says_nothing_at_all() {
-        // The region is always in the document — an announcement is made by
-        // text *changing* inside one, so a region that arrived along with its
-        // sentence would announce nothing — and empty it draws as nothing.
+        // The live region is always present, and empty here.
         let html = screen(vec![vec![Some(1)]], false, None);
 
         assert!(
@@ -2517,8 +2161,7 @@ mod tests {
 
     #[test]
     fn only_a_row_that_arrives_after_the_list_was_drawn_fades_up() {
-        // D12: the rows the list opened with are drawn still, and a row the
-        // agent sends afterwards is marked to fade up — once.
+        // Rows the list opened with are still; a later row fades up once.
         #[component]
         fn Host() -> Element {
             let entries = use_signal(|| vec![spoke("already here", Some("m0"))]);

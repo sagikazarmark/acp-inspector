@@ -1,29 +1,11 @@
-//! The window itself: its frame, its menu bar and its icon.
+//! The window itself: its frame, menu bar and icon, and the process around it.
 //!
-//! **The one module that speaks to the desktop renderer.** Everything here is
-//! what the operating system draws around the screens — the window and its
-//! size, the title bar, the menu strip, the icon in the task switcher — and
-//! nothing else in this crate imports `dioxus::desktop`. That is what lets the
-//! crate be one program with a feature per renderer: `main.rs` gates this
-//! module and its calls into it, and the screens under them never learn which
-//! window they are in (docs/adr/0011-one-ui-crate-a-feature-per-renderer.md).
-//!
-//! **What the framework gives is not an application's.** `dioxus-desktop`'s
-//! default menu names none of this tool's verbs. So the strip is this tool's:
-//! the two things done to a Trace, the things done to an Agent, and the
-//! surfaces, each with the accelerator a reader would try — ⌘ on macOS and
-//! Control elsewhere, because Control on a Mac is text editing (B5). `Edit` is
-//! kept exactly as the framework builds it.
-//!
-//! **Every item here is a control that already exists on screen**, or the
-//! platform's own. The menu is a second way to reach the window's affordances
-//! and never the only one.
-//!
-//! **And the process around the window**: a Finder-launched app inherits a
-//! `PATH` with none of the user's tools on it, so the login shell is asked for
-//! the real one at startup ([`login_path`]); the window is painted the colour
-//! of the canvas before the page loads, so a dark launch does not flash white;
-//! and closing a window that holds frames nobody exported asks first (F9).
+//! The only module that imports `dioxus::desktop`; `main.rs` gates it behind
+//! the `desktop` feature (`docs/adr/0011-one-ui-crate-a-feature-per-renderer.md`).
+//! Every menu item is a control that also exists on screen. ⌘ is the primary
+//! modifier on macOS and Control elsewhere, since Control on a Mac edits text.
+//! A Finder-launched app asks the login shell for `PATH` ([`login_path`]), and
+//! the window is painted the canvas colour before the page loads.
 
 use std::{
     cell::RefCell,
@@ -51,19 +33,15 @@ pub fn launch(app: fn() -> Element) {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(
             Config::new()
-                // The window navigates only to its own pages (S1). Dioxus
-                // serves its own and hands http(s) and mailto links to the
-                // external browser before this is consulted; everything that
-                // reaches here — file drops, data:, javascript:, custom
-                // schemes — is refused.
+                // Only the app's own pages. Dioxus hands http(s) and mailto
+                // links to the browser before this is consulted; file drops,
+                // data:, javascript: and custom schemes are refused here.
                 .with_navigation_handler(navigable)
                 .with_menu(menu())
-                // The canvas colour, before the page has painted anything (D4).
+                // The canvas colour, so a dark launch does not flash white.
                 .with_background_color(canvas(prefers_dark()))
                 .with_icon(icon().unwrap_or_else(|| {
-                    // A window with no icon is what every window without one
-                    // looks like; a window that will not open because a rounded
-                    // square could not be drawn is worse than that.
+                    // Never fail to open over an icon.
                     dioxus::desktop::default_icon().expect("the renderer has one")
                 }))
                 .with_window(titled(
@@ -78,15 +56,13 @@ pub fn launch(app: fn() -> Element) {
         .launch(app);
 }
 
-/// Whether the window's toolbar is drawn in the title bar (D17): on macOS the
-/// title bar is transparent over a full-size content view, so the toolbar is
-/// the top of the window, with the traffic lights inset into it. Everywhere
-/// else the platform's decorated frame is kept as it is.
+/// Whether the toolbar is drawn in the title bar: on macOS the title bar is
+/// transparent over a full-size content view with the traffic lights inset.
+/// Elsewhere the platform's frame is kept.
 pub const TOOLBAR_IN_TITLE_BAR: bool = cfg!(target_os = "macos");
 
-/// The traffic lights' inset from the window's top-left corner, in points:
-/// centred on the 52px toolbar, and clear of the brand by the padding the
-/// stylesheet gives the bar's leading edge (`.bar.titled`).
+/// The traffic lights' inset, in points: centred on the 52px toolbar and
+/// matching the leading padding of `.bar.titled`.
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHTS: (f64, f64) = (18.0, 20.0);
 
@@ -106,16 +82,14 @@ fn titled(window: WindowBuilder) -> WindowBuilder {
     window
 }
 
-/// Moves the window with the pointer, for a press on the toolbar's empty
-/// space where the toolbar is the title bar ([`TOOLBAR_IN_TITLE_BAR`]).
+/// Drags the window from the toolbar's empty space, where it is the title bar.
 pub fn drag_window() {
     if TOOLBAR_IN_TITLE_BAR {
         dioxus::desktop::window().drag();
     }
 }
 
-/// Zooms or unzooms the window, for a double-click on the same empty space —
-/// what a double-click on a title bar does.
+/// Toggles zoom, for a double-click on the same empty space.
 pub fn zoom_window() {
     if TOOLBAR_IN_TITLE_BAR {
         let window = dioxus::desktop::window();
@@ -123,11 +97,9 @@ pub fn zoom_window() {
     }
 }
 
-/// Whether the webview may navigate to `url` itself: only the app's own
-/// pages, as the renderer serves them (`dioxus://index.html/`, or
-/// `http(s)://dioxus.index.html/` where the custom scheme is spelled as a
-/// host). External http(s) links never navigate the window; the renderer
-/// opens them in the reader's browser instead. Anything else is denied.
+/// Whether the webview may navigate to `url`: only the app's own pages
+/// (`dioxus://index.html/`, or `http(s)://dioxus.index.html/` where the scheme
+/// is spelled as a host). Anything else is denied.
 fn navigable(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
@@ -150,10 +122,9 @@ fn canvas(dark: bool) -> (u8, u8, u8, u8) {
     }
 }
 
-/// Whether the first paint should be dark: the stored choice if there is one,
-/// else the desktop's, else dark — a dark flash on a light desktop is the
-/// smaller fault. Read on the main thread before the event loop starts, while
-/// there is no window yet to keep responsive.
+/// Whether the first paint should be dark: the stored choice, else the
+/// desktop's, else dark (the smaller fault). Read before the event loop starts,
+/// so blocking here costs no responsiveness.
 fn prefers_dark() -> bool {
     match acp_inspector_core::Settings::load().appearance() {
         acp_inspector_core::Appearance::Light => false,
@@ -189,13 +160,9 @@ static LOGIN_PATH: OnceLock<Option<String>> = OnceLock::new();
 /// How long the login shell may take to answer before it is given up on.
 const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Ask the login shell for `PATH`, off the main thread, when the app was not
-/// started from a terminal (X2).
-///
-/// A terminal-started app already has the reader's `PATH` — perhaps a richer
-/// one than the login shell's, inside a project's dev shell — so it is left
-/// alone. A Finder- or launcher-started one has the system's minimal `PATH`,
-/// where `npx` and Homebrew agents are not found.
+/// Asks the login shell for `PATH`, off the main thread, unless the app was
+/// started from a terminal. A terminal's `PATH` may be richer (a dev shell);
+/// a Finder launch gets a minimal one where `npx` and Homebrew are missing.
 fn resolve_login_path() {
     use std::io::IsTerminal;
     if std::env::var_os("TERM").is_some() || std::io::stdin().is_terminal() {
@@ -232,10 +199,7 @@ pub fn effective_path() -> Option<String> {
 
 const PATH_MARK: &str = "__ACP_INSPECTOR_PATH__";
 
-/// Runs `$SHELL -ilc` to print `PATH` between markers, and gives up after
-/// `timeout`. Interactive, because that is where most people extend `PATH`
-/// (`.zshrc`, `.bashrc`); the markers, because an interactive shell may print
-/// a banner around it.
+/// The user's shell, or the platform default.
 fn login_shell() -> String {
     std::env::var("SHELL")
         .ok()
@@ -249,6 +213,9 @@ fn login_shell() -> String {
         })
 }
 
+/// Runs `shell -ilc` to print `PATH` between markers, giving up after
+/// `timeout`. Interactive, because that is where most people extend `PATH`;
+/// markers, because an interactive shell may print a banner.
 fn probe_login_path(shell: &str, timeout: Duration) -> Option<String> {
     let script = if shell.ends_with("fish") {
         format!("printf '\\n{PATH_MARK}%s{PATH_MARK}\\n' (string join : $PATH)")
@@ -315,15 +282,12 @@ async fn open_export_folder(path: std::path::PathBuf) -> Result<(), String> {
     })
 }
 
-/// Stops the owned Connection on the event-loop path itself, before tao can
-/// exit the process — unless `guarded` says the close is being asked about
-/// first, in which case `on_guarded` runs and the window comes back.
+/// Stops the Connection on the event-loop path, before tao can exit the
+/// process — unless `guarded`, in which case `on_guarded` runs instead.
 ///
-/// **How a close is held** (F9): `dioxus-desktop` can hide a window instead of
-/// closing it but has no "do nothing". While there are unexported frames the
-/// window is set to hide; a close request then hides it, and the task this
-/// spawns shows it again with the question on it. The reader sees the window
-/// blink; the frames are not lost to a reflexive ⌘W.
+/// `dioxus-desktop` can hide a window on close but cannot ignore the close, so
+/// while guarded the window is set to hide and is shown again with the
+/// question on it.
 pub fn use_shutdown(
     inspector: acp_inspector_core::Inspector,
     guarded: ReadSignal<bool>,
@@ -371,7 +335,7 @@ pub fn use_menu(mut answer: impl FnMut(&str) + 'static) {
     dioxus::desktop::use_muda_event_handler(move |event| answer(event.id().as_ref()));
 }
 
-/// What a menu item asks for. The ids are matched in `main.rs`.
+/// What a menu item asks for. The ids are matched in `app/menu.rs`.
 pub mod command {
     pub const OPEN_TRACE: &str = "trace-open";
     pub const SAVE_TRACE: &str = "trace-export";
@@ -388,13 +352,11 @@ pub mod command {
 
 thread_local! {
     /// The items whose availability follows the window's state, by id. Menus
-    /// live on the main thread, and so does everything that changes them.
+    /// live on the main thread.
     static ITEMS: RefCell<HashMap<&'static str, MenuItem>> = RefCell::new(HashMap::new());
 }
 
-/// Enables or disables a menu item by its id. Items that do nothing in the
-/// window's current state are drawn disabled rather than left to do nothing
-/// silently (X13).
+/// Enables or disables a menu item by its id.
 pub fn set_enabled(id: &str, enabled: bool) {
     ITEMS.with(|items| {
         if let Some(item) = items.borrow().get(id) {
@@ -448,15 +410,11 @@ fn item(id: &'static str, text: &str, chord: Option<Chord>) -> MenuItem {
     item
 }
 
-/// The window's menu bar.
-///
-/// Returns `None` where the platform builds no menu of its own to add to; the
-/// caller passes that through to `Config::with_menu` unchanged.
+/// The window's menu bar, or `None` if it could not be built.
 pub fn menu() -> Option<Menu> {
     let menu = Menu::new();
 
-    // On macOS the first submenu is the application menu, whatever it is
-    // called, so it has to be the one a Mac reader expects there.
+    // On macOS the first submenu is the application menu, whatever its name.
     #[cfg(target_os = "macos")]
     let application = {
         let application = Submenu::new("ACP Inspector", true);
@@ -479,9 +437,7 @@ pub fn menu() -> Option<Menu> {
     let trace = Submenu::new("Trace", true);
     trace
         .append_items(&[
-            // Opening a file is the view the Console's own Open… shows;
-            // saving is the Console's Export…, which asks where with the
-            // platform's Save As (F5).
+            // The Console's own Open… and Export….
             &item(
                 command::OPEN_TRACE,
                 "Open trace…",
@@ -533,8 +489,7 @@ pub fn menu() -> Option<Menu> {
     ])
     .ok()?;
 
-    // The platform's own, unchanged: a window with four text fields and a
-    // composer owes cut, copy, paste and select-all.
+    // The platform's own, unchanged.
     let edit = Submenu::new("Edit", true);
     edit.append_items(&[
         &PredefinedMenuItem::undo(None),
@@ -573,8 +528,7 @@ pub fn menu() -> Option<Menu> {
 /// The size of the icon, in pixels a side.
 const ICON: u32 = 64;
 
-/// The window's icon: the tool's own mark, filling the canvas as a window icon
-/// does.
+/// The window's icon: the tool's mark, filling the canvas.
 pub fn icon() -> Option<Icon> {
     Icon::from_rgba(mark::rgba(ICON, 0.0), ICON, ICON).ok()
 }
@@ -612,10 +566,8 @@ mod tests {
         }
     }
 
-    // AppKit builds an `NSMenu` on the main thread and nowhere else, and the
-    // test harness runs every test on a thread of its own. So on macOS the
-    // strip cannot be built here at all; Linux and Windows build theirs on any
-    // thread, and CI runs it there.
+    // AppKit builds an `NSMenu` only on the main thread, which the test
+    // harness does not offer; Linux and Windows CI run this.
     #[test]
     #[cfg_attr(
         target_os = "macos",
@@ -688,7 +640,7 @@ mod tests {
 
     #[test]
     fn every_menu_id_is_matched_by_the_window() {
-        let answered = include_str!("main.rs");
+        let answered = include_str!("app/menu.rs");
         let declared = include_str!("shell.rs")
             .split_once("pub mod command {")
             .expect("the commands are a module")
@@ -723,8 +675,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_login_shell_that_never_answers_is_given_up_on() {
-        // A shell that hangs is the case the timeout exists for: startup must
-        // not wait on it for longer than it says.
         use std::os::unix::fs::PermissionsExt;
         let directory =
             std::env::temp_dir().join(format!("acp-login-shell-{}", std::process::id()));

@@ -115,7 +115,7 @@ impl Answering {
 }
 
 /// State snapshots are props because the request handle compares by identity:
-/// the same handle must still redraw when answered or completed (#6).
+/// the same handle must still redraw when answered or completed.
 #[component]
 pub fn Panel(
     request: ElicitationRequest,
@@ -416,8 +416,7 @@ fn BoundFields(
             SchemaForm { form: bound, submission_mode: SubmissionMode::Advisory,
                 on_submit: |_| {},
                 // Enter in a single-field form submits it natively. That is
-                // not an answer: Accept is the one way to send, whatever the
-                // number of fields (FM3).
+                // not an answer: Accept is the one way to send.
                 on_advisory_submit: |_| {},
                 on_error: move |error: schemaform_dioxus::HandleError| on_problem.call(error.to_string()),
             }
@@ -498,13 +497,11 @@ fn tabs(id: &str, surface: Surface, on_choose: impl FnMut(Surface) + Clone + 'st
 
 /// Where a URL-mode request wants the reader to go.
 ///
-/// **Only an http(s) link with a host is ever a link** (S1). The text is
-/// parsed rather than split, and the host shown is the one the browser would
-/// open: `https://trusted.example@evil.example` is a link to `evil.example`
-/// with `trusted.example` as a user name, and it says so. Anything else is
-/// drawn as text. A request that can no longer be acted on stops being a
-/// link too; one that was accepted and not yet completed keeps it, because
-/// visiting the page is what accepting consented to.
+/// Only an http(s) URL with a host is a link. The text is parsed, and the host
+/// shown is the one the browser would open (so a `user@host` spoof says so).
+/// Anything else is text. A request that can no longer be acted on stops being
+/// a link; an accepted, uncompleted one keeps it, since accepting consented to
+/// the visit.
 fn target(url: &str, completed: bool, state: &ElicitationState) -> Element {
     let live = match state {
         ElicitationState::Waiting | ElicitationState::Answering => true,
@@ -726,7 +723,7 @@ mod tests {
         );
 
         // Enter in a one-field form submits it natively. That is not an
-        // answer: Accept is the only way to send (FM3).
+        // answer: Accept is the only way to send.
         let form = edits
             .iter()
             .find_map(|edit| match edit {
@@ -745,8 +742,8 @@ mod tests {
             form,
         );
         dom.render_immediate(&mut NoOpMutations);
-        // The count reaches Accept through an effect, which runs on the next
-        // turn of the scheduler.
+        // The count reaches Accept through an effect, on the next scheduler
+        // turn.
         for _ in 0..3 {
             let _ = tokio::time::timeout(Duration::from_millis(50), dom.wait_for_work()).await;
             dom.render_immediate(&mut NoOpMutations);
@@ -1240,8 +1237,8 @@ mod tests {
         );
         assert!(!html.contains("url-credentials"), "{html}");
 
-        // A user name in front of the host is the oldest spoof there is: the
-        // host shown is the one the browser opens, and the card says why.
+        // A user name in front of the host: the host shown is the one the
+        // browser opens, and the card says why.
         let spoof = url_card(
             "https://trusted.example@evil.example/login",
             ElicitationState::Waiting,
