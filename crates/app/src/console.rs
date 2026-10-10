@@ -24,7 +24,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use acp_inspector_core::{ConnectionStatus, Diagnostic, DiagnosticKind, FrameKind, TracedFrame};
+use acp_inspector_core::{
+    ConnectionStatus, Diagnostic, DiagnosticKind, Direction, FrameKind, TracedFrame,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
@@ -128,6 +130,8 @@ pub fn Console(
     // And which envelope shapes the Trace is showing, which is the same kind of
     // narrowing said as chips because the answers are a closed set (`trace.rs`).
     let mut kinds = use_signal(Kinds::default);
+    // And which way they crossed (F8).
+    let mut directions = use_signal(Directions::default);
     // Which frame the pane under the list is reading. The Console's rather than
     // the Trace's, because arriving from the Timeline changes it and that
     // request is delivered to the panel.
@@ -142,6 +146,7 @@ pub fn Console(
         if let Some(first) = revealed().first().copied() {
             filter.set(String::new());
             kinds.set(Kinds::default());
+            directions.set(Directions::default());
             selected.set(Some(first));
         }
     });
@@ -198,27 +203,9 @@ pub fn Console(
                             }
                         },
                         Icon { class: "icon", icon: HiDownload }
-                        "export"
+                        "Export"
                     }
-                    button {
-                        class: "btn btn-xs btn-quiet btn-bad",
-                        "data-slot": "clear",
-                        r#type: "button",
-                        aria_label: "Clear the trace",
-                        aria_disabled: nothing_traced.then_some("true"),
-                        tabindex: nothing_traced.then_some("-1"),
-                        // Said on the control, because it is the one thing
-                        // about clearing that surprises people: a file already
-                        // written is not this trace's any more.
-                        title: "Drop the frames captured so far; exports already written are untouched",
-                        onclick: move |_| {
-                            if !nothing_traced {
-                                on_clear.call(());
-                            }
-                        },
-                        Icon { class: "icon", icon: HiTrash }
-                        "clear"
-                    }
+                    ClearTrace { nothing_traced, on_clear }
                 }
             }
 
@@ -232,6 +219,20 @@ pub fn Console(
             if !empty {
                 div { class: "wire-filters",
                     if tab == Tab::Trace {
+                        for direction in Directions::ALL {
+                            button {
+                                key: "{Directions::named(direction)}",
+                                class: "chip",
+                                "data-slot": "direction",
+                                "data-direction": Directions::named(direction),
+                                r#type: "button",
+                                aria_pressed: directions().shows(direction),
+                                title: if direction == Direction::ToAgent { "Show or hide frames sent to the agent" } else { "Show or hide frames received from the agent" },
+                                onclick: move |_| directions.set(directions().toggled(direction)),
+                                {crate::disclosure::icon(if direction == Direction::ToAgent { crate::disclosure::Role::Outgoing } else { crate::disclosure::Role::Incoming })}
+                                "{Directions::named(direction)}"
+                            }
+                        }
                         for kind in Kinds::ALL {
                             if kind != FrameKind::Unreadable || unreadable {
                                 button {
@@ -255,8 +256,12 @@ pub fn Console(
                         value: "{filter}",
                         spellcheck: false,
                         aria_label: "Filter the console",
-                        title: "Show only rows containing this text",
-                        placeholder: "filter method…",
+                        title: if tab == Tab::Trace {
+                            "Show only rows containing this text. method:NAME and id:N match those fields of the envelope."
+                        } else {
+                            "Show only rows containing this text"
+                        },
+                        placeholder: "Filter rows…",
                         oninput: move |event| filter.set(event.value()),
                     }
                 }
@@ -281,11 +286,13 @@ pub fn Console(
                         saved,
                         filter: filter(),
                         kinds: kinds(),
+                        directions: directions(),
                         revealed,
                         decoded,
                         selected: selected(),
                         on_choose: move |ordinal| selected.set(Some(ordinal)),
                         on_seek,
+                        on_filter: move |query: String| filter.set(query),
                     }
                 }
             }
@@ -299,6 +306,121 @@ pub fn Console(
                     Diagnostics { lines, dropped: dropped_lines, filter: filter() }
                 }
             }
+        }
+    }
+}
+
+/// How long an armed Clear waits for its confirmation before it disarms.
+const CONFIRM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Clear, confirmed in two steps (F9).
+///
+/// **A confirm rather than an Undo**, because the trace store has no way to
+/// put cleared frames back, and the frames it drops are the evidence a reader
+/// may not have exported yet. The first press arms it and the second clears;
+/// Cancel, Escape, or a few seconds of nothing disarm it. The label changes on
+/// the same button, so focus stays where it was pressed.
+#[component]
+fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
+    let mut armed = use_signal(|| false);
+    let mut arming = use_signal(|| 0_u64);
+    let armed_now = armed() && !nothing_traced;
+
+    rsx! {
+        span { class: "clear-trace", "data-armed": "{armed_now}",
+            onkeydown: move |event| {
+                if event.key() == Key::Escape && armed() {
+                    event.stop_propagation();
+                    armed.set(false);
+                }
+            },
+            button {
+                class: if armed_now { "btn btn-xs btn-filled btn-bad confirm" } else { "btn btn-xs btn-quiet btn-bad" },
+                "data-slot": "clear",
+                r#type: "button",
+                aria_label: if armed_now { "Confirm clearing the trace" } else { "Clear the trace" },
+                aria_disabled: nothing_traced.then_some("true"),
+                tabindex: nothing_traced.then_some("-1"),
+                // Said on the control, because it is the one thing about
+                // clearing that surprises people: a file already written is
+                // not this trace's any more.
+                title: "Drop the frames captured so far; exports already written are untouched",
+                onclick: move |_| {
+                    if nothing_traced {
+                        return;
+                    }
+                    if armed() {
+                        armed.set(false);
+                        on_clear.call(());
+                        return;
+                    }
+                    armed.set(true);
+                    let this = arming() + 1;
+                    arming.set(this);
+                    spawn(async move {
+                        tokio::time::sleep(CONFIRM_FOR).await;
+                        if arming() == this {
+                            armed.set(false);
+                        }
+                    });
+                },
+                Icon { class: "icon", icon: HiTrash }
+                if armed_now { "Confirm clear" } else { "Clear" }
+            }
+            if armed_now {
+                button {
+                    class: "btn btn-xs btn-quiet",
+                    "data-slot": "cancel-clear",
+                    r#type: "button",
+                    aria_label: "Keep the trace",
+                    onclick: move |_| armed.set(false),
+                    "Cancel"
+                }
+            }
+        }
+    }
+}
+
+/// Which way a frame crossed, as the two chips that hide one direction (F8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Directions {
+    pub sent: bool,
+    pub received: bool,
+}
+
+impl Default for Directions {
+    fn default() -> Self {
+        Self {
+            sent: true,
+            received: true,
+        }
+    }
+}
+
+impl Directions {
+    pub const ALL: [Direction; 2] = [Direction::ToAgent, Direction::FromAgent];
+
+    pub fn shows(self, direction: Direction) -> bool {
+        match direction {
+            Direction::ToAgent => self.sent,
+            Direction::FromAgent => self.received,
+        }
+    }
+
+    #[must_use]
+    pub fn toggled(mut self, direction: Direction) -> Self {
+        match direction {
+            Direction::ToAgent => self.sent = !self.sent,
+            Direction::FromAgent => self.received = !self.received,
+        }
+        self
+    }
+
+    /// What the chip says.
+    pub fn named(direction: Direction) -> &'static str {
+        match direction {
+            Direction::ToAgent => "sent",
+            Direction::FromAgent => "received",
         }
     }
 }
@@ -350,8 +472,8 @@ fn TabControl(
                 span {
                     class: "count gone",
                     "data-slot": "gone",
-                    title: "captured, and no longer held — cleared, or aged out of the surface's cap",
-                    "−{gone}"
+                    title: "Captured, and no longer held: cleared, or aged out of the surface's cap",
+                    "{gone} dropped"
                 }
             }
         }
@@ -467,7 +589,26 @@ pub(crate) fn focus_id(id: &str) {
 /// whole of the feature rather than a branch at every call site.
 pub(crate) fn matching(text: &str, filter: &str) -> bool {
     let filter = filter.trim();
-    filter.is_empty() || text.to_lowercase().contains(&filter.to_lowercase())
+    filter.is_empty() || contains_folded(text, &filter.to_lowercase())
+}
+
+/// Whether `text` contains `needle` (already lowercase), ignoring case.
+///
+/// **Without lowercasing the text** (L1): a retained frame can be megabytes,
+/// and copying every one of them to search it was the cost of every keystroke.
+/// An ASCII needle — a method, an id, a session id — is compared byte by byte
+/// with ASCII folding; anything else falls back to Unicode lowercasing.
+pub(crate) fn contains_folded(text: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return text.to_lowercase().contains(needle);
+    }
+    let needle = needle.as_bytes();
+    text.as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// What a narrowing is hiding, said where the rows it hid would have been.
@@ -486,15 +627,43 @@ pub(crate) fn narrowed(shown: usize, held: usize, what: &str, narrowing: bool) -
         return rsx! {};
     }
 
+    let count = if shown == 0 {
+        format!("No {what} match.")
+    } else {
+        format!("{shown} of {held} {what}.")
+    };
+
     rsx! {
-        p { class: "narrowed", "data-slot": "narrowed", role: "status", aria_live: "polite",
-            if shown == 0 {
-                "No {what} match. "
-            } else {
-                "{shown} of {held} {what}. "
-            }
+        p { class: "narrowed", "data-slot": "narrowed",
+            "{count} "
             span { class: "hint", "The whole surface is still captured, exported and counted." }
+            // Said once the typing settles rather than on every keystroke
+            // (F8): a count read aloud per letter is noise.
+            Settled { text: count.clone() }
         }
+    }
+}
+
+/// How long a changing count must hold still before it is announced.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A polite live region that says `text` once it has stopped changing.
+#[component]
+fn Settled(text: String) -> Element {
+    let mut said = use_signal(String::new);
+    let mut latest = use_signal(|| 0_u64);
+    use_effect(use_reactive!(|text| {
+        let this = *latest.peek() + 1;
+        latest.set(this);
+        spawn(async move {
+            tokio::time::sleep(SETTLE).await;
+            if *latest.peek() == this {
+                said.set(text);
+            }
+        });
+    }));
+    rsx! {
+        span { class: "sr-only", "data-slot": "announced", role: "status", aria_live: "polite", "{said}" }
     }
 }
 
@@ -913,7 +1082,7 @@ mod tests {
             ..Screen::default()
         });
         assert!(
-            html.contains(r#"data-slot="gone""#) && html.contains("−12"),
+            html.contains(r#"data-slot="gone""#) && html.contains("12 dropped"),
             "a count that is not the whole session must never look like one: {html}"
         );
     }
@@ -992,7 +1161,7 @@ mod tests {
         // hiding traffic nobody asked it to hide.
         assert_eq!(
             ordinary.matches(r#"aria-pressed=true"#).count(),
-            4,
+            6,
             "a surface opens showing everything: {ordinary}"
         );
     }
@@ -1027,6 +1196,78 @@ mod tests {
         assert!(matching("session/prompt", ""));
         assert!(matching("session/prompt", "PROMPT"));
         assert!(!matching("session/prompt", "cancel"));
+    }
+
+    #[test]
+    fn folded_matching_needs_no_lowercased_copy_and_agrees_with_one() {
+        for (text, needle) in [
+            (r#"{"method":"Session/Prompt"}"#, "session/prompt"),
+            ("ÉCOLE élève", "élève"),
+            ("abc", ""),
+        ] {
+            assert!(contains_folded(text, needle), "{text} / {needle}");
+            assert_eq!(
+                contains_folded(text, needle),
+                text.to_lowercase().contains(needle)
+            );
+        }
+        assert!(!contains_folded("short", "much longer needle"));
+    }
+
+    #[tokio::test]
+    async fn clearing_the_trace_takes_a_second_press() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::{AttributeValue, Mutation, NoOpMutations};
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut cleared = use_signal(|| 0);
+            rsx! {
+                ClearTrace { nothing_traced: false, on_clear: move |()| cleared += 1 }
+                span { "data-slot": "cleared", "{cleared}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let click = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            )
+        };
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let clear = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(text),
+                    id,
+                    ..
+                } if text == "Clear the trace" => Some(*id),
+                _ => None,
+            })
+            .expect("the clear control");
+        dom.runtime().handle_event("click", click(), clear);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("Confirm clear")
+                && html.contains(r#"data-slot="cancel-clear""#)
+                && html.contains(r#"data-slot="cleared">0"#),
+            "{html}"
+        );
+        dom.runtime().handle_event("click", click(), clear);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="cleared">1"#) && !html.contains("Confirm clear"),
+            "{html}"
+        );
     }
 
     #[test]
