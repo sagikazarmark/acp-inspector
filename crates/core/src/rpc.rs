@@ -1,8 +1,8 @@
 //! JSON-RPC over frames: ids out, answers back, and a name for everything that
 //! arrives.
 //!
-//! Copy-shaped from `app/web/src/acp/wire.rs` in the host repo and adapted, not
-//! linked (`docs/architecture.md` §13): the correlation is the same — a map from
+//! Adapted from the host project's JSON-RPC wire, not linked
+//! (`docs/architecture.md` §13): the correlation is the same — a map from
 //! request id to whoever is waiting — and everything around it is different,
 //! because this one sits on the frame seam ([`FrameSink`], [`Frame`]) rather
 //! than on a WebSocket, and it is below a layer whose job is to *show* what it

@@ -575,9 +575,9 @@ impl Client {
     /// `session/load` or `session/resume`: opens a session that already exists,
     /// and makes it the live one (§7.5).
     ///
-    /// **One operation with a property, not two calls.** The two requests are
-    /// carry the same inputs (resume omits an empty MCP list); their behavioral difference is
-    /// [`Restore::replays`] — the ordering the specification states, and the
+    /// **One operation with a property, not two calls.** The two requests
+    /// carry the same inputs (resume omits an empty MCP list), and their one
+    /// behavioural difference is [`Restore::replays`] — the ordering the specification states, and the
     /// thing that decides whether the timeline can be rebuilt at all. Which one
     /// is sent is the caller's to say, from what the agent advertised
     /// ([`Restore::preferred`]); this sends it and never second-guesses it, the

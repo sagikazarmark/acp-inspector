@@ -33,8 +33,8 @@ const VERSION: u32 = 1;
 
 /// What the header warns whoever opens the file.
 ///
-/// The bridge's word for word (`app/bridge/src/shell/trace.rs`): the two files
-/// carry the same risk, so they say the same thing about it.
+/// The bridge's `--trace-frames` header's, word for word (`docs/trace-export.md`):
+/// the two files carry the same risk, so they say the same thing about it.
 const WARNING: &str =
     "ACP frames may contain prompts, file contents, and tool output; nothing is redacted";
 

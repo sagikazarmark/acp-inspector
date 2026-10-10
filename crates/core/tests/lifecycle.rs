@@ -407,8 +407,7 @@ async fn what_a_close_does_to_an_in_flight_prompt_is_observed_rather_than_assume
 /// `session/request_permission`, answers the close — and never answers the
 /// prompt it was walked away from.
 ///
-/// **Testy cannot produce this case, and what it produces instead is a race**
-/// ([#94](https://github.com/sagikazarmark/dioxus-chat.orig/issues/94)). Its
+/// **Testy cannot produce this case, and what it produces instead is a race.** Its
 /// `callbacks` scenario resolves the prompt off its own close, and a turn that
 /// settles abandons the request that blocked it — so two producers reached the
 /// same request and the test could only assert whichever usually got there
