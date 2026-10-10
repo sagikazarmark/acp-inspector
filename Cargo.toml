@@ -37,7 +37,7 @@ agent-client-protocol-schema = "1.7"
 # app is *for* and a workspace has no build. `crates/core/tests/headless.rs`
 # fails the build if this crate ever reaches the core at all (§5).
 dioxus = "0.7.9"
-dioxus-free-icons = { version = "0.10", features = ["hero-icons-outline"] }
+dioxus-free-icons = { version = "0.10", features = ["hero-icons-outline", "lucide"] }
 # The same renderer without a window, for the app crate's own tests only: a
 # component rendered to HTML is a screen a test can read.
 dioxus-ssr = "0.7.9"
