@@ -150,7 +150,7 @@ pub fn Rail(
                         button {
                             key: "{choice.label()}",
                             id: choice.id(),
-                            class: "rail-tab",
+                            class: "tab rail-tab",
                             r#type: "button",
                             role: "tab",
                             aria_selected: choice == tab,

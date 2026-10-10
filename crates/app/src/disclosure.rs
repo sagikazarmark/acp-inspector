@@ -90,8 +90,12 @@ pub(crate) fn icon(role: Role) -> Element {
         Role::Note => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdInfo } },
         Role::Send => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowUp } },
         Role::Stop => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquare } },
-        Role::Start => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquareTerminal } },
-        Role::Outgoing => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowRight } },
+        Role::Start => {
+            rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquareTerminal } }
+        }
+        Role::Outgoing => {
+            rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowRight } }
+        }
         Role::Incoming => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowLeft } },
     };
 

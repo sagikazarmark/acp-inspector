@@ -1816,7 +1816,7 @@ pub(crate) fn sessions(
             if let Some(live) = listing.live {
                 section { class: "rail-group", "data-slot": "session-current",
                     div { class: "rail-head",
-                        h3 { class: "eyebrow", "Current session" }
+                        h3 { class: "heading", "Current session" }
                     }
                     ul { class: "session-list",
                         {session_row(current, live, &listing, connected)}
@@ -1830,7 +1830,7 @@ pub(crate) fn sessions(
             if listing.advertised {
                 section { class: "rail-group session-listing",
                     header { class: "rail-head",
-                        h3 { class: "eyebrow", "Other sessions" }
+                        h3 { class: "heading", "Other sessions" }
                         if !others.is_empty() {
                             span { class: "rail-count", "{others.len()}" }
                         }
@@ -3380,7 +3380,7 @@ mod tests {
         // asks is that the state is carried in words, not that every row
         // repeats its own section.
         assert!(
-            listed.contains(r#"<h3 class="eyebrow">Current session</h3>"#),
+            listed.contains(r#"<h3 class="heading">Current session</h3>"#),
             "the live Session is explicit in words: {listed}"
         );
         assert!(

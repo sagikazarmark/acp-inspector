@@ -542,7 +542,7 @@ fn TabControl(
     rsx! {
         button {
             id: tab.id(),
-            class: "wire-tab",
+            class: "tab wire-tab",
             r#type: "button",
             role: "tab",
             aria_selected: tab == selected,

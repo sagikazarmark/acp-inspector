@@ -2300,7 +2300,7 @@ fn TopBar(
             div { class: "bar-brand",
                 span { class: "mark", aria_hidden: "true", "A" }
                 h1 { "ACP Inspector" }
-                span { class: "version", "v{env!(\"CARGO_PKG_VERSION\")}" }
+                span { class: "tag version", "v{env!(\"CARGO_PKG_VERSION\")}" }
             }
             // What is connected, as one chip: the state as a dot, the agent as
             // the name it gave, and the transport it was reached over.

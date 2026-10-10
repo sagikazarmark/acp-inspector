@@ -1451,15 +1451,14 @@ mod tests {
                 "the section name is one size and one tracking: {body}"
             );
         }
-        let wire = ":is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow)";
+        let wire = ".wire-name";
         assert_eq!(declared(wire, "text-transform").as_deref(), Some("none"));
         assert_eq!(
             declared(wire, "font-family").as_deref(),
             Some("var(--font-mono)"),
             "a wire name is spelled in the face the wire is read in"
         );
-        let heading =
-            ":is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow)";
+        let heading = ".heading";
         assert_eq!(declared(heading, "text-transform").as_deref(), Some("none"));
         assert_eq!(
             declared(heading, "font-size").as_deref(),
@@ -1568,7 +1567,7 @@ mod tests {
             assert!(!declares(rule(button), "text-transform"));
         }
         // One tab, for both regions that have panels.
-        let tab = ":is(.tab, .rail-tab, .wire-tab)";
+        let tab = ".tab";
         assert_eq!(
             declared(tab, "font-size").as_deref(),
             Some("var(--text-row)")
@@ -1589,7 +1588,7 @@ mod tests {
             );
         }
         // And one tag, whose tone is a variable rather than a rule per tone.
-        let tag = ":is(.tag, .version, .evidence-kind, .frame-kind)";
+        let tag = ":is(.tag, .frame-tag)";
         assert_eq!(declared(tag, "--tone").as_deref(), Some("var(--dim)"));
         assert_eq!(declared(tag, "color").as_deref(), Some("var(--tone)"));
     }
@@ -1704,7 +1703,7 @@ mod tests {
             (".pane-head", "40px"),
             (".frame-pane-head", "36px"),
             (".palette-query", "48px"),
-            (":is(.tab, .rail-tab, .wire-tab)", "32px"),
+            (".tab", "32px"),
             (".seg-item", "24px"),
             (".mode-row", "32px"),
             (".mode-cycle", "28px"),
@@ -1801,7 +1800,7 @@ mod tests {
             Some("var(--txt)")
         );
         assert_eq!(
-            declared(".row.unnamed .row-head > .eyebrow", "color").as_deref(),
+            declared(".row.unnamed .row-head > .wire-name", "color").as_deref(),
             Some("var(--vio)")
         );
         let ended = rule(".ended");
@@ -1915,17 +1914,7 @@ mod tests {
         // The vocabulary the markup is offered rather than already using (the
         // names the components move onto), and the classes composed at run
         // time from a prefix and a tone.
-        let offered = [
-            "tab",
-            "tag",
-            "tag-ok",
-            "tag-err",
-            "tag-vio",
-            "tag-in",
-            "tag-out",
-            "heading",
-            "wire-name",
-        ];
+        let offered = ["tag-ok", "tag-err", "tag-vio", "tag-in", "tag-out"];
         let composed = ["dot-"];
 
         let mut dead = Vec::new();

@@ -2876,7 +2876,7 @@ a:hover {
   flex: 1;
   min-width: 0;
 }
-:is(.bar, .pane-head, .rail-tabs, .eyebrow, .wire-filters, .palette-foot, .prompt-foot) {
+:is(.bar, .pane-head, .rail-tabs, .eyebrow, .heading, .wire-name, .wire-filters, .palette-foot, .prompt-foot) {
   user-select: none;
 }
 :is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible {
@@ -2897,7 +2897,7 @@ a:hover {
   color: var(--dim2);
   font-weight: var(--font-weight-answer);
 }
-:is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow) {
+.heading {
   font-size: var(--text-row);
   line-height: var(--text-row--line-height);
   letter-spacing: var(--tracking-normal);
@@ -2905,7 +2905,7 @@ a:hover {
   color: var(--dim);
   font-weight: var(--font-weight-answer);
 }
-:is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow) {
+.wire-name {
   font-family: var(--font-mono);
   font-size: var(--text-meta);
   line-height: var(--text-meta--line-height);
@@ -2945,7 +2945,7 @@ p.unnamed {
   color: var(--dim2);
   font-style: italic;
 }
-:is(.tag, .version, .evidence-kind, .frame-kind) {
+:is(.tag, .frame-tag) {
   --tone: var(--dim);
   display: inline-flex;
   align-items: center;
@@ -3050,7 +3050,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 .btn[aria-disabled="true"] {
   opacity: 0.4;
 }
-:is(.tab, .rail-tab, .wire-tab) {
+.tab {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3065,10 +3065,10 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   font-size: var(--text-row);
   font-weight: var(--font-weight-answer);
 }
-:is(.tab, .rail-tab, .wire-tab):hover {
+.tab:hover {
   color: var(--txt);
 }
-:is(.tab, .rail-tab, .wire-tab)[aria-selected="true"] {
+.tab[aria-selected="true"] {
   color: var(--txt);
   box-shadow: inset 0 -2px 0 var(--acc);
 }
@@ -3791,10 +3791,10 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   gap: 8px;
   min-width: 0;
 }
-.row-head > .eyebrow {
+.row-head > .wire-name {
   flex: none;
 }
-.row.unnamed .row-head > .eyebrow {
+.row.unnamed .row-head > .wire-name {
   color: var(--vio);
 }
 .said {
@@ -4073,14 +4073,14 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   padding: 12px;
   border-bottom: 1px solid var(--line);
 }
-.blocking-head > .eyebrow {
+.blocking-head > .wire-name {
   color: var(--in);
   font-weight: var(--font-weight-answer);
 }
-.blocking.elicit .blocking-head > .eyebrow {
+.blocking.elicit .blocking-head > .wire-name {
   color: var(--vio);
 }
-.blocking.answered .blocking-head > .eyebrow {
+.blocking.answered .blocking-head > .wire-name {
   color: var(--dim);
 }
 .blocking-wait {
@@ -4264,7 +4264,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   color: var(--dim2);
   font-size: var(--text-meta);
 }
-.boundary > .eyebrow {
+.boundary > .heading {
   flex: none;
 }
 .waiting[data-slot="waiting"] {

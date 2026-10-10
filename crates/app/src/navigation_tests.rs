@@ -203,7 +203,7 @@ fn timeline_evidence_reveals_trace_after_diagnostics() {
         html.contains("frame-row revealed"),
         "the Frame must be visible and selected"
     );
-    assert!(html.contains("id=\"console-tab-trace\" class=\"wire-tab\" type=\"button\" role=\"tab\" aria-selected=true"));
+    assert!(html.contains("id=\"console-tab-trace\" class=\"tab wire-tab\" type=\"button\" role=\"tab\" aria-selected=true"));
     // Navigate back and repeat the same destinations, rather than relying on
     // a changing ordinal to trigger a second visit.
     let new_turn = target(&edits, "aria-label", "Show Timeline entry for Frame 0");

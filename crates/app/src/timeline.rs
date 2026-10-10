@@ -918,7 +918,7 @@ fn ended(turn: &Turn) -> Element {
 fn outside() -> Element {
     rsx! {
         div { class: "boundary outside", "data-slot": "outside-turn",
-            span { class: "eyebrow", "Outside a turn" }
+            span { class: "heading", "Outside a turn" }
             span { "sent while no prompt was running" }
         }
     }
@@ -1218,7 +1218,7 @@ fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
             span { class: "sr-only", "{label}" }
         } else {
             div { class: "row-head",
-                span { class: "eyebrow", "{label}" }
+                span { class: "wire-name", "{label}" }
                 // Kept out of sight rather than dropped: what the row is
                 // *about* has a time in the record, and a reader who cannot see
                 // the flow still hears the order it happened in.
@@ -2111,13 +2111,13 @@ mod tests {
             "and what it stands for is in words, where the drawing leaves the row bare: {html}"
         );
         assert!(
-            !html.contains(r#"<span class="eyebrow">agent_message_chunk</span>"#),
+            !html.contains(r#"<span class="wire-name">agent_message_chunk</span>"#),
             "the agent's message is drawn as the message and nothing else: {html}"
         );
         // The rows the drawing does label keep the word on screen.
         let annotated = shown(cancelled());
         assert!(
-            annotated.contains(r#"<span class="eyebrow">conformance</span>"#),
+            annotated.contains(r#"<span class="wire-name">conformance</span>"#),
             "a row the drawing names says what it is on screen: {annotated}"
         );
     }

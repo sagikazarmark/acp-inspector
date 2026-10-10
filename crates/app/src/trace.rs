@@ -749,7 +749,7 @@ fn frame_row(
                     if let Some(took) = took {
                         span { class: "frame-took", "data-slot": "took", title: "Time since the request", "+{elapsed(took)}" }
                     }
-                    span { class: "frame-kind {kind_tone(kind)}", "{named_kind(kind)}" }
+                    span { class: "tag frame-kind {kind_tone(kind)}", "{named_kind(kind)}" }
                 }
                 // The row's own controls sit beside it and never inside it, so
                 // each has one unambiguous job. A Tab stop only on the list's
@@ -2084,9 +2084,9 @@ mod tests {
             html.contains(r#"data-slot="envelope""#)
                 && html.contains(">initialize</span>")
                 && html.contains(">#1</span>")
-                && html.contains(r#"class="frame-kind call""#)
-                && html.contains(r#"class="frame-kind result""#)
-                && html.contains(r#"class="frame-kind notification""#),
+                && html.contains(r#"class="tag frame-kind call""#)
+                && html.contains(r#"class="tag frame-kind result""#)
+                && html.contains(r#"class="tag frame-kind notification""#),
             "the envelope's own vocabulary leads the row: {html}"
         );
         assert!(
@@ -2106,7 +2106,8 @@ mod tests {
             "nothing is put in front of a frame in none of the four shapes: {html}"
         );
         assert!(
-            html.contains("not json at all") && html.contains(r#"class="frame-kind unreadable""#),
+            html.contains("not json at all")
+                && html.contains(r#"class="tag frame-kind unreadable""#),
             "the bytes are the row, and the shape says it could not be read: {html}"
         );
     }

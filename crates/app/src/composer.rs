@@ -446,7 +446,7 @@ pub fn Composer(
             if !matches.is_empty() {
                 div { class: "slash", "data-slot": "commands",
                     div { class: "slash-head",
-                        span { class: "eyebrow", title: "available_commands_update", "Agent commands" }
+                        span { class: "heading", title: "available_commands_update", "Agent commands" }
                         span { class: "slash-count", "{matches.len()} of {commands.len()}" }
                     }
                     div { class: "slash-list", role: "listbox", aria_label: "Commands the agent published",

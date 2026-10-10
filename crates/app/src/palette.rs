@@ -340,7 +340,7 @@ pub fn Palette(commands: Vec<Command>) -> Element {
                     for (group, rows) in groups {
                         div { key: "{group}-{rows[0].0}", role: "group", aria_label: "{group}",
                             // The group's name, over the first command in it.
-                            div { class: "palette-group eyebrow", aria_hidden: "true", "{group}" }
+                            div { class: "palette-group heading", aria_hidden: "true", "{group}" }
                             for (position, command) in rows {
                                 {
                                     let chosen = command.clone();
@@ -571,7 +571,7 @@ mod tests {
                 "{label} is on the list with what it is about and what it does: {html}"
             );
         }
-        assert_eq!(html.matches(r#"class="palette-group eyebrow""#).count(), 3);
+        assert_eq!(html.matches(r#"class="palette-group heading""#).count(), 3);
         assert!(html.contains("4 of 4"), "{html}");
     }
 

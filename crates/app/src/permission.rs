@@ -60,7 +60,7 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
             // row, whose click reveals frames and moves focus (B1).
             onclick: move |event| event.stop_propagation(),
             div { class: "blocking-head",
-                span { class: "eyebrow", "{v1::CLIENT_METHOD_NAMES.session_request_permission}" }
+                span { class: "wire-name", "{v1::CLIENT_METHOD_NAMES.session_request_permission}" }
                 span { class: "blocking-wait",
                     if waiting { "Waiting for you" } else { "Resolved" }
                 }

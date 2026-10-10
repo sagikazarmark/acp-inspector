@@ -180,7 +180,7 @@ a:hover { color: var(--acc); }
 .grow { flex: 1; min-width: 0; }
 
 /* The window's own words are not selectable; what the agent said is. */
-:is(.bar, .pane-head, .rail-tabs, .eyebrow, .wire-filters, .palette-foot, .prompt-foot) {
+:is(.bar, .pane-head, .rail-tabs, .eyebrow, .heading, .wire-name, .wire-filters, .palette-foot, .prompt-foot) {
   user-select: none;
 }
 
@@ -216,7 +216,7 @@ a:hover { color: var(--acc); }
 /* **A heading in a list or a dialog**, in sentence case: a palette group, a
    dialog's section, the line that says a row is outside any turn. Capitals
    for these were the same register shouting in more places. */
-:is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow) {
+.heading {
   font-size: var(--text-row);
   line-height: var(--text-row--line-height);
   letter-spacing: var(--tracking-normal);
@@ -227,7 +227,7 @@ a:hover { color: var(--acc); }
 /* **A name the wire carries**, spelled the way the wire spells it (D9): an
    update's kind, the method a request arrived as. Never capitalised, because
    `agent_message_chunk` in capitals is a word the protocol does not have. */
-:is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow) {
+.wire-name {
   font-family: var(--font-mono);
   font-size: var(--text-meta);
   line-height: var(--text-meta--line-height);
@@ -254,7 +254,7 @@ p.unnamed { color: var(--txt); }
    transport, the build's version. Neutral is a hairline; a toned tag is the
    tone's word on a wash of the same tone, so the hue is never the only thing
    saying it. */
-:is(.tag, .version, .evidence-kind, .frame-kind) {
+:is(.tag, .frame-tag) {
   --tone: var(--dim);
   display: inline-flex;
   align-items: center;
@@ -329,7 +329,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
    two. The word is the control's label, so it is 12px and never the metadata
    grey; the one that is open is the ink and a bar in the accent. A choice
    between *values* is a segment (`.seg`), not a tab. */
-:is(.tab, .rail-tab, .wire-tab) {
+.tab {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -344,8 +344,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-size: var(--text-row);
   font-weight: var(--font-weight-answer);
 }
-:is(.tab, .rail-tab, .wire-tab):hover { color: var(--txt); }
-:is(.tab, .rail-tab, .wire-tab)[aria-selected="true"] { color: var(--txt); box-shadow: inset 0 -2px 0 var(--acc); }
+.tab:hover { color: var(--txt); }
+.tab[aria-selected="true"] { color: var(--txt); box-shadow: inset 0 -2px 0 var(--acc); }
 
 /* **One chip**, for a value a reader presses: a config option's values, the
    envelope filters, the narrowing over the claims. Chosen is a tint and a
@@ -786,8 +786,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .row.done .row-mark { color: var(--ok); }
 .row-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 .row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.row-head > .eyebrow { flex: none; }
-.row.unnamed .row-head > .eyebrow { color: var(--vio); }
+.row-head > .wire-name { flex: none; }
+.row.unnamed .row-head > .wire-name { color: var(--vio); }
 .said { font-size: var(--text-read); line-height: var(--text-read--line-height); overflow-wrap: anywhere; white-space: pre-wrap; }
 /* A thought is set off from the flow whole — the name of the update and the
    words under it, inside one rule down the left. */
@@ -943,9 +943,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   padding: 12px;
   border-bottom: 1px solid var(--line);
 }
-.blocking-head > .eyebrow { color: var(--in); font-weight: var(--font-weight-answer); }
-.blocking.elicit .blocking-head > .eyebrow { color: var(--vio); }
-.blocking.answered .blocking-head > .eyebrow { color: var(--dim); }
+.blocking-head > .wire-name { color: var(--in); font-weight: var(--font-weight-answer); }
+.blocking.elicit .blocking-head > .wire-name { color: var(--vio); }
+.blocking.answered .blocking-head > .wire-name { color: var(--dim); }
 .blocking-wait { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
 .blocking-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; min-width: 0; }
 .blocking-title { font-size: var(--text-read); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
@@ -1011,7 +1011,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   color: var(--dim2);
   font-size: var(--text-meta);
 }
-.boundary > .eyebrow { flex: none; }
+.boundary > .heading { flex: none; }
 /* The line over the composer saying the turn is waiting on the reader — by its
    slot, because `waiting` is also the tone of a plan entry not yet begun. */
 .waiting[data-slot="waiting"] {
