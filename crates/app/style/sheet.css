@@ -583,9 +583,6 @@
       }
     }
   }
-  .collapse {
-    visibility: collapse;
-  }
   .invisible {
     visibility: hidden;
   }
@@ -1434,9 +1431,6 @@
   .static {
     position: static;
   }
-  .sticky {
-    position: sticky;
-  }
   @layer daisyui.l1.l2 {
     .toast-end {
       inset-inline-start: auto;
@@ -1881,9 +1875,6 @@
   }
   .inline {
     display: inline;
-  }
-  .table {
-    display: table;
   }
   @layer daisyui.l1.l2 {
     .btn-square {
