@@ -1,25 +1,11 @@
-//! What the desktop shell is a rendering of (`docs/architecture.md` §5): one
-//! connection at a time, the trace of its frames, the log of its diagnostics, a
-//! status saying which of those is happening — and, above them, what the typed
-//! layer made of it all: the agent's own account of itself, the session, the
-//! timeline, and the turn.
+//! What the desktop shell renders: one connection at a time, its trace, its
+//! diagnostics and status, and the typed layer's stores (agent, session,
+//! timeline, turn). See `docs/architecture.md` §5.
 //!
-//! **The shell renders this and calls back into it, and does nothing else.**
-//! Every behaviour the screens promise — a spawn form that starts an agent,
-//! frames appearing as they arrive, stderr streaming, a failed spawn putting its
-//! evidence in front of you, a connection that visibly ends, a turn that streams
-//! and stops for a reason, an affordance that exists only because the agent
-//! advertised it, an agent that will not go on until somebody logs in — is a
-//! transition here, asserted in `crates/core/tests/inspector.rs`,
-//! `crates/core/tests/typed.rs`, `crates/core/tests/capability.rs` and
-//! `crates/core/tests/misbehaviour.rs` without a window (§12). That is the rule of
-//! placement made concrete: if it cannot be tested without a window, it does not
-//! belong in the window.
-//!
-//! The driven methods are the conformant path and only that (§7.1). They are
-//! `async` and they answer with what the agent said, but the *screen* never
-//! waits on them: everything they produce is in a store before they return, put
-//! there by the one task reading the connection.
+//! The shell renders this and calls back into it and does nothing else, so
+//! every screen behaviour is a transition here that tests can assert without a
+//! window. The driven methods are `async`, but everything they produce is in a
+//! store before they return, put there by the one task reading the connection.
 
 mod read;
 mod reader;
@@ -49,14 +35,10 @@ use crate::turn::TurnState;
 pub use reader::DiagnosticLog;
 use reader::{read, watched};
 
-/// Where the connection to the agent stands (§9, the visible status).
+/// Where the connection to the agent stands.
 ///
-/// It says *what happened to the connection*, never why: the reason is what the
-/// diagnostic channel carries, line by line and timestamped, and a status that
-/// tried to carry it too would be a worse copy of the console. What it does
-/// distinguish is who ended the connection, because that is the difference
-/// between news and an acknowledgement — and news is what the shell puts the
-/// console in front of you for.
+/// It says what happened to the connection, not why — the diagnostic log
+/// carries the reason. It does distinguish who ended the connection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConnectionStatus {
@@ -71,13 +53,8 @@ pub enum ConnectionStatus {
     /// The agent started and then went away without being asked to — it exited
     /// on its own, or the pipe to it broke.
     ///
-    /// Together with [`FailedToStart`](Self::FailedToStart) this is the pair
-    /// the shell surfaces the diagnostic channel on (§9): both mean the agent
-    /// is gone and nobody asked it to go, which is exactly when the reason is
-    /// worth reading. An agent that dies three lines into its own startup is the
-    /// common shape of "it didn't start" — `npx` resolving nothing, a bad
-    /// argument, a missing key — and it reaches the user the same way a failed
-    /// spawn does, rather than as a window that quietly went idle.
+    /// Like [`FailedToStart`](Self::FailedToStart), this is when the shell
+    /// surfaces the diagnostic log.
     Lost,
 }
 
@@ -92,9 +69,7 @@ pub struct HandSent {
 
 /// The inspector: an agent connection and the record of it.
 ///
-/// A handle, not the state — cloning shares one inspector, which is what lets
-/// the shell hand it to every callback that needs it without threading a
-/// reference through the tree.
+/// A handle: clones share one inspector.
 #[derive(Clone, Default)]
 pub struct Inspector(Arc<Owner>);
 
@@ -135,13 +110,10 @@ struct State {
 
 /// The connection the inspector currently has, and the two things that end it.
 struct Live {
-    /// The typed conversation with this agent. It holds the frame sink, and a
-    /// connection lives as long as a client end of it does — so holding this is
-    /// what keeps the agent running until the inspector says otherwise, and
-    /// dropping it is half of the teardown.
+    /// Holds the frame sink: the agent runs as long as this does, so dropping
+    /// it is half of the teardown.
     client: Client,
-    /// Stops the task holding the other two ends, so that dropping this whole
-    /// value really is dropping the connection.
+    /// Stops the reader task holding the other two ends.
     shutdown: CancellationToken,
 }
 
@@ -161,21 +133,13 @@ impl Inspector {
 
     /// Starts an agent and begins recording it.
     ///
-    /// **One connection at a time** (`CONTEXT.md`, *Connection*): whatever was
-    /// connected is disconnected first, so the trace never has two agents
-    /// writing into it at once.
-    ///
-    /// Never fails, for the reason the factory never does (§6.1): an agent that
-    /// will not start is evidence, not an error return. The evidence lands in
-    /// the diagnostic log and the status turns to
-    /// [`FailedToStart`](ConnectionStatus::FailedToStart) — in that order, so
-    /// that a console opened on the status is opened on the output.
-    ///
-    /// Spawns its pump onto the ambient async runtime, like the factory it
-    /// drives, so this is called from within one.
+    /// One connection at a time: whatever was connected is disconnected first.
+    /// Never fails: an agent that will not start lands in the diagnostic log,
+    /// then the status turns to [`FailedToStart`](ConnectionStatus::FailedToStart)
+    /// — in that order, so the console has the evidence when the status points
+    /// at it. Must be called from within a tokio runtime.
     pub fn connect(&self, factory: &impl ConnectionFactory) {
-        // Read before the teardown below clears it: what the timeline is a view
-        // of, if it is a view of anything.
+        // Read before the teardown below clears it.
         let leaving = self.0.stores.session.get().is_some();
         self.disconnect_gracefully();
 
@@ -184,56 +148,26 @@ impl Inspector {
         let shutdown = CancellationToken::new();
         let client = Client::new(outgoing, self.0.stores.clone());
 
-        // A new agent has claimed nothing yet, and the last one's session is
-        // not this one's.
         self.0.stores.agent.set(None);
         self.0.stores.session.set(None);
         self.0.stores.listing.set(None);
         self.0.stores.auth.set(AuthState::Unasked);
         self.0.stores.turn.set(TurnState::Idle);
-        // Settings belong to a session, and this connection has none: what the
-        // last agent published for the session it opened is not this one's
-        // answer about anything (§7.6).
         self.0.stores.settings.set(SessionSettings::default());
-        // And nothing has been driven on a connection that has just started
-        // (§7.7). Cleared here and nowhere else: what an agent did when it was
-        // driven stays readable after it has gone — the panel outlives the agent
-        // it describes — so the record ends when the *next* agent claims
-        // something, which is the moment it would start being about the wrong
-        // one.
+        // Cleared only here: the driven record stays readable after its agent
+        // has gone, until the next agent starts.
         self.0.stores.driven.set(DrivenRecord::default());
-        // Nothing is pending on a new agent: the last one's requests were given
-        // up on when it went away, which is the teardown's job and not this
-        // one's.
-        // **The view is emptied when the session it is a view of is left
-        // behind.** A `session/new` on the same agent already did this
-        // (`Client::new_session`), and a relaunch — which is a new agent, a new
-        // connection and a new session — did not: the last agent's rows stayed
-        // above the next one's, undifferentiated, under a composer that sends
-        // to the new one. That is the larger of the two discontinuities keeping
-        // the rows the smaller one clears, and the store's own rule is that it
-        // is the view of the one live session (`Timeline::discard`).
-        //
-        // Guarded on there having *been* a session, so nothing is emptied that
-        // was not a view of one: an agent that failed its handshake, or talked
-        // before a session existed (§8), leaves rows a relaunch after it keeps.
-        // The optimism above does not reach this — the line before it ended the
-        // previous connection, so by the time a mistyped command gets here the
-        // session those rows were a view of is over either way.
-        //
-        // Nothing that was evidence is lost: every frame behind every entry is
-        // in the trace, which is untouched by any of this and marks where one
-        // connection's traffic ends and the next's begins (§6.2).
+        // A relaunch leaves the session, so the timeline (its view) is emptied.
+        // Rows from an agent that never opened a session are kept. The trace
+        // keeps every frame either way.
         if leaving {
             self.0.stores.timeline.discard();
         } else {
             self.0.stores.timeline.reopen();
         }
 
-        // Optimistic, and corrected within a moment if the agent was never
-        // there: what a factory returns is a *started* connection, and the only
-        // report of a start that failed comes up the diagnostic channel behind
-        // it.
+        // Optimistic: a failed start is reported moments later on the
+        // diagnostic channel, which corrects the status.
         self.0.status.set(ConnectionStatus::Connected);
         *self.0.connection() = Some(Live {
             client: client.clone(),
@@ -251,66 +185,34 @@ impl Inspector {
         tokio::spawn(watched(state, shutdown, reader));
     }
 
-    /// Starts an agent and opens the session a turn can happen in: connect,
-    /// `initialize`, `session/new` (§7.1).
+    /// Starts an agent and opens a session: connect, `initialize`,
+    /// `session/new` (§7.1).
     ///
-    /// **The whole handshake, because it is one thing the user asked for.** The
-    /// Launch button is a button, and three round trips in a fixed order is
-    /// protocol choreography — which lives here, where it is tested without a
-    /// window, rather than in an event handler where each surface would have to
-    /// get it right again (§5).
-    ///
-    /// The three steps are still separately callable, and stay that way: the
-    /// capability display and the auth flow drive `initialize` on their own
-    /// terms, and an agent that has to be logged into before it will open a
-    /// session is exactly the shape that needs them apart.
-    ///
-    /// Answers with the session, and with the first thing that went wrong —
-    /// including an agent that never started, which reaches this as
-    /// [`Disconnected`](CallError::Disconnected) the moment the transport
-    /// reports it, never as a wait. The connection is left standing either way:
-    /// a handshake that failed is when the trace and the console are worth the
-    /// most.
+    /// Answers with the session or the first error — an agent that never
+    /// started surfaces as [`Disconnected`](CallError::Disconnected), never as
+    /// a wait. The connection is left standing either way, so the trace and
+    /// console stay readable after a failed handshake.
     pub async fn start(&self, command: &AgentCommand) -> Result<v1::SessionId, CallError> {
         // Snapshot before initialize: edits during the handshake belong to the
         // next opening, and an invalid draft must not replace a live Connection.
         let draft = self.mcp_draft();
         draft.definitions()?;
-        // Before the spawn, because it is the one step that can fail without
-        // the agent having anything to do with it, and starting a process to
-        // then tell the user we cannot name a directory for it would be a
-        // subprocess spent on a decision already made.
+        // Before the spawn, so a missing directory does not cost a subprocess.
         let cwd = command.session_cwd().ok_or(CallError::NoWorkingDirectory)?;
 
         self.connect(&command.factory());
         let agent = self.initialize().await?;
         let mcp = draft.definitions_for(&agent.agent_capabilities.mcp_capabilities)?;
-        // **No roots**, because the form that launches an agent has no control
-        // that supplies any (§7.7): the control sits beside the `session/new`
-        // button, where there is an agent that has said whether it advertises
-        // `additionalDirectories`, and a launch is the one session opened before
-        // anything is known about that.
+        // No roots: nothing is known yet about `additionalDirectories` support.
         self.client()?.new_session(cwd, None, mcp).await
     }
 
-    /// Opens another session on the agent this command launched, without
-    /// relaunching it (§7.5).
+    /// Opens another session on the running agent, in the working directory
+    /// `command` names ([`AgentCommand::session_cwd`]), without relaunching.
     ///
-    /// **The affordance's whole call**, and the handshake's own second step
-    /// with the invocation still in hand: a session created on demand is opened
-    /// in the working directory that invocation names, resolved exactly as
-    /// [`start`](Self::start) resolves it — which is a decision with an answer
-    /// ([`AgentCommand::session_cwd`]) and a failure ([`NoWorkingDirectory`]),
-    /// and therefore one core makes once rather than one each surface makes
-    /// again in an event handler (§5).
-    ///
-    /// Everything the switch costs is [`new_session`](Self::new_session)'s,
-    /// which this is.
-    ///
-    /// `roots` is what the control beside the affordance holds, or `None` where
-    /// the agent advertised no `additionalDirectories` for one to sit behind
-    /// (§7.7) — which asks for none, because a session nobody has opened yet has
-    /// no roots of its own to default to.
+    /// Otherwise [`new_session`](Self::new_session). Fails with
+    /// [`NoWorkingDirectory`] when no directory can be resolved. `roots: None`
+    /// asks for none.
     ///
     /// [`AgentCommand::session_cwd`]: crate::AgentCommand::session_cwd
     /// [`NoWorkingDirectory`]: CallError::NoWorkingDirectory
@@ -324,61 +226,21 @@ impl Inspector {
         self.new_session(cwd, roots).await
     }
 
-    /// Runs `initialize`, and answers with what the agent claims about itself
-    /// (§7.1).
-    ///
-    /// The claim lands in [`agent`](Self::agent) as well as coming back here,
-    /// because it is the first display artifact — agent info, capabilities,
-    /// auth methods — and the screen showing it should not have to have been
-    /// the caller.
+    /// Runs `initialize`, and answers with what the agent claims about itself.
+    /// The claim is also stored in [`agent`](Self::agent).
     pub async fn initialize(&self) -> Result<v1::InitializeResponse, CallError> {
         self.client()?.initialize().await
     }
 
-    /// Creates the session every turn happens in: `session/new` with this cwd
-    /// and the current inspector-supplied MCP definitions (§7.1).
+    /// `session/new` with this cwd, `roots`, and the current MCP draft; the
+    /// session that answers becomes the live one (§7.5).
     ///
-    /// The cwd is the spawn form's — [`AgentCommand::session_cwd`] turns what
-    /// was typed into the absolute path ACP requires.
-    ///
-    /// **Callable whenever a connection is live, not only as part of launching**
-    /// (§7.5): [`start`](Self::start) is one caller of this and an affordance on
-    /// screen is another, which is what lets an agent be asked for a second
-    /// session without being relaunched. The session that answers becomes the
-    /// live one, so the composer is ready to prompt into what was just created.
-    ///
-    /// **Creating one while a session is already live is a switch**, and the
-    /// switch happens before the call goes out: an in-flight turn is cancelled,
-    /// every waiting permission request is answered `cancelled` — the sequence
-    /// a `session/cancel` already owes them (§7.2) — and the timeline is
-    /// discarded and rebuilt for the session that opens. There is no merge and
-    /// no second timeline: the inspector holds one live session, and this store
-    /// is the view of it. **The trace is untouched**, so a switch costs the view
-    /// and never the evidence — every frame the discarded session was made of
-    /// is where it was.
-    ///
-    /// It does not wait for the cancelled turn to end, because an agent that
-    /// never ends one is exactly the sort this tool is pointed at. What answers
-    /// that turn afterwards answers the *caller* who asked for it and nothing
-    /// on screen: [`turn`](Self::turn) is the live session's.
-    ///
-    /// Answers with the new session, or with why there is not one — including
-    /// [`Disconnected`](CallError::Disconnected) for a connection that has gone
-    /// away, because an affordance whose agent left has to say so rather than
-    /// do nothing.
-    ///
-    /// **The roots it opens with are the caller's** (§7.7), resolved against
-    /// this same `cwd` — the base the schema names for a relative path, and not
-    /// the inspector's own working directory. `None` asks for none, which is
-    /// what an agent that never advertised `additionalDirectories` is asked for:
-    /// the control the list comes from is gated on that advertisement, and
-    /// nothing else about the call is.
-    ///
-    /// **What became of that ask is in [`driven`](Self::driven) either way** —
-    /// including a click that reached no agent at all, which is a refusal for
-    /// the reason [`close_session`](Self::close_session)'s is. An empty ask is
-    /// no ask: the field is omitted when the list is empty, so it drives
-    /// nothing whether it crossed or not.
+    /// With a session already live this is a switch: the in-flight turn is
+    /// cancelled (not awaited), waiting permission requests are answered
+    /// `cancelled`, and the timeline is discarded. The trace is untouched.
+    /// Relative roots resolve against `cwd`; an empty list sends no field.
+    /// The outcome lands in [`driven`](Self::driven) even when there is no
+    /// connection.
     ///
     /// [`AgentCommand::session_cwd`]: crate::AgentCommand::session_cwd
     pub async fn new_session(
@@ -403,56 +265,19 @@ impl Inspector {
         }
     }
 
-    /// Opens a session the agent already has, and makes it the live one:
-    /// `session/load` or `session/resume` (§7.5).
+    /// Reopens a listed session with `session/load` or `session/resume`, as
+    /// `how` says, and makes it the live one (§7.5).
     ///
-    /// **One operation with a property**, which is what
-    /// [`Restore::replays`](crate::Restore::replays) is: the two calls are
-    /// carry the same inputs (resume omits an empty MCP list) and differ in an ordering the
-    /// specification states — load replays the conversation as `session/update`
-    /// notifications before it answers, resume does not replay it at all. Which
-    /// one this agent offers is [`advertised_restore`](Self::advertised_restore),
-    /// and it is the caller's to hand back here: core sends what it was asked
-    /// to send, the way [`list_sessions`](Self::list_sessions) does, because an
-    /// agent's answer to a method it never advertised is evidence about the
-    /// agent (§8).
+    /// Sends what it is asked whatever the agent advertised
+    /// ([`advertised_restore`](Self::advertised_restore) is the caller's gate).
+    /// `roots: None` sends the roots the listing reported; relative paths
+    /// resolve against the session's own `cwd`. MCP definitions come from the
+    /// current draft.
     ///
-    /// `session` is the listing's own description of it — the id, the working
-    /// directory the session was opened in, and the roots it reported — so
-    /// opening one is handing back what the agent said about it.
-    ///
-    /// **`roots` is the reported part the user may change** (§7.5, §7.7).
-    /// MCP definitions come from the inspector's current draft, never the listing.
-    /// `None` asks for the roots the listing reported, which is what a reopen
-    /// does by default and what it does whatever the agent advertised: handing
-    /// an agent its own words back is fidelity to the session being reopened
-    /// rather than a claim about a capability. A control supplies them where
-    /// the agent advertised `additionalDirectories`, prefilled with those same
-    /// reported roots, and a list the user changed is sent as they changed it —
-    /// the schema permits one that differs "as long as the request `cwd`
-    /// matches the session's `cwd`", and what the agent answers is reported
-    /// whatever it is. Relative paths are resolved against the session's own
-    /// `cwd` either way, because a malformed request would put this client's
-    /// violation into every annotation drawn against that agent.
-    ///
-    /// **Opening a session is a switch** and costs what
-    /// [`new_session`](Self::new_session) costs: the in-flight turn cancelled,
-    /// every waiting permission request answered `cancelled`, the timeline
-    /// discarded and rebuilt, the trace untouched. One thing is ordered
-    /// differently and it is the point of the call — the timeline is discarded
-    /// *before* the ask, because a load replays ahead of its answer and a view
-    /// emptied afterwards would be emptied of the replay.
-    ///
-    /// Answers with the session that is now live, or with why there is not one
-    /// — an agent that refused, or one that has gone away. A refusal leaves the
-    /// session it could not replace live, with whatever was replayed before it
-    /// still readable.
-    ///
-    /// **What became of it is in [`driven`](Self::driven) either way**,
-    /// including this failure and for the reason [`authenticate`](Self::authenticate)
-    /// records its own: the record outlives the connection that filled it (§5),
-    /// so a row that stayed blank because the click reached nothing would be
-    /// reporting *not driven* about an attempt that was made (§7.7).
+    /// A switch, like [`new_session`](Self::new_session), except the timeline
+    /// is discarded before the call because a load replays ahead of its answer.
+    /// A refusal leaves the previous session live. The outcome lands in
+    /// [`driven`](Self::driven) even when there is no connection.
     pub async fn restore_session(
         &self,
         session: &v1::SessionInfo,
@@ -478,16 +303,9 @@ impl Inspector {
 
     /// Closes a session the agent holds: `session/close` (§7.5).
     ///
-    /// **Gated on the advertisement and on nothing else** — the gate is
-    /// [`closes_sessions`](Self::closes_sessions), and it is on the affordance
-    /// rather than in here, exactly as [`list_sessions`](Self::list_sessions)'s
-    /// is. Core sends what it was asked to send.
-    ///
-    /// Answers with the agent's answer, whatever it was — and **what became of
-    /// it is in [`driven`](Self::driven) either way** (§7.7), including a click
-    /// that reached no agent at all: the record outlives the connection that
-    /// filled it (§5), so a row that stayed blank because there was nobody to
-    /// ask would be reporting *not driven* about an attempt that was made.
+    /// Not gated here; [`closes_sessions`](Self::closes_sessions) is the
+    /// caller's gate. The outcome lands in [`driven`](Self::driven) even when
+    /// there is no connection.
     pub async fn close_session(&self, session: &v1::SessionId) -> Result<(), CallError> {
         match self.client() {
             Ok(client) => client.close_session(session).await,
@@ -510,14 +328,9 @@ impl Inspector {
 
     /// Deletes a session the agent holds: `session/delete` (§7.5).
     ///
-    /// Gated on [`deletes_sessions`](Self::deletes_sessions) at the affordance,
-    /// like every other call here. **Whether the session then leaves the
-    /// listing is the agent's answer**, so the listing is asked for again
-    /// rather than edited: agents differ on it, and what this tool reports has
-    /// to be what the agent said rather than what deletion is supposed to mean.
-    ///
-    /// What became of it is in [`driven`](Self::driven) either way, which is
-    /// [`close_session`](Self::close_session)'s rule for the other call.
+    /// The listing is asked for again afterwards rather than edited. Not gated
+    /// here ([`deletes_sessions`](Self::deletes_sessions) is the caller's
+    /// gate); the outcome lands in [`driven`](Self::driven) either way.
     pub async fn delete_session(&self, session: &v1::SessionId) -> Result<(), CallError> {
         match self.client() {
             Ok(client) => client.delete_session(session).await,
@@ -530,28 +343,12 @@ impl Inspector {
 
     /// Puts the live session in a mode: `session/set_mode` (§7.6).
     ///
-    /// **Nothing is applied optimistically.** The mode
-    /// [`session_settings`](Self::session_settings) reports is whatever the
-    /// agent last stated, before this call and after it: `session/set_mode`
-    /// answers `{}` and no rule obliges the agent to restate anything, so a
-    /// success it never follows up on lands beside the mode as a
-    /// [`ModeChange::Acknowledged`](crate::ModeChange::Acknowledged) rather
-    /// than as a value the inspector invented. A `current_mode_update` settles
-    /// it, and a refusal costs the attempt and nothing else.
-    ///
-    /// **The gate is the advertisement and it is on the affordance**, like
-    /// every other call here: a surface offers this where the agent published
-    /// modes, and core sends what it was asked to send — including into a live
-    /// turn, which the specification leaves undefined and this tool therefore
-    /// observes rather than prevents (§7.6).
-    ///
-    /// Answers with the agent's answer, whatever it was. **What a screen shows
-    /// is in the store either way**, including this failure: the settings
-    /// outlive the connection that filled them (§5), so a surface is still
-    /// describing the session after its agent has gone — and a control pressed
-    /// there has to read as an attempt that failed rather than as a button with
-    /// nothing behind it. The same rule [`prompt`](Self::prompt) and
-    /// [`authenticate`](Self::authenticate) follow, for the same reason.
+    /// Nothing is applied optimistically: the mode in
+    /// [`session_settings`](Self::session_settings) stays the agent's last
+    /// statement, and an unrestated success is recorded as
+    /// [`ModeChange::Acknowledged`](crate::ModeChange::Acknowledged). Sent even
+    /// during a turn. A failure, including no connection, is recorded in the
+    /// settings store.
     pub async fn set_mode(&self, mode: &v1::SessionModeId) -> Result<(), CallError> {
         match self.client() {
             Ok(client) => client.set_mode(mode).await,
@@ -568,33 +365,14 @@ impl Inspector {
     /// Sets one of the live session's config options:
     /// `session/set_config_option` (§7.6).
     ///
-    /// **The agent's word, taken entirely.** The answer to this call is the
-    /// **complete replacement option set**, so
-    /// [`session_settings`](Self::session_settings) is rebuilt from the list
-    /// the agent returned and from nothing else: an agent that answers a single
-    /// write with an option set differing in more than the option that was
-    /// written has that whole set reflected. Nothing here merges an answer into
-    /// what was held, patches the option that was set, or assumes it was the
-    /// only one that moved.
-    ///
-    /// **The value says what shape it is, and both shapes are this method's.**
-    /// A select's write carries a bare value id
-    /// ([`v1::SessionConfigOptionValue::ValueId`]) and a boolean's carries the
-    /// boolean under a `type` discriminator
-    /// ([`v1::SessionConfigOptionValue::Boolean`]) — the discriminator
-    /// describes the shape of a *value*, not the kind of an option, so it is
-    /// the value that decides it and not the caller. A boolean option is on the
-    /// wire at all only because this client advertised
-    /// `clientCapabilities.session.configOptions.boolean` (§7.3): a conformant
-    /// agent must not publish one to a client that did not.
-    ///
-    /// **The gate is the advertisement and it is on the affordance**, and a set
-    /// into a live turn is permitted — [`set_mode`](Self::set_mode) argues
-    /// both. A refusal costs the attempt and nothing else, whatever the kind of
-    /// the option: the options stay where the agent's last statement left them,
-    /// and what it said lands beside them as a
-    /// [`ConfigRefusal`](crate::ConfigRefusal), including the failure of a set
-    /// nobody was left to answer.
+    /// The answer is the complete replacement option set, and
+    /// [`session_settings`](Self::session_settings) is rebuilt from it alone.
+    /// The value's variant decides the wire shape:
+    /// [`v1::SessionConfigOptionValue::ValueId`] for a select,
+    /// [`v1::SessionConfigOptionValue::Boolean`] for a boolean. A refusal,
+    /// including no connection, is recorded as a
+    /// [`ConfigRefusal`](crate::ConfigRefusal) and leaves the options as they
+    /// were.
     pub async fn set_config_option(
         &self,
         option: &v1::SessionConfigId,
@@ -613,31 +391,11 @@ impl Inspector {
 
     /// Asks the agent what sessions it has: `session/list` (§7.1).
     ///
-    /// `from` is a [`Cursor`] a previous [`SessionListing`] carried, or `None`
-    /// to ask from the start — and a cursor is a token that can only be handed
-    /// back, never read ([`Cursor`] says why). Answers with the listing
-    /// as it now stands, which is also what [`listing`](Self::listing) holds:
-    /// a continuation is folded into what it continues, a fresh ask replaces it.
-    ///
-    /// **Handing the token back is the whole of the paging** the spec left out
-    /// (§7.1: "paging ignored ... cursor treated as opaque if one appears").
-    /// Nothing here counts pages, remembers how many there were, prefetches, or
-    /// looks inside a cursor: an agent that says there is more can be asked for
-    /// it, and that is the end of what this knows about paging.
-    ///
-    /// **The gate is [`lists_sessions`](Self::lists_sessions), and it is on the
-    /// affordance rather than in here.** A screen offers this when the agent
-    /// advertised it; core does not refuse to send what it was asked to send,
-    /// because an agent's answer to a method it never advertised is evidence
-    /// about the agent and refusing to ask for it would be the inspector
-    /// deciding what may be observed (§8).
-    ///
-    /// **A listing asked for here is one somebody asked for**, and it is on the
-    /// record as such (§7.7). The listing this client refreshes on its own
-    /// initiative after a close or a delete goes out through the same call and
-    /// records nothing, because a row marked by the tool's own housekeeping
-    /// would be one the user never drove and could not clear by listing again
-    /// themselves.
+    /// `from` is a [`Cursor`] from a previous [`SessionListing`], or `None` to
+    /// start over. Answers with the listing as it now stands (also in
+    /// [`listing`](Self::listing)): a continuation is appended, a fresh ask
+    /// replaces it. Not gated here ([`lists_sessions`](Self::lists_sessions)
+    /// is the caller's gate); the ask is recorded in [`driven`](Self::driven).
     pub async fn list_sessions(&self, from: Option<Cursor>) -> Result<SessionListing, CallError> {
         match self.client() {
             Ok(client) => client.list_sessions(from).await,
@@ -650,19 +408,8 @@ impl Inspector {
 
     /// Sends `authenticate` with one of the advertised methods (§7.1).
     ///
-    /// **Display-only** (§1.1): this is the call and the state it leaves
-    /// behind, in [`auth`](Self::auth). The inspector runs no login — the flows
-    /// real agents use are the agent's own, in the user's own terminal — so
-    /// what a screen does with `-32000 auth_required` is say so and name the
-    /// methods, which is what [`AuthState`] and [`agent`](Self::agent) are
-    /// between them.
-    ///
-    /// **The outcome is in the store either way**, including this one: the
-    /// stores outlive the connection that filled them (§5), so an agent that
-    /// went away still has a panel on screen — and a login attempted at one
-    /// that is no longer there has to read as an attempt that failed rather
-    /// than as a button with nothing behind it. The same rule
-    /// [`prompt`](Self::prompt) follows, for the same reason.
+    /// Display-only: no login flow runs here. The outcome lands in
+    /// [`auth`](Self::auth), including a failure for lack of a connection.
     pub async fn authenticate(&self, method: &v1::AuthMethodId) -> Result<(), CallError> {
         match self.client() {
             Ok(client) => client.authenticate(method).await,
@@ -676,30 +423,12 @@ impl Inspector {
         }
     }
 
-    /// Sends `logout`: the agent is asked to give back what it accepted (§7.1,
-    /// §7.7).
+    /// Sends `logout` (§7.7).
     ///
-    /// **Connection-scoped.** No session id crosses, and the live session is
-    /// left strictly alone — nothing is cancelled and nothing is closed ahead of
-    /// it, because what the agent does to a session it has logged out of is what
-    /// there is to find out and pre-empting it would answer that on the agent's
-    /// behalf.
-    ///
-    /// **The gate is [`logs_out`](Self::logs_out), and it is on the affordance**
-    /// like every other one here — never on what this tool believes the agent's
-    /// state makes sensible. A logout with nobody logged in is a corner the
-    /// specification leaves entirely undefined, which is the reason to drive it
-    /// rather than a reason to withhold the button.
-    ///
-    /// **A success returns [`auth`](Self::auth) to [`AuthState::Unasked`]** —
-    /// the agent has retracted what it accepted — and leaves the login screen
-    /// down, because the agent has asked for no login and this tool reports what
-    /// the agent said rather than what the schema expects it to say next.
-    ///
-    /// **What became of it is in [`driven`](Self::driven) either way**,
-    /// including this failure: the panel outlives the agent it describes (§5),
-    /// so a logout asked of one that is no longer there has to read as an
-    /// attempt that failed rather than as a button that did nothing.
+    /// Connection-scoped; the live session is left alone. A success returns
+    /// [`auth`](Self::auth) to [`AuthState::Unasked`]. Not gated here
+    /// ([`logs_out`](Self::logs_out) is the caller's gate); the outcome lands
+    /// in [`driven`](Self::driven) either way.
     pub async fn logout(&self) -> Result<(), CallError> {
         match self.client() {
             Ok(client) => client.logout().await,
@@ -712,12 +441,8 @@ impl Inspector {
 
     /// Starts a turn: `session/prompt` with one text block (§7.1).
     ///
-    /// Answers with the agent's stop reason, which is also in
-    /// [`turn`](Self::turn) by the time this returns — and gets there whether
-    /// or not anyone is awaiting this call. So does a failure, including this
-    /// one: a turn asked for on an agent that is no longer there never reaches
-    /// a client, and a composer whose button left no trace anywhere would be
-    /// the screen keeping a secret the store is there to tell.
+    /// Answers with the stop reason, which is also in [`turn`](Self::turn) by
+    /// the time this returns; so is any failure.
     pub async fn prompt(&self, text: &str) -> Result<v1::StopReason, CallError> {
         self.prompt_content(vec![v1::ContentBlock::from(text)])
             .await
@@ -761,14 +486,8 @@ impl Inspector {
 
     /// Ends the connection: the agent stops, and the status says so.
     ///
-    /// The stores keep what they hold. Stopping an agent is not a reason to
-    /// lose the record of what it did — that is what an inspector is for — and
-    /// clearing the trace is a thing the user asks for, alongside the export
-    /// that makes it a decision (§10, §15 q3).
-    ///
-    /// A connection that already ended by itself leaves nothing to disconnect,
-    /// and this says nothing over the status that reported it: the news that an
-    /// agent was lost has to survive a click.
+    /// The stores keep what they hold. A connection that already ended keeps
+    /// the status that reported it (e.g. `Lost`).
     ///
     /// Immediate: the agent's process group is killed before this returns,
     /// with no further executor ticks — the path for window and runtime
@@ -783,7 +502,8 @@ impl Inspector {
     /// Ends the connection like [`disconnect`](Self::disconnect), but asks the
     /// agent to stop rather than killing it: stdin is closed, then after a
     /// short grace its process group gets SIGTERM, then SIGKILL. Which step
-    /// ended it is recorded as a [`DiagnosticKind::Stopped`] line.
+    /// ended it is recorded as a [`DiagnosticKind::Stopped`](crate::DiagnosticKind::Stopped)
+    /// line.
     ///
     /// For an explicit disconnect; a reconnect does the same to the old agent.
     pub fn disconnect_gracefully(&self) {
@@ -820,19 +540,16 @@ impl Inspector {
         self.client()?.cancel_call(id).await
     }
 
-    /// Sends a request or a notification a person composed (F2): `method`,
-    /// and `params` exactly as written (only made one line), beside the typed
-    /// layer rather than through it.
+    /// Sends a request or notification a person composed: `method`, and
+    /// `params` exactly as written (only made one line), beside the typed layer.
     ///
-    /// A request takes the next id from the same sequence the typed layer's
-    /// calls do, is listed in [`pending_calls`](Self::pending_calls) until it is
-    /// answered, and can be [cancelled](Self::cancel_call). The frame is marked
-    /// [hand-sent](crate::Frame::is_hand_sent) in the trace and the export, and
-    /// its answer drives none of the stores — not the turn, the session, the
-    /// settings, the login, nor any conformance rule — so poking an agent by
-    /// hand never changes what the window says the agent did. The answer is
-    /// read off the trace, by [`Trace::counterpart`](crate::Trace::counterpart)
-    /// of [`HandSent::captured`].
+    /// A request takes the next id from the shared sequence, is listed in
+    /// [`pending_calls`](Self::pending_calls) until answered, and can be
+    /// [cancelled](Self::cancel_call). The frame is marked
+    /// [hand-sent](crate::Frame::is_hand_sent), and its answer drives none of
+    /// the stores; read it off the trace with
+    /// [`Trace::counterpart`](crate::Trace::counterpart) of
+    /// [`HandSent::captured`].
     ///
     /// Returns once the frame is handed to the transport.
     pub async fn send_raw(
@@ -856,31 +573,17 @@ impl Inspector {
         })
     }
 
-    /// Says in the record that `additionalDirectories` was asked for at an agent
-    /// that was not there (§7.7).
-    ///
-    /// **An empty ask is no ask**, which is the frame-reading rule where there
-    /// is no frame to read: the field is omitted when the list is empty, so a
-    /// call that would have carried nothing drove nothing whether it crossed or
-    /// not. Where the list was not empty this is the same refusal the call's own
-    /// Advertisement gets beside it — the attempt was made, and a row left
-    /// reading *not driven* would be the panel keeping a secret this record
-    /// exists to tell.
+    /// Records `additionalDirectories` as refused when roots were asked of an
+    /// agent that was not there. An empty list sends no field, so drives nothing.
     fn roots_refused(&self, asked: &[PathBuf], error: &CallError) {
         if !asked.is_empty() {
             self.drive_refused(AgentCapability::AdditionalDirectories, error);
         }
     }
 
-    /// Says in the record that an Advertisement was driven at an agent that was
-    /// not there — which is a refusal and not a fourth outcome (§7.7).
-    ///
-    /// **The caller's half of the write path**, and the one place the affordances
-    /// that have one state it: a call that never became a frame has no reader
-    /// event to write it, so whoever asked does — the shape
-    /// [`authenticate`](Self::authenticate) and the two setters already have.
-    /// A failure the client itself met is the client's to record, because by
-    /// then there is an id to guard the write with.
+    /// Records an Advertisement as refused when it was driven at an agent that
+    /// was not there. With no frame there is no reader event, so the caller
+    /// writes the record (§7.7).
     fn drive_refused(&self, capability: AgentCapability, error: &CallError) {
         self.0
             .stores

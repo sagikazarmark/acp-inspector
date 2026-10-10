@@ -13,11 +13,8 @@ use crate::store::{Changes, Log};
 use super::{ConnectionStatus, Live, State};
 
 /// Everything the transport said that was not a frame, oldest first
-/// (`CONTEXT.md`, *Diagnostic channel*).
-///
-/// The Console's Diagnostics tab is a rendering of this, and so is the evidence
-/// behind a failed spawn: one channel, so an agent's own diagnostics and the
-/// inspector's remarks about the connection sit in one timeline instead of two.
+/// (`CONTEXT.md`, *Diagnostic channel*): the agent's stderr and the
+/// inspector's remarks about the connection, in one log.
 #[derive(Clone)]
 pub struct DiagnosticLog {
     entries: Log<Diagnostic>,
@@ -49,13 +46,10 @@ impl DiagnosticLog {
         self.entries.entries()
     }
 
-    /// The lines it holds and the count of the ones it does not, from one
-    /// moment — [`Trace::snapshot`](crate::Trace::snapshot)'s reason, for the
-    /// other log a window renders.
+    /// The lines it holds and how many have aged out, read at one moment.
     ///
-    /// The second number counts entries aged out under either budget. A line's
-    /// identity remains `dropped + position`, including transport remarks that
-    /// reported holes in stdout or stderr and have themselves aged out.
+    /// The count covers entries dropped under either budget. A line's identity
+    /// is `dropped + position`.
     pub fn snapshot(&self) -> (Vec<Diagnostic>, usize) {
         self.entries.snapshot()
     }
@@ -75,19 +69,12 @@ impl DiagnosticLog {
 }
 
 impl State {
-    /// Records one diagnostic, and lets it move the status.
+    /// Records one diagnostic, and lets it move the status (§6.1).
     ///
-    /// **The connection's whole lifecycle is on this channel** (§6.1): a start
-    /// that failed, an agent that exited, a pipe that broke. Reading the status
-    /// off the diagnostics rather than off "the streams went quiet" is what
-    /// keeps the two agreeing — an agent that closes its stdout and keeps
-    /// running has not disconnected, and the transport says so by not saying so.
-    ///
-    /// The log first, then the status, then the teardown, always: the shell
-    /// opens the console *on the captured output* (§9), so the output has to be
-    /// there by the time the status tells it to look — and the teardown is what
-    /// wakes everyone waiting on an answer, so the status has to be there by
-    /// the time they ask why.
+    /// The status follows terminal diagnostics, never streams going quiet.
+    /// Always the log, then the status, then the teardown: the console must
+    /// have the evidence when the status points at it, and the status must be
+    /// set before the teardown wakes waiting callers.
     pub(super) fn observe(&self, diagnostic: Diagnostic, shutdown: &CancellationToken) {
         let mut connection = self.connection();
         // A reader can wake after reconnect. Its evidence and teardown belong
@@ -108,36 +95,18 @@ impl State {
 
         self.diagnostics.entries.append(diagnostic);
         if let Some(status) = status {
-            // Nothing is on the other end any more, so nothing here should be
-            // holding a connection to it: "connected" and "holding a
-            // connection" are the same fact, and this is where they stay one.
             self.release_locked(&mut connection, status, false);
         }
     }
 
-    /// Lets go of the connection, if there is one, and says so — in the status,
-    /// and to everyone waiting on an answer. A connection that is already gone
-    /// leaves nothing to do and nothing to say over what said it went.
+    /// Lets go of the connection, if there is one: sets the status, fails
+    /// everything waiting on an answer, and stops the reader. A connection
+    /// already gone keeps the status that reported it.
     ///
-    /// Both ends of the teardown: the reader lets go of the stream and the
-    /// channel, the [`Live`] lets go of the client that holds the sink, and the
-    /// last of them going away is what tells the transport to end the agent
-    /// (§6.1).
-    ///
-    /// **The status moves under the connection's own lock**, before anything is
-    /// woken. That is what keeps the two agreeing from any angle: a caller told
-    /// its call will not be answered can read a status that already says why,
-    /// and a `disconnect` racing an agent's last breath either finds the
-    /// connection gone — leaving the news standing, because it has to survive a
-    /// click — or gets there first and this reports nothing over it.
-    ///
-    /// Everything still waiting on an answer is then told there will not be
-    /// one. A call left pending across a teardown is the hang this design is
-    /// against, and a turn is the one that would be visible: it would sit on
-    /// the screen looking like it was still running.
-    ///
-    /// `graceful` asks the transport to stop the agent politely rather than at
-    /// once ([`Inspector::disconnect_gracefully`]).
+    /// The status moves under the connection's lock before anything is woken,
+    /// so a caller told its call failed reads a status that says why.
+    /// `graceful` asks the transport to stop the agent politely
+    /// (`Inspector::disconnect_gracefully`).
     pub(super) fn release(&self, status: ConnectionStatus, graceful: bool) {
         self.release_locked(&mut self.connection(), status, graceful);
     }
@@ -188,21 +157,10 @@ impl State {
 
 /// Drains a connection into the stores until the inspector lets go of it.
 ///
-/// One task for both ends rather than one each: a diagnostic is what moves the
-/// status, and a frame is what the trace and the timeline are made of, so
-/// keeping them in one place is what makes "the log has the evidence before the
-/// status points at it" a fact about this function rather than a hope about
-/// two.
-///
-/// **This is the only reader**, which is what makes the stores trustworthy: a
-/// frame reaches the timeline, settles a turn and answers a call from here and
-/// nowhere else, in the order the wire had them. Whoever awaits a driven method
-/// is told after the stores already know.
-///
-/// It outlives the agent on purpose. An exited agent still has stderr to drain
-/// and an exit status to report, and a diagnostic channel that stays open as
-/// long as the client holds a sink is the transport keeping that promise —
-/// which is why nothing here concludes anything from a stream going quiet.
+/// The only reader: frames reach the stores from here alone, in wire order,
+/// before any awaiting caller is told. Frames and diagnostics share one task
+/// so the log has the evidence before the status points at it. It outlives
+/// the agent to drain stderr and report the exit.
 pub(super) async fn read(
     state: Arc<State>,
     client: Client,
@@ -221,9 +179,8 @@ pub(super) async fn read(
     }
 }
 
-/// Runs the reader, and reports its panic as a terminal transport failure
-/// (C8): the connection moves to Lost and its pending calls fail, instead of
-/// the status staying Connected over a reader that is gone. A reader that
+/// Runs the reader, and reports its panic as a terminal transport failure:
+/// the connection moves to Lost and its pending calls fail. A reader that
 /// panics after its connection was released has nothing left to report.
 pub(super) async fn watched(
     state: Arc<State>,

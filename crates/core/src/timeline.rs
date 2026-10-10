@@ -1,33 +1,18 @@
-//! The center screen's store (`docs/architecture.md` §9): what the agent said
-//! during the session, decoded as v1 where the typed layer recognizes it and
-//! kept as itself where it does not.
+//! The timeline store: what the agent said during the session, decoded as v1
+//! where the typed layer recognizes it and kept raw where it does not. See
+//! `docs/architecture.md` §9 and §11.
 //!
-//! Two rules make this store what it is, and both are v2 seams built now rather
-//! than retrofitted later (§11):
+//! - Entities are id-keyed and merge-updated: a tool call that streams four
+//!   updates is one entry that changed four times.
+//! - Unknown traffic is displayed, not dropped: a frame the typed layer could
+//!   not decode becomes an [`Unrecognized`] entry (§8).
 //!
-//! - **Entities are id-keyed and merge-updated**, never keyed by arrival order
-//!   alone. A tool call that streams four updates is one entry that changed
-//!   four times, not four entries — and when v2 makes every id-carrying update
-//!   an upsert patch, that is this store doing what it already does.
-//! - **Unknown traffic is displayed, not dropped** (§8). A frame the typed
-//!   layer could not decode is an [`Unrecognized`] entry rather than an error,
-//!   which is what lets `_`-prefixed methods, `_meta` payloads, unstable-v1
-//!   methods and early v2 traffic be *seen*.
+//! Every entry carries the frames it was made of, which the trace also holds.
+//! A conformance [`Annotation`] is the one entry in the inspector's own voice,
+//! carrying the frames that decide it.
 //!
-//! The timeline decorates; it never replaces. Every entry carries the frames it
-//! was decoded from, and every one of those is in the trace as well, recorded
-//! before this layer was allowed to have an opinion (§6.2).
-//!
-//! One entry is not the agent's voice but the inspector's: a conformance
-//! [`Annotation`] (§15 q7) is here because it belongs beside the traffic it
-//! describes, and it carries that traffic like every other entry carries its
-//! frames — the claim and its evidence, read together.
-//!
-//! It is not a [`Log`](crate::store::Log), close as it looks: a log only ever
-//! appends and signals its length, and this one changes entries in place and
-//! signals a revision, because a subscriber watching a count would never learn
-//! that a tool call finished. Bending one abstraction over both shapes would
-//! cost more than the accessors they have in common.
+//! Unlike a [`Log`](crate::store::Log), entries change in place, so the store
+//! signals a revision rather than a length.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -45,16 +30,11 @@ use crate::service::ServiceRequest;
 use crate::store::{Changes, locked};
 use crate::turn::TurnOutcome;
 
-/// The session's timeline.
-///
-/// A handle, not the entries: cloning shares one timeline, so the window, a
-/// test and whatever comes next are looking at the same session.
+/// The session's timeline. A handle: clones share one timeline.
 #[derive(Clone)]
 pub struct Timeline {
     entries: Arc<Mutex<Entries>>,
-    /// How many times the timeline changed — *not* how many entries it has,
-    /// because a merge changes an entry without adding one, and a subscriber
-    /// watching the length would never learn that a tool call finished.
+    /// Bumped on every change, including an entry merged in place.
     revision: Arc<watch::Sender<u64>>,
 }
 
@@ -66,47 +46,26 @@ pub struct TimelineEntry {
     /// When the last frame behind it arrived.
     pub at: SystemTime,
     /// The frames this entry was made of, verbatim and in order — one for most
-    /// entries, and one per update that merged into a tool call.
-    ///
-    /// **The decoration keeps what it decorates** (§8). An entry that could
-    /// only be read through `kind` would be an interpretation standing in for
-    /// what the agent said: the fields v1 has no name for, the `_meta` a real
-    /// agent attaches, the shape of the JSON itself. They are here, on the
-    /// entry, as well as in the trace.
-    ///
-    /// And each says where the trace put it, so *as well as* can be read as one
-    /// thing rather than two: an entry knows the rows it was made of, and the
-    /// rows can be found again after the ring has turned under them.
+    /// entries, one per update merged into a tool call — each with where the
+    /// trace recorded it (§8).
     pub frames: Vec<Recorded>,
     pub kind: EntryKind,
-    /// The turn this arrived in, or `None` where it arrived outside one.
-    ///
-    /// **`None` is a fact about the traffic and not a gap in the record.** An
-    /// agent that goes on talking after it ended its turn, one that says
-    /// something before anything was ever prompted, and a session replayed by
-    /// `session/load` are all traffic that belongs to no turn — which is
-    /// something a reader of an inspector wants to see rather than have tidied
-    /// into whichever turn it happened to fall between.
-    ///
-    /// Stamped when the entry is made and never restamped: a tool call that
-    /// began in one turn and streamed updates into the next belongs to the turn
-    /// that started it.
+    /// The turn this arrived in, or `None` where it arrived outside one (e.g.
+    /// after a turn ended, before any prompt, or a `session/load` replay).
+    /// Stamped when the entry is made and never restamped.
     pub turn: Option<u64>,
 }
 
 /// One turn the session had, and what became of it (`CONTEXT.md`, *Turn*).
-///
-/// The span rather than the traffic: which entries were in it is on the entries
-/// themselves, so a turn with nothing in it is still a turn that happened.
+/// Entries name their turn, so a turn with no entries still exists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Turn {
     /// Which turn of this session it is, counting from one.
     pub id: u64,
     /// When the prompt that opened it went out.
     pub at: SystemTime,
-    /// What it came to, or `None` while it is still the live turn — where that
-    /// one stands is [`Inspector::turn`](crate::Inspector::turn)'s answer and
-    /// not a second copy of it kept here.
+    /// What it came to, or `None` while it is still the live turn (see
+    /// [`Inspector::turn`](crate::Inspector::turn)).
     pub outcome: Option<TurnOutcome>,
 }
 
@@ -115,47 +74,30 @@ pub struct Turn {
 pub struct Recorded {
     pub frame: Frame,
     /// The ordinal the Trace captured it under — `dropped + position` read off
-    /// a [snapshot](crate::Trace::snapshot), and stable as the ring rotates.
+    /// a [snapshot](crate::Trace::snapshot), stable as the ring rotates.
     ///
-    /// `None` where the entry was made of a frame this client *sent*: a
-    /// Conformance Annotation is read beside the call it judges as well as the
-    /// answer, and the send path does not carry the ordinal back to the typed
-    /// layer today. It costs an annotation nothing — an annotation renders its
-    /// deciding frames open rather than a click away (§9), so it is the entry
-    /// with the least use for a way to reach them.
+    /// `None` for a frame this client sent (as in an annotation): the send
+    /// path does not carry the ordinal back to the typed layer.
     pub captured: Option<u64>,
 }
 
-/// An entry's identity.
-///
-/// The agent's own id where the protocol gives one, and arrival order where it
-/// does not — so "keyed by id" is a fact about tool calls and "keyed by
-/// arrival" is a statement that this kind of update has nothing to merge with,
-/// rather than an accident of how the list was built.
+/// An entry's identity: the agent's own id where the protocol gives one,
+/// arrival order where it does not.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EntryId {
-    /// A tool call, keyed by the session it belongs to and the id the agent
-    /// gave it. The session is part of the key because the id is only the
-    /// agent's promise about *its* session.
+    /// A tool call, keyed by session and the agent's id (the id is only unique
+    /// within a session).
     ToolCall(v1::SessionId, v1::ToolCallId),
-    /// A permission request, keyed by the JSON-RPC id it arrived under — which
-    /// is the id its answer will be addressed to, and the only thing that tells
-    /// two identical-looking requests apart.
+    /// A permission request, keyed by the JSON-RPC id it arrived under.
     Permission(RequestId),
-    /// An elicitation, keyed the same way and for the same reason (§7.8).
-    ///
-    /// Its own variant rather than one *blocking request* key, because the two
-    /// are answered by different screens and an id space they shared would make
-    /// a permission request and an elicitation that arrived under the same
-    /// JSON-RPC id — which nothing forbids across a reconnect — one entry.
+    /// An elicitation, keyed by the JSON-RPC id it arrived under. Separate from
+    /// `Permission` so the two cannot collide across a reconnect.
     Elicitation(RequestId),
-    /// A client-service request the reader or a rules file answers, keyed by
-    /// the JSON-RPC id it arrived under for the reason a permission request is.
+    /// A client-service request, keyed by the JSON-RPC id it arrived under.
     Service(RequestId),
-    /// A context compaction, keyed by the session and the id the agent gave
-    /// it: its updates are upserts and its summary chunks append, so one
-    /// compaction is one entry however many frames it arrived in.
+    /// A context compaction, keyed by session and compaction id: its updates
+    /// upsert and its summary chunks append into one entry.
     Compaction(v1::SessionId, v1::CompactionId),
     /// Everything the protocol gives no id: one entry, keyed by when it turned
     /// up, merging with nothing.
@@ -165,60 +107,38 @@ pub enum EntryId {
 /// What an entry is.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-// The decoded variant is the big one and also the usual one, so boxing it would
-// buy a smaller enum with an allocation per update — the wrong way round. The
-// size is the schema's own (`v1::SessionUpdate` is what an agent can say), and
-// the schema crate carries this same allowance for the same reason.
+// The decoded variant is both the largest and the most common, so boxing it
+// would add an allocation per update.
 #[allow(clippy::large_enum_variant)]
 pub enum EntryKind {
     /// A `session/update` the typed layer decoded as v1 — the decoration on a
     /// frame the trace already has (§8).
     Update(v1::SessionUpdate),
-    /// A permission request the agent is waiting on, at the point in the turn
-    /// where it stopped for it (§7.2).
-    ///
-    /// Not just a record of something that happened: it carries the resolver, so
-    /// the screen rendering it is the screen that answers it, and the turn goes
-    /// on when it does.
+    /// A permission request, where the turn stopped for it (§7.2). Carries its
+    /// resolver, so the screen rendering it can answer it.
     Permission(PermissionRequest),
-    /// An elicitation the agent is waiting on, where it asked (§7.8).
-    ///
-    /// The other entry that answers rather than only records. It may be about no
-    /// session at all — a request-scoped elicitation is tied to a call rather
-    /// than to a conversation — which is why the timeline draws these even when
-    /// nothing is open.
+    /// An elicitation, where the agent asked (§7.8). Carries its resolver; may
+    /// belong to no session when scoped to a JSON-RPC call.
     Elicitation(ElicitationRequest),
-    /// A client-service request (F3): a claimed `fs/*` or `terminal/*` call,
-    /// or another request this client does not service, waiting for the
-    /// reader's answer or already answered by a rules file.
+    /// A client-service request (`docs/client-services.md`): a claimed `fs/*`
+    /// or `terminal/*` call, or another request this client does not service,
+    /// waiting for the reader's answer or already answered by a rules file.
     Service(ServiceRequest),
     /// A frame it did not, kept as itself.
     Unrecognized(Unrecognized),
-    /// A place the specification says MUST and the frames say it was not met
-    /// (§15 q7).
-    ///
-    /// The one entry that is the inspector's own voice rather than the agent's,
-    /// and it is here for the same reason everything else is: it belongs beside
-    /// the traffic it describes, which is what the timeline is. The frames it
-    /// carries are that traffic — the `session/cancel` this client sent, and
-    /// whatever answered the turn — so the claim and its evidence are read
-    /// together.
+    /// A spec MUST the captured frames show was not met (§15 q7), carrying
+    /// those frames.
     Annotation(Annotation),
 }
 
-/// A frame the typed layer left alone, and why (§8).
-///
-/// First-class: an unrecognized entry sits in the timeline beside the decoded
-/// ones rather than in an error list, because an agent doing something this
-/// client has no name for is the most interesting thing that can happen in an
-/// inspector.
+/// A frame the typed layer left alone, and why (§8). Shown on the timeline
+/// beside decoded entries, not in an error list.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Unrecognized {
     /// A method the inspector does not service: an extension method, an
-    /// unstable-v1 one, or a client service it declined by advertising no
-    /// capability (§7.3). Requests were answered method-not-found; the call is
-    /// evidence either way.
+    /// unstable-v1 one, or an unclaimed client service. Requests were answered
+    /// method-not-found.
     NotServiced { method: String },
     /// A method it does service, carrying something v1 could not read — a
     /// `sessionUpdate` variant with no v1 name, a field of the wrong shape, v2
@@ -226,27 +146,19 @@ pub enum Unrecognized {
     /// announced no method to go by.
     Undecodable {
         method: Option<String>,
-        /// What the decoder said. Displayed, not logged: the point of an
-        /// inspector is that the reason is on the screen next to the frame.
+        /// What the decoder said, shown next to the frame.
         problem: String,
     },
-    /// An answer to a request this client never sent — or, for the one
-    /// notification that names something rather than reporting it, an
-    /// `elicitation/complete` for an id nobody here is holding (§7.8). The
-    /// specification says such a completion is ignored, and this is what
-    /// ignoring it looks like in a tool that never drops a frame.
+    /// An answer to a request this client never sent, or an
+    /// `elicitation/complete` for an id nobody here holds (which the spec
+    /// says to ignore).
     Unsolicited,
-    /// A method this client services, asking for a shape it never advertised:
-    /// today, an elicitation in a mode outside the two it claims (§7.8).
-    ///
-    /// Answered invalid-params, which is the error the specification names for a
-    /// mode the client did not advertise — and deliberately *not* answered on
-    /// the reader's behalf, because declining and cancelling are both claims
-    /// about a person and nothing drew this one for anybody.
+    /// A serviced method asking for a shape this client never advertised —
+    /// today, an elicitation mode outside the two it claims (§7.8). Answered
+    /// invalid-params rather than declined on the reader's behalf.
     Unadvertised {
         method: String,
-        /// What was asked for that this client never claimed, in the agent's own
-        /// spelling.
+        /// What was asked for, in the agent's own spelling.
         detail: String,
     },
     /// A `session/update` for a session that is neither live nor opening. It
@@ -269,19 +181,15 @@ pub enum Unrecognized {
 #[derive(Default)]
 struct Entries {
     entries: Vec<TimelineEntry>,
-    /// Where each id-carrying entry is, for the merge.
-    ///
-    /// Cleared when a connection starts ([`Timeline::reopen`]) while the
-    /// entries stay: ids are one agent's, and the next agent's identical id is
-    /// a different tool call.
+    /// Where each id-carrying entry is, for the merge. Cleared on a new
+    /// connection ([`Timeline::reopen`]): ids are one agent's.
     index: HashMap<EntryId, usize>,
-    /// The next arrival key. Never reset, so an entry's id stays unique for as
-    /// long as the window is open — which is what a keyed list needs of it.
+    /// The next arrival key. Never reset, so ids stay unique for the window's
+    /// lifetime.
     arrivals: u64,
     /// Every turn this session has had, in order.
     turns: Vec<Turn>,
-    /// Which of them is open, if one is. What an entry made now is stamped
-    /// with.
+    /// Which of them is open, if one is; new entries are stamped with it.
     open: Option<u64>,
     next_turn: u64,
     dropped: Retention,
@@ -310,11 +218,8 @@ impl Timeline {
         held.retain();
         (held.entries.clone(), held.turns.clone(), held.dropped)
     }
-    /// Every retained entry, oldest first. Retention holes are in `snapshot`.
-    ///
-    /// A snapshot by value, like the trace's: consumers read while the agent
-    /// keeps talking, and none of them should be holding a lock while they
-    /// render.
+    /// Every retained entry, oldest first, by value. Retention holes are in
+    /// `snapshot`.
     pub fn entries(&self) -> Vec<TimelineEntry> {
         let mut held = self.lock();
         held.retain();
@@ -335,23 +240,15 @@ impl Timeline {
         Changes::new(self.revision.subscribe())
     }
 
-    /// Every turn this session has had, oldest first.
-    ///
-    /// Read from the same snapshot the entries are, and announced by the same
-    /// revision: an entry stamped with a turn and the turn it names have to
-    /// arrive at a reader together, or a screen draws a group whose outcome it
-    /// has not been told about yet.
+    /// Every turn this session has had, oldest first. Announced by the same
+    /// revision as the entries, so an entry and the turn it names arrive
+    /// together.
     pub fn turns(&self) -> Vec<Turn> {
         self.lock().turns.clone()
     }
 
-    /// Opens a turn, and returns which one it is.
-    ///
-    /// Called where the prompt goes out, so that everything the agent says
-    /// afterwards is stamped with it. A turn already open is left alone and its
-    /// id returned: prompting over a running turn is one turn continuing from
-    /// this store's point of view, and what the *state* makes of that is
-    /// `client`'s (§11 seam 2).
+    /// Opens a turn where the prompt goes out, and returns its id. A turn
+    /// already open is kept and its id returned.
     pub(crate) fn open_turn(&self) -> u64 {
         let mut entries = self.lock();
         if let Some(open) = entries.open {
@@ -370,11 +267,8 @@ impl Timeline {
         id
     }
 
-    /// Closes the open turn with what it came to.
-    ///
-    /// Nothing where no turn is open: a failure reported after the stream
-    /// already settled the turn is the same conclusion arriving twice, and the
-    /// first one is the one the agent gave.
+    /// Closes the open turn with what it came to. Nothing where no turn is
+    /// open: the first conclusion (the agent's) stands.
     pub(crate) fn close_turn(&self, outcome: TurnOutcome) {
         let mut entries = self.lock();
         let Some(open) = entries.open.take() else {
@@ -420,11 +314,8 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Puts a blocking request where the turn stopped for it (§7.2).
-    ///
-    /// Keyed by the id it arrived under, and not in the merge index: nothing
-    /// merges into a request. An agent that asks twice under one id has asked
-    /// twice, and two entries is what that looks like.
+    /// Puts a permission request where the turn stopped for it (§7.2). Keyed
+    /// by its JSON-RPC id but not merged: two asks under one id are two entries.
     pub(crate) fn blocked(&self, request: PermissionRequest, frame: Recorded) {
         let mut entries = self.lock();
         entries.charge(&frame);
@@ -438,13 +329,8 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Puts an elicitation where the agent asked it (§7.8).
-    ///
-    /// The same rules as a permission request, for the same reasons: keyed by
-    /// the id it arrived under, never in the merge index, and two asks under one
-    /// id are two entries. An elicitation that belongs to no session is an entry
-    /// like any other — what a request-scoped one is tied to is a call, and the
-    /// entry says so rather than being filed under a session it never named.
+    /// Puts an elicitation where the agent asked it (§7.8), on the same terms
+    /// as [`blocked`](Self::blocked).
     pub(crate) fn elicited(&self, request: ElicitationRequest, frame: Recorded) {
         let mut entries = self.lock();
         entries.charge(&frame);
@@ -458,8 +344,8 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Puts a client-service request where the agent asked it (F3), keyed by
-    /// the id it arrived under like the other two blocking requests.
+    /// Puts a client-service request where the agent asked it, on the same
+    /// terms as [`blocked`](Self::blocked).
     pub(crate) fn serviced(&self, request: ServiceRequest, frame: Recorded) {
         let mut entries = self.lock();
         entries.charge(&frame);
@@ -473,15 +359,9 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Adds the frame that said an elicitation's out-of-band half finished, to
-    /// the entries it named (§7.8).
-    ///
-    /// A notification rather than an update, and it merges rather than arriving:
-    /// what completed is an entry already on the list, so the frame joins the
-    /// frames that entry is made of — the same way a tool call's updates land on
-    /// the card they are about ([§11](../../../docs/architecture.md) seam 3). The
-    /// request itself has already been told; this is the record catching up with
-    /// it.
+    /// Adds an `elicitation/complete` frame to the entries it names (§7.8),
+    /// the way a tool call's updates join its entry (`docs/architecture.md`
+    /// §11 seam 3).
     pub(crate) fn completed(&self, requests: &[RequestId], frame: Recorded) {
         let mut entries = self.lock();
         let mut added = 0;
@@ -515,16 +395,11 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Says that a rule the specification states as a MUST was not met, beside
-    /// the frames that decide it (§15 q7).
-    ///
-    /// At the end, like everything else: an annotation is made when the
-    /// violation became decidable, and where that falls in the session is part
-    /// of what it says. Never merges, and nothing merges into it — a second
-    /// violation is a second thing that happened.
+    /// Appends a conformance annotation beside the frames that decide it
+    /// (§15 q7). Never merges.
     pub(crate) fn annotate(&self, annotation: Annotation, frames: Vec<Frame>) {
-        // Frames this client sent, mostly, and the ordinal for one of those is
-        // not carried back up the send path (`Recorded::captured`).
+        // Mostly frames this client sent, whose ordinal is not carried back
+        // (`Recorded::captured`).
         let frames: Vec<_> = frames
             .into_iter()
             .map(|frame| Recorded {
@@ -548,9 +423,6 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// Adds a frame the typed layer could not use. Never merges: there is no id
-    /// to merge on, and guessing at one would be the inspector interpreting
-    /// traffic it just said it does not understand.
     /// Adds a frame to the entry `id` names, where it is still held. Says
     /// whether it was.
     pub(crate) fn attach(&self, id: &EntryId, frame: Recorded) -> bool {
@@ -564,6 +436,8 @@ impl Timeline {
         true
     }
 
+    /// Appends a frame the typed layer could not use. Never merges: there is
+    /// no id to merge on.
     pub(crate) fn unrecognized(&self, unrecognized: Unrecognized, frame: Recorded) {
         let mut entries = self.lock();
         entries.charge(&frame);
@@ -580,48 +454,26 @@ impl Timeline {
 
     /// Starts a new connection's worth of timeline.
     ///
-    /// The entries stay — what an agent said is evidence, and connecting to
-    /// another one is not a reason to lose it, which is the rule the trace and
-    /// the diagnostic log already follow. Only the merge index goes, because
-    /// the ids it holds were the last agent's.
-    ///
-    /// Which is the opposite of what a *session* switch does
-    /// ([`discard`](Self::discard)), and deliberately: a new connection is a
-    /// new agent, whose session nobody has opened yet, while a new session on
-    /// the same agent replaces the one this store is a view of.
+    /// The entries stay; only the merge index (the last agent's ids) and the
+    /// open turn go. Contrast [`discard`](Self::discard), which a session
+    /// switch uses.
     pub(crate) fn reopen(&self) {
         let mut entries = self.lock();
         entries.index.clear();
-        // Whatever was open belonged to the last agent, which is gone. The
-        // entries and their turns stay *here*, because a connection is started
-        // optimistically and a command that was mistyped gets this far: what
-        // empties the view is the session that replaces the one it is a view of
-        // ([`discard`](Self::discard)), which a launch that never started an
-        // agent never reaches.
+        // The open turn was the last agent's. Entries stay: a mistyped command
+        // reaches here too, and only a replacing session empties the view.
         entries.open = None;
         self.moved(&mut entries);
     }
 
-    /// Discards the session this is a view of, so the next one can be built
-    /// into it (§7.5).
+    /// Empties the view so the next session can be built into it (§7.5).
     ///
-    /// **The inspector holds one live session, and this store is its view of
-    /// it.** Opening another discards and rebuilds — no merge, no partition and
-    /// no second timeline — which is the rule the host repository settled for
-    /// hydration, and the one `session/load` exists to make possible: a session
-    /// re-opened is a session replayed into an empty timeline.
-    ///
-    /// Every frame was captured in Trace before this layer had an opinion.
-    /// Trace is untouched by a switch, subject to its own counted retention
-    /// budgets. The arrival counter keeps counting for the same
-    /// reason it survives a connection: an entry's id has to stay unique for as
-    /// long as the window is open.
+    /// One live session, one view: no merge and no second timeline. The trace
+    /// is untouched. The arrival counter keeps counting so ids stay unique.
     pub(crate) fn discard(&self) {
         let mut entries = self.lock();
         entries.entries.clear();
         entries.index.clear();
-        // The turns go with the entries: they are this session's, and the
-        // session is what a discard replaces.
         entries.turns.clear();
         entries.open = None;
         entries.next_turn = 0;
@@ -631,13 +483,9 @@ impl Timeline {
         self.moved(&mut entries);
     }
 
-    /// A way to say the timeline changed, for a change this store did not make.
-    ///
-    /// A pending request answers itself (`permission`), and the entry holding
-    /// it changes without the list of entries changing at all — so what is
-    /// handed out is the announcement and never the entries: a resolver that
-    /// held the list it is in would be a cycle between a list and the things in
-    /// it.
+    /// A way to announce a change this store did not make — a pending request
+    /// answering itself. Hands out only the announcement, never the entries,
+    /// to avoid a cycle between the list and its items.
     pub(crate) fn ticker(&self) -> Ticker {
         Ticker(Arc::clone(&self.revision))
     }
@@ -655,8 +503,7 @@ impl Timeline {
     }
 }
 
-/// Says that something on the timeline changed, without being able to change
-/// it: the half of a store a value that changes itself needs.
+/// Announces a timeline change without access to the entries.
 #[derive(Clone)]
 pub(crate) struct Ticker(Arc<watch::Sender<u64>>);
 
@@ -818,10 +665,8 @@ impl Unrecognized {
 
 /// The id an update merges on, if the protocol gave it one.
 ///
-/// Tool calls, and for now only tool calls: they are the one v1 entity that
-/// arrives as a create followed by patches. The others either carry no id
-/// (chunks, plans, usage) or replace themselves wholesale, and inventing a key
-/// for them would coalesce a session's history into a single line.
+/// Only tool calls and compactions arrive as a create followed by patches;
+/// keying anything else would collapse history into one line.
 fn merge_key(notification: &v1::SessionNotification) -> Option<EntryId> {
     let session = notification.session_id.clone();
     match &notification.update {
@@ -864,15 +709,11 @@ fn patched<T>(field: &mut MaybeUndefined<T>, update: MaybeUndefined<T>) {
     }
 }
 
-/// Folds an update into the entry it belongs to.
-///
-/// A patch, not a replacement: an update carries only the fields that changed
-/// (`ToolCallUpdateFields` is all `Option`), so an entry that took the last
-/// status would lose the title that came with the create.
+/// Folds an update into the entry it belongs to: a patch, not a replacement,
+/// since an update carries only the fields that changed.
 fn merge(kind: &mut EntryKind, update: v1::SessionUpdate) {
     let EntryKind::Update(existing) = kind else {
-        // Unrecognized entries are never in the index, so nothing merges into
-        // one.
+        // Unrecognized entries are never in the index.
         return;
     };
 
@@ -907,8 +748,8 @@ fn merge(kind: &mut EntryKind, update: v1::SessionUpdate) {
             MaybeUndefined::Value(summary) => summary.push(chunk.content),
             summary => *summary = MaybeUndefined::Value(vec![chunk.content]),
         },
-        // A create for an id that already has an entry — the agent restating
-        // the whole call — is the whole call, so it replaces.
+        // A create for an id that already has an entry restates the whole
+        // call, so it replaces.
         (existing, update) => *existing = update,
     }
 }
