@@ -26,6 +26,7 @@
 //! frames it carries, and evidence a click away would be an assertion the
 //! reader has to take on trust.
 
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 use acp_inspector_core::{
@@ -154,6 +155,13 @@ pub fn Timeline(
     // Which row is the list's one Tab stop (A4): the one the reader last
     // focused while it is still on the page, and the newest otherwise.
     let focused = use_signal(|| None::<String>);
+    // Which rows fade up as they arrive (D12): only those first drawn after
+    // this list was. The rows already there when it mounted never do, and a
+    // row that has faded up once is settled, so a region shown again — a
+    // narrow window's Timeline coming back, the turn coming back from the
+    // trace-only layout — does not replay every arrival it holds.
+    let baseline = use_hook(|| rows.iter().map(Row::key).collect::<HashSet<String>>());
+    let settled = use_signal(HashSet::<String>::new);
     let page: Vec<&Row> = rows[range.clone()].iter().collect();
     let current = focused()
         .filter(|key| page.iter().any(|row| row.is_block() && row.key() == *key))
@@ -267,12 +275,13 @@ pub fn Timeline(
                         "article.row",
                         Some(r#"[data-slot="reach"]"#),
                     ),
-                    // Newest first in the DOM, oldest first on screen, like the
-                    // trace and the console: the list is laid out bottom-up, so
-                    // a turn streaming into it stays in view without a scroll
-                    // script, and stays where the reader put it once they
-                    // scroll back.
-                    for row in page.into_iter().rev() {
+                    // Oldest first, in the DOM as on screen (A3), so reading
+                    // and focus order are the conversation's. The scroller
+                    // around the list is laid out bottom-up with the list as
+                    // its one child, which keeps a streaming turn in view
+                    // without a scroll script and leaves it where the reader
+                    // put it once they scroll back.
+                    for row in page.into_iter() {
                         li {
                             key: "{row.key()}",
                             match row {
@@ -284,6 +293,9 @@ pub fn Timeline(
                                         current: current.as_deref() == Some(row.key().as_str()),
                                         key: row.key(),
                                         focused,
+                                        arrived: !baseline.contains(&row.key())
+                                            && !settled.read().contains(&row.key()),
+                                        settled,
                                     },
                                 ),
                                 Row::Ended(turn) => ended(turn),
@@ -405,7 +417,7 @@ fn onboarding(recent: Option<Element>) -> Element {
             }
             if let Some(recent) = recent {
                 div { class: "onboarding-recent", "data-slot": "onboarding-recent",
-                    h4 { "Recent" }
+                    h4 { id: "onboarding-recent-label", "Recent" }
                     {recent}
                 }
             }
@@ -421,11 +433,35 @@ struct Roving {
     /// The row's own name, which is what the list remembers as focused.
     key: String,
     focused: Signal<Option<String>>,
+    /// Whether the row arrived after the list was drawn and has not yet
+    /// finished fading up (D12).
+    arrived: bool,
+    /// The rows that have finished fading up, so they never do again.
+    settled: Signal<HashSet<String>>,
 }
 
 impl Roving {
     fn tabindex(&self) -> &'static str {
         if self.current { "0" } else { "-1" }
+    }
+
+    /// The mark the stylesheet fades a row up by, while it is still arriving.
+    fn arrived(&self) -> Option<&'static str> {
+        self.arrived.then_some("true")
+    }
+
+    /// Settles the row once its fade has run, so showing the list again does
+    /// not replay it. Only the row's own animation: an animation inside it
+    /// bubbles here too and is not the row arriving.
+    fn settle(&self) -> impl FnMut(AnimationEvent) + 'static {
+        let mut settled = self.settled;
+        let key = self.key.clone();
+        let arrived = self.arrived;
+        move |event: AnimationEvent| {
+            if arrived && event.data().animation_name() == "fadeup" {
+                settled.write().insert(key.clone());
+            }
+        }
     }
 }
 
@@ -773,6 +809,8 @@ fn said(voice: Voice, entries: &[TimelineEntry], crossing: Crossing, roving: Rov
             // and the row can be found by it. A list, because a streamed
             // message is one row and as many frames as it arrived in.
             "data-frames": frames_attribute(&ordinals),
+            "data-arrived": roving.arrived(),
+            onanimationend: roving.settle(),
             onfocus: move |_| focused.set(Some(key.clone())),
             // **The row is the way to the frames it was made of**, which is how
             // the drawing links the two screens: pressing a message shows the
@@ -880,7 +918,7 @@ fn ended(turn: &Turn) -> Element {
 fn outside() -> Element {
     rsx! {
         div { class: "boundary outside", "data-slot": "outside-turn",
-            span { class: "eyebrow", "Outside a turn" }
+            span { class: "heading", "Outside a turn" }
             span { "sent while no prompt was running" }
         }
     }
@@ -978,6 +1016,8 @@ fn happened(
             "data-entry": "{tone}",
             "data-tool-call": tool_call,
             "data-frames": frames_attribute(&ordinals),
+            "data-arrived": roving.arrived(),
+            onanimationend: roving.settle(),
             onfocus: move |_| focused.set(Some(key.clone())),
             onclick: move |event| pressed(&event, crossing, linked.clone()),
             {marked(tone)}
@@ -1178,7 +1218,7 @@ fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
             span { class: "sr-only", "{label}" }
         } else {
             div { class: "row-head",
-                span { class: "eyebrow", "{label}" }
+                span { class: "wire-name", "{label}" }
                 // Kept out of sight rather than dropped: what the row is
                 // *about* has a time in the record, and a reader who cannot see
                 // the flow still hears the order it happened in.
@@ -2071,13 +2111,13 @@ mod tests {
             "and what it stands for is in words, where the drawing leaves the row bare: {html}"
         );
         assert!(
-            !html.contains(r#"<span class="eyebrow">agent_message_chunk</span>"#),
+            !html.contains(r#"<span class="wire-name">agent_message_chunk</span>"#),
             "the agent's message is drawn as the message and nothing else: {html}"
         );
         // The rows the drawing does label keep the word on screen.
         let annotated = shown(cancelled());
         assert!(
-            annotated.contains(r#"<span class="eyebrow">conformance</span>"#),
+            annotated.contains(r#"<span class="wire-name">conformance</span>"#),
             "a row the drawing names says what it is on screen: {annotated}"
         );
     }
@@ -2468,6 +2508,64 @@ mod tests {
                 "each has its own line: {html}"
             );
         }
+    }
+
+    thread_local! {
+        static ARRIVING: std::cell::RefCell<Option<Signal<Vec<TimelineEntry>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn only_a_row_that_arrives_after_the_list_was_drawn_fades_up() {
+        // D12: the rows the list opened with are drawn still, and a row the
+        // agent sends afterwards is marked to fade up — once.
+        #[component]
+        fn Host() -> Element {
+            let entries = use_signal(|| vec![spoke("already here", Some("m0"))]);
+            use_hook(move || ARRIVING.with(|slot| *slot.borrow_mut() = Some(entries)));
+            rsx! {
+                Timeline {
+                    entries,
+                    turn: TurnState::InFlight,
+                    session: Some(v1::SessionId::new("sess-1")),
+                    connected: true,
+                    held_frames: 0..u64::MAX,
+                    blocked: false,
+                    problem: None,
+                    mode: None,
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_answer: move |_: Answer| {},
+                    on_elicit: move |_: elicitation::Answer| {},
+                    sought: None,
+                    on_reveal: move |_: Vec<u64>| {},
+                    described: false,
+                    turns: Vec::new(),
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let opened = dioxus_ssr::render(&dom);
+        assert!(
+            opened.contains("already here") && !opened.contains("data-arrived"),
+            "what the list opened with does not fade up: {opened}"
+        );
+
+        let mut entries = ARRIVING.with(|slot| slot.borrow().expect("the host ran"));
+        entries.write().push(TimelineEntry {
+            id: EntryId::Arrival(2),
+            ..spoke("just arrived", Some("m1"))
+        });
+        dom.render_immediate_to_vec();
+        let grown = dioxus_ssr::render(&dom);
+        let arrived = grown
+            .split("<article")
+            .filter(|row| row.contains(r#"data-arrived="true""#))
+            .collect::<Vec<_>>();
+        assert_eq!(arrived.len(), 1, "{grown}");
+        assert!(arrived[0].contains("just arrived"), "{grown}");
     }
 
     #[test]

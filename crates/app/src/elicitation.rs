@@ -205,7 +205,7 @@ pub fn Panel(
             // Timeline row's Frame-navigation handler and steal focus.
             onclick: move |event| event.stop_propagation(),
             div { class: "blocking-head",
-                span { class: "eyebrow", "{v1::CLIENT_METHOD_NAMES.elicitation_create}",
+                span { class: "wire-name", "{v1::CLIENT_METHOD_NAMES.elicitation_create}",
                     if request.form().is_some() { " · form" } else { " · url" }
                 }
                 span { class: "blocking-wait", if waiting { "Waiting for you" } else { "Resolved" } }

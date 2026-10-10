@@ -119,7 +119,7 @@ pub fn render(update: &v1::SessionUpdate) -> Option<(&'static str, &'static str,
                 div { class: "evidence", "data-slot": "compaction",
                     div { class: "evidence-head",
                         strong { class: "evidence-title", "Context compaction" }
-                        code { class: "evidence-kind", "{chunk.compaction_id}" }
+                        code { class: "tag evidence-kind", "{chunk.compaction_id}" }
                     }
                     div { class: "said", {content(&chunk.content)} }
                 }
@@ -171,7 +171,7 @@ fn compaction(update: &v1::CompactionUpdate) -> Element {
             div { class: "evidence-head",
                 span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
                 strong { class: "evidence-title", "Context compaction" }
-                code { class: "evidence-kind", title: "compactionId", "{update.compaction_id}" }
+                code { class: "tag evidence-kind", title: "compactionId", "{update.compaction_id}" }
                 span { class: "evidence-state {tone}", "{status}" }
             }
             {match summary {
@@ -272,7 +272,7 @@ fn tool_call(call: &v1::ToolCall) -> Element {
                 span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
                 strong { class: "evidence-title", "{call.title}" }
                 {tool_name(call.name.as_deref())}
-                span { class: "evidence-kind", "{kind(call.kind)}" }
+                span { class: "tag evidence-kind", "{kind(call.kind)}" }
                 span { class: "evidence-state {tone}", "{status}" }
             }
             {call_id(&call.tool_call_id)}
@@ -312,7 +312,7 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
                 }
                 {tool_name(fields.name.as_deref())}
                 if let Some(doing) = fields.kind {
-                    span { class: "evidence-kind", "{kind(doing)}" }
+                    span { class: "tag evidence-kind", "{kind(doing)}" }
                 }
                 if let Some((what, tone)) = told {
                     span { class: "evidence-state {tone}", "{what}" }
@@ -341,7 +341,7 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
 fn tool_name(name: Option<&str>) -> Element {
     rsx! {
         if let Some(name) = name {
-            code { class: "evidence-kind mono", "data-slot": "tool-name", title: "name", "{name}" }
+            code { class: "tag evidence-kind mono", "data-slot": "tool-name", title: "name", "{name}" }
         }
     }
 }
@@ -531,7 +531,7 @@ fn plan_entries(plan: &v1::Plan) -> Element {
     rsx! {
         div { class: "evidence", "data-slot": "plan",
             div { class: "evidence-head",
-                span { class: "eyebrow", "plan · {plan.entries.len()} entries" }
+                span { class: "wire-name", "plan · {plan.entries.len()} entries" }
             }
             ul { class: "plan",
                 for (position, entry) in plan.entries.iter().enumerate() {
@@ -566,7 +566,7 @@ fn commands(update: &v1::AvailableCommandsUpdate) -> Element {
     rsx! {
         div { class: "evidence", "data-slot": "commands",
             div { class: "evidence-head",
-                span { class: "eyebrow", "available_commands_update · {update.available_commands.len()}" }
+                span { class: "wire-name", "available_commands_update · {update.available_commands.len()}" }
             }
             ul { class: "plan",
                 for (position, command) in update.available_commands.iter().enumerate() {
@@ -1048,7 +1048,7 @@ mod tests {
         assert!(
             head.contains(r#"class="dot dot-idle""#)
                 && head.contains(r#"class="evidence-title""#)
-                && head.contains(r#"class="evidence-kind""#)
+                && head.contains(r#"class="tag evidence-kind""#)
                 && head.contains(r#"class="evidence-state waiting""#)
                 && head.contains("pending")
                 && head.contains("Permission request")

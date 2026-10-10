@@ -656,7 +656,7 @@ pub fn SpawnForm(
                 if !recent.is_empty() {
                     div { class: "form-field recent-field",
                         div { class: "form-label",
-                            span { class: "eyebrow", id: "recent-label", "Recent" }
+                            span { class: "heading", id: "recent-label", "Recent" }
                         }
                         RecentList {
                             entries: recent.clone(),

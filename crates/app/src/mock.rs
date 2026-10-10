@@ -35,9 +35,9 @@ use std::time::{Duration, SystemTime};
 
 use acp_inspector_core::{
     AgentCommand, Appearance, ConnectionStatus, Diagnostic, DiagnosticKind, Direction,
-    ElicitationRequest, EntryId, EntryKind, Frame, Indentation, Inspector, PermissionRequest,
-    Recorded, SessionSettings, TimelineEntry, TracedFrame, Turn, TurnOutcome, TurnState,
-    Unrecognized, v1,
+    ElicitationRequest, EntryId, EntryKind, Frame, Imported, Indentation, Inspector, PendingCall,
+    PermissionRequest, Recorded, ServiceRequest, SessionSettings, TimelineEntry, Trace,
+    TracedFrame, Turn, TurnOutcome, TurnState, Unrecognized, v1,
 };
 use dioxus::prelude::*;
 
@@ -54,6 +54,21 @@ fn at(seconds: u64) -> SystemTime {
 }
 
 const SESSION: &str = "testy-session-1";
+
+/// The trace file the viewing page opened: an export of a short session, with
+/// one frame the recording dropped.
+const OPENED: &str = concat!(
+    r#"{"type":"header","format":"acp-inspector-trace","version":1,"at":73200000,"frames":4,"dropped":1,"warning":"The agent's stderr was not exported."}"#,
+    "\n",
+    r#"{"type":"frame","at":73200000,"connection":1,"direction":"client -> agent","encoding":"utf8","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}"}"#,
+    "\n",
+    r#"{"type":"frame","at":73200100,"connection":1,"direction":"agent -> client","encoding":"utf8","frame":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"agentInfo\":{\"name\":\"testy\",\"version\":\"1.2.3\"}}}"}"#,
+    "\n",
+    r#"{"type":"frame","at":73201000,"connection":1,"direction":"client -> agent","encoding":"utf8","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/laborant/phoenix/inspector\",\"mcpServers\":[]}}"}"#,
+    "\n",
+    r#"{"type":"frame","at":73201200,"connection":1,"direction":"agent -> client","encoding":"utf8","frame":"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"testy-session-1\"}}"}"#,
+    "\n",
+);
 
 fn entry(ordinal: u64, kind: EntryKind) -> TimelineEntry {
     TimelineEntry {
@@ -128,10 +143,21 @@ enum Scene {
     Sessions,
     /// The populated window with the command palette open.
     Palette,
+    /// The wire as a workbench: the raw composer open, calls waiting for a
+    /// response, stderr merged among the frames, and a client service the
+    /// agent asked for waiting on the reader in the timeline.
+    Workbench,
+    /// A trace opened from a file, with the banner that says so.
+    Viewing,
+    /// The populated window with the rail open as a drawer — the narrow
+    /// layout's, captured at a width that has one.
+    Drawer,
+    /// The populated window with the capabilities open wide.
+    Wide,
 }
 
 impl Scene {
-    const ALL: [Scene; 10] = [
+    const ALL: [Scene; 14] = [
         Scene::Populated,
         Scene::FirstRun,
         Scene::Capabilities,
@@ -142,6 +168,10 @@ impl Scene {
         Scene::Connect,
         Scene::Sessions,
         Scene::Palette,
+        Scene::Workbench,
+        Scene::Viewing,
+        Scene::Drawer,
+        Scene::Wide,
     ];
 
     /// The file a page of this scene is written to, before its scheme. The
@@ -158,6 +188,10 @@ impl Scene {
             Scene::Connect => "connect-",
             Scene::Sessions => "sessions-",
             Scene::Palette => "palette-",
+            Scene::Workbench => "workbench-",
+            Scene::Viewing => "viewing-",
+            Scene::Drawer => "drawer-",
+            Scene::Wide => "wide-",
         }
     }
 
@@ -171,6 +205,7 @@ impl Scene {
             Scene::Connect => Some("connect-dialog"),
             Scene::Sessions => Some("sessions-dialog"),
             Scene::Palette => Some("palette-dialog"),
+            Scene::Wide => Some("capabilities-sheet"),
             _ => None,
         }
     }
@@ -178,7 +213,9 @@ impl Scene {
     fn turn(self) -> TurnState {
         match self {
             Scene::FirstRun => TurnState::Idle,
-            Scene::Permission | Scene::Elicitation | Scene::Streaming => TurnState::InFlight,
+            Scene::Permission | Scene::Elicitation | Scene::Streaming | Scene::Workbench => {
+                TurnState::InFlight
+            }
             Scene::Evidence => TurnState::Ended(v1::StopReason::Refusal),
             _ => TurnState::Ended(v1::StopReason::EndTurn),
         }
@@ -189,7 +226,7 @@ impl Scene {
     fn turns(self) -> Vec<Turn> {
         let outcome = match self {
             Scene::FirstRun => return Vec::new(),
-            Scene::Permission | Scene::Elicitation | Scene::Streaming => None,
+            Scene::Permission | Scene::Elicitation | Scene::Streaming | Scene::Workbench => None,
             Scene::Evidence => Some(TurnOutcome::Ended(v1::StopReason::Refusal)),
             _ => Some(TurnOutcome::Ended(v1::StopReason::EndTurn)),
         };
@@ -207,38 +244,50 @@ struct Asked {
     _inspector: Inspector,
     permission: PermissionRequest,
     elicitation: ElicitationRequest,
+    /// A client service the agent asked for, which the reader answers.
+    service: ServiceRequest,
 }
 
 async fn ask() -> Asked {
+    let service = r#"{"jsonrpc":"2.0","id":"fs-1","method":"fs/read_text_file","params":{"sessionId":"testy-session-1","path":"/home/laborant/phoenix/inspector/src/transport.rs","line":40,"limit":12}}"#;
     let permission = r#"{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{"sessionId":"testy-session-1","toolCall":{"toolCallId":"call-2","title":"Write transport.rs","kind":"edit","status":"pending","locations":[{"path":"/home/laborant/phoenix/inspector/src/transport.rs","line":42}]},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always allow edits","kind":"allow_always"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]}}"#;
     let elicitation = r#"{"jsonrpc":"2.0","id":"ask-1","method":"elicitation/create","params":{"sessionId":"testy-session-1","mode":"form","message":"Which environment should the retry budget apply to?","requestedSchema":{"type":"object","properties":{"environment":{"type":"string","title":"Environment","enum":["staging","production"],"description":"Where the new budget is rolled out first"},"attempts":{"type":"integer","title":"Attempts","minimum":1,"maximum":10,"default":6},"notify":{"type":"boolean","title":"Notify the on-call channel"}},"required":["environment"]}}}"#;
 
     let inspector = Inspector::new();
+    // Claimed, so the agent's file read is the reader's to answer.
+    inspector.set_client_services(acp_inspector_core::ClientServices {
+        read_text_file: true,
+        ..Default::default()
+    });
     inspector.connect(
         &AgentCommand {
             command: "sh".into(),
-            args: format!("-c\nprintf '%s\\n' '{permission}' '{elicitation}'; cat >/dev/null"),
+            args: format!(
+                "-c\nprintf '%s\\n' '{permission}' '{elicitation}' '{service}'; cat >/dev/null"
+            ),
             ..AgentCommand::default()
         }
         .factory(),
     );
-    let (permission, elicitation) = tokio::time::timeout(Duration::from_secs(10), async {
+    let (permission, elicitation, service) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let (Some(permission), Some(elicitation)) = (
+            if let (Some(permission), Some(elicitation), Some(service)) = (
                 inspector.pending_permissions().first().cloned(),
                 inspector.pending_elicitations().first().cloned(),
+                inspector.pending_services().first().cloned(),
             ) {
-                break (permission, elicitation);
+                break (permission, elicitation, service);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("the scripted agent asks both");
+    .expect("the scripted agent asks all three");
     Asked {
         _inspector: inspector,
         permission,
         elicitation,
+        service,
     }
 }
 
@@ -328,6 +377,17 @@ fn entries(scene: Scene, asked: &Asked) -> Vec<TimelineEntry> {
                 5,
                 "I will not raise the budget further without a passing test run.",
             ),
+        ],
+        Scene::Workbench => vec![
+            prompted(1, prompt),
+            thought(2, "I need the file before I can say what the budget is."),
+            TimelineEntry {
+                id: EntryId::Service(asked.service.id().clone()),
+                at: at(3),
+                frames: vec![],
+                kind: EntryKind::Service(asked.service.clone()),
+                turn: Some(1),
+            },
         ],
         Scene::Streaming => vec![
             prompted(1, prompt),
@@ -519,7 +579,65 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
     let decoded = use_signal(HashSet::<u64>::new);
     let session = live.then(|| v1::SessionId::new(SESSION));
     let turn = scene.turn();
-    let blocked = matches!(scene, Scene::Permission | Scene::Elicitation);
+    let blocked = matches!(
+        scene,
+        Scene::Permission | Scene::Elicitation | Scene::Workbench
+    );
+    // The wire's own tools, as the window hands them to the Console: on the
+    // workbench, the raw composer open over calls still waiting, with the
+    // agent's stderr merged among the frames; on the viewing page, a file.
+    let wire = use_hook(|| {
+        let mut wire = crate::wire::Wire::detached(Trace::from_records(frames.peek().clone(), 0));
+        match scene {
+            Scene::Workbench => {
+                wire.composing.set(true);
+                wire.merged.set(true);
+                wire.draft.set(crate::raw::Draft {
+                    method: "session/list".to_owned(),
+                    params: "{\n  \"cwd\": \"/home/laborant/phoenix/inspector\"\n}".to_owned(),
+                    notification: false,
+                });
+                let since = std::time::Instant::now()
+                    .checked_sub(Duration::from_secs(4))
+                    .unwrap_or_else(std::time::Instant::now);
+                wire.pending.set(vec![
+                    PendingCall {
+                        id: 3,
+                        method: "session/prompt".to_owned(),
+                        since,
+                        captured: Some(4),
+                        hand_sent: false,
+                    },
+                    PendingCall {
+                        id: 7,
+                        method: "session/list".to_owned(),
+                        since,
+                        captured: Some(34),
+                        hand_sent: true,
+                    },
+                ]);
+            }
+            Scene::Viewing => wire.view.show(
+                std::path::PathBuf::from(
+                    "/home/laborant/Downloads/acp-trace-testy-20261010-212000.jsonl",
+                ),
+                &Imported::parse(OPENED).expect("the fixture file parses"),
+            ),
+            _ => {}
+        }
+        wire
+    });
+    // The capabilities open wide, on the page that shows them so.
+    use_context_provider(|| rail::WideCapabilities(Signal::new(scene == Scene::Wide)));
+    let body = match scene {
+        Scene::Drawer => format!("{} drawer-open", Focus::Turn.class()),
+        _ => Focus::Turn.class().to_owned(),
+    };
+    let rail_tab = if scene == Scene::Wide {
+        rail::Tab::Capabilities
+    } else {
+        view
+    };
 
     // One value for the two surfaces that draw it, exactly as the window builds
     // it: the Agent screen says what was claimed, the dialog acts on what is
@@ -553,7 +671,10 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
             on_spine: move |_| {},
             on_choose: move |_| {},
             on_indent: move |_| {},
+            drawer: scene == Scene::Drawer,
+            on_drawer: move |()| {},
         }
+        crate::view::Banner { view: wire.view }
         connect::Connect {
             running: live,
             launching: false,
@@ -561,7 +682,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
             unsaved: None,
             on_launch: move |_| {},
         }
-        div { class: Focus::Turn.class(),
+        div { class: "{body}", style: "--rail-width: {rail::RAIL_DEFAULT}px",
             Rail {
                 status: if live { ConnectionStatus::Connected } else { ConnectionStatus::Disconnected },
                 launched: live.then(launched),
@@ -572,12 +693,15 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                 changing_mode: false,
                 setting_option: None,
                 commands: 0,
-                tab: view,
+                tab: rail_tab,
                 on_tab: move |_| {},
                 on_stop: move |()| {},
                 on_set_mode: move |_| {},
                 on_set_config_option: move |_| {},
+                on_dismiss: move |()| {},
             }
+            rail::RailHandle { width: Signal::new(rail::RAIL_DEFAULT) }
+            div { class: "rail-backdrop", aria_hidden: "true" }
             div { class: Spine::Split.class(),
                 Timeline {
                     entries,
@@ -599,41 +723,42 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
                     on_reveal: move |_| {},
                     described: live,
                     turns: scene.turns(),
+                    // The first-run card's recent invocations, as the window passes them.
+                    recent: (!live).then(|| rsx! {
+                        crate::spawn::RecentList {
+                            entries: vec![launched()],
+                            labelled_by: "onboarding-recent-label".to_owned(),
+                            launching: false,
+                            on_launch: move |_| {},
+                            on_refill: move |_| {},
+                        }
+                    }),
                 }
                 Console {
-                    frames,
+                    frames: wire.view.frames_or(frames),
                     dropped_frames: 0,
                     saved: None,
                     on_export: move |()| {},
                     on_clear: move |()| {},
-                    lines,
+                    lines: wire.view.lines_or(lines),
                     dropped_lines: 0,
                     tab: if view == rail::Tab::Session { Tab::Trace } else { Tab::Diagnostics },
                     on_select: move |_| {},
                     revealed,
                     decoded,
                     on_seek: move |_: u64| {},
+                    wire,
                 }
             }
         }
 
         // The way between the three regions on a window too narrow for them,
         // which the stylesheet draws only below the width where they stop
-        // fitting — and which the narrow captures are taken to show.
-        div { class: "mobile-bar seg", role: "group", aria_label: "Which region is shown",
-            for chosen in Focus::ALL {
-                button {
-                    key: "{chosen.label()}",
-                    class: "seg-item",
-                    "data-slot": "focus",
-                    r#type: "button",
-                    aria_pressed: chosen == Focus::Turn,
-                    "{chosen.label()}"
-                }
-            }
-        }
+        // fitting.
+        crate::RegionBar { selected: Focus::Turn, on_select: move |_| {} }
 
-        crate::session::Sessions { claims }
+        crate::session::Sessions { claims: claims.clone() }
+        rail::CapabilitiesSheet { claims }
 
         // Every command the window has, from the same list the window builds:
         // the fixture draws the surface rather than a hand-written stand-in for
@@ -678,6 +803,20 @@ fn page(theme: &str, scene: Scene, asked: &Asked) -> String {
     // platform sets, which daisyUI's modal answers to. Only the attribute,
     // because a class named here would be one Tailwind's scan of this crate
     // compiles into the window's stylesheet.
+    // The launch form with its client services expanded, as a reader who
+    // opened the disclosure sees it.
+    if scene == Scene::Connect {
+        let closed = "<details class=\"client-services-disclosure\"";
+        assert!(
+            body.contains(closed),
+            "the launch form offers client services"
+        );
+        body = body.replacen(
+            closed,
+            "<details open class=\"client-services-disclosure\"",
+            1,
+        );
+    }
     if let Some(id) = scene.dialog() {
         let closed = format!("<dialog id=\"{id}\" class=\"modal ");
         assert!(body.contains(&closed), "the window draws #{id}");
@@ -725,6 +864,15 @@ async fn writes_the_window_in_both_schemes() {
                     html.contains(r#"class="diff""#) && html.contains(r#"data-slot="plan""#)
                 ),
                 Scene::Streaming => assert!(html.contains("turn-state")),
+                Scene::Workbench => assert!(
+                    html.contains(r#"data-slot="service""#)
+                        && html.contains(r#"data-slot="pending-calls""#)
+                        && html.contains("raw-composer")
+                        && html.contains(r#"data-slot="stderr-line""#)
+                ),
+                Scene::Viewing => assert!(html.contains(r#"data-slot="view-banner""#)),
+                Scene::Drawer => assert!(html.contains("drawer-open")),
+                Scene::Wide => assert!(html.contains(r#"data-slot="capabilities-wide""#)),
                 _ => {}
             }
             if let Some(directory) = &directory {

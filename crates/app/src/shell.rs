@@ -66,16 +66,61 @@ pub fn launch(app: fn() -> Element) {
                     // square could not be drawn is worse than that.
                     dioxus::desktop::default_icon().expect("the renderer has one")
                 }))
-                .with_window(
+                .with_window(titled(
                     WindowBuilder::new()
                         .with_title("ACP Inspector")
                         .with_inner_size(LogicalSize::new(1440.0, 880.0))
                         // The smallest window the rail, the timeline and a
                         // permission request still fit in.
                         .with_min_inner_size(LogicalSize::new(960.0, 640.0)),
-                ),
+                )),
         )
         .launch(app);
+}
+
+/// Whether the window's toolbar is drawn in the title bar (D17): on macOS the
+/// title bar is transparent over a full-size content view, so the toolbar is
+/// the top of the window, with the traffic lights inset into it. Everywhere
+/// else the platform's decorated frame is kept as it is.
+pub const TOOLBAR_IN_TITLE_BAR: bool = cfg!(target_os = "macos");
+
+/// The traffic lights' inset from the window's top-left corner, in points:
+/// centred on the 52px toolbar, and clear of the brand by the padding the
+/// stylesheet gives the bar's leading edge (`.bar.titled`).
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS: (f64, f64) = (18.0, 20.0);
+
+#[cfg(target_os = "macos")]
+fn titled(window: WindowBuilder) -> WindowBuilder {
+    use dioxus::desktop::LogicalPosition;
+    use dioxus::desktop::tao::platform::macos::WindowBuilderExtMacOS;
+    window
+        .with_titlebar_transparent(true)
+        .with_fullsize_content_view(true)
+        .with_title_hidden(true)
+        .with_traffic_light_inset(LogicalPosition::new(TRAFFIC_LIGHTS.0, TRAFFIC_LIGHTS.1))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn titled(window: WindowBuilder) -> WindowBuilder {
+    window
+}
+
+/// Moves the window with the pointer, for a press on the toolbar's empty
+/// space where the toolbar is the title bar ([`TOOLBAR_IN_TITLE_BAR`]).
+pub fn drag_window() {
+    if TOOLBAR_IN_TITLE_BAR {
+        dioxus::desktop::window().drag();
+    }
+}
+
+/// Zooms or unzooms the window, for a double-click on the same empty space —
+/// what a double-click on a title bar does.
+pub fn zoom_window() {
+    if TOOLBAR_IN_TITLE_BAR {
+        let window = dioxus::desktop::window();
+        window.set_maximized(!window.is_maximized());
+    }
 }
 
 /// Whether the webview may navigate to `url` itself: only the app's own
@@ -328,7 +373,8 @@ pub fn use_menu(mut answer: impl FnMut(&str) + 'static) {
 
 /// What a menu item asks for. The ids are matched in `main.rs`.
 pub mod command {
-    pub const EXPORT_TRACE: &str = "trace-export";
+    pub const OPEN_TRACE: &str = "trace-open";
+    pub const SAVE_TRACE: &str = "trace-export";
     pub const CLEAR_TRACE: &str = "trace-clear";
     pub const NEW_SESSION: &str = "agent-new-session";
     pub const RESTART: &str = "agent-restart";
@@ -378,6 +424,7 @@ pub fn keys(chord: Chord, mac: bool) -> (Modifiers, Code) {
         Key::Letter('R') => Code::KeyR,
         Key::Letter('K') => Code::KeyK,
         Key::Letter('Q') => Code::KeyQ,
+        Key::Letter('O') => Code::KeyO,
         Key::Letter(_) => Code::Unidentified,
         Key::Digit(1) => Code::Digit1,
         Key::Digit(2) => Code::Digit2,
@@ -432,7 +479,19 @@ pub fn menu() -> Option<Menu> {
     let trace = Submenu::new("Trace", true);
     trace
         .append_items(&[
-            &item(command::EXPORT_TRACE, "Export…", Some(shortcut::EXPORT)),
+            // Opening a file is the view the Console's own Open… shows;
+            // saving is the Console's Export…, which asks where with the
+            // platform's Save As (F5).
+            &item(
+                command::OPEN_TRACE,
+                "Open trace…",
+                Some(shortcut::OPEN_TRACE),
+            ),
+            &item(
+                command::SAVE_TRACE,
+                "Save trace as…",
+                Some(shortcut::EXPORT),
+            ),
             &PredefinedMenuItem::separator(),
             &item(command::CLEAR_TRACE, "Clear", Some(shortcut::CLEAR)),
         ])
@@ -608,6 +667,7 @@ mod tests {
         );
         for chord in [
             shortcut::EXPORT,
+            shortcut::OPEN_TRACE,
             shortcut::CLEAR,
             shortcut::NEW_SESSION,
             shortcut::RESTART,
@@ -640,7 +700,7 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("pub const "))
             .filter_map(|line| line.split_once(':').map(|(name, _)| name))
             .collect::<Vec<_>>();
-        assert_eq!(declared.len(), 10, "every command is found: {declared:?}");
+        assert_eq!(declared.len(), 11, "every command is found: {declared:?}");
 
         for name in declared {
             assert!(

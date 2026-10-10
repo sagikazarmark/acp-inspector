@@ -54,8 +54,8 @@ a component-library name.
 - The compact geometry is a 40px toolbar, a 248px Agent rail, approximately 28px ordinary and
   toolbar controls, 12px panel gutters and 4-8px local gaps. Content may expand a row when the Agent
   provides text that must remain readable.
-- Heroicons Outline is the one icon family. It is used sparsely for the agreed toolbar, composer
-  and disclosure controls at 15px; icon-only controls use an approximately 28px square target plus
+- Lucide is the one icon family (release plan D8; it was Heroicons Outline). It is used sparsely for the agreed toolbar, composer
+  and disclosure controls at 16px with a 1.5 stroke; icon-only controls use an approximately 28px square target plus
   a tooltip, accessible name and shared visible focus treatment.
 - One keyboard focus treatment, and it is the platform's ring rather than a hairline held away from
   the control: three pixels of the accent at partial alpha, offset by one. Alpha is what lets the

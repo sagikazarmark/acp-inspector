@@ -29,7 +29,7 @@ use acp_inspector_core::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiDownload, HiTrash},
+    icons::ld_icons::{LdDownload, LdFolderOpen, LdSquarePen, LdTrash2},
 };
 
 use crate::copy::Copy;
@@ -206,13 +206,15 @@ pub fn Console(
                                 "data-slot": "compose",
                                 r#type: "button",
                                 aria_expanded: composing,
+                                aria_label: "Send by hand",
                                 title: "Write a request or notification by hand and send it to the agent",
                                 onclick: move |_| {
                                     let mut composing = wire.composing;
                                     let now = !composing();
                                     composing.set(now);
                                 },
-                                "Send…"
+                                Icon { class: "icon", width: 16, height: 16, icon: LdSquarePen }
+                                span { class: "btn-label", "Send…" }
                             }
                         }
                         if crate::view::CAN_OPEN {
@@ -220,9 +222,11 @@ pub fn Console(
                                 class: "btn btn-xs btn-quiet",
                                 "data-slot": "open-trace",
                                 r#type: "button",
+                                aria_label: "Open a trace",
                                 title: "Open an exported trace, read-only",
                                 onclick: move |_| wire.view.choose(wire.live()),
-                                "Open…"
+                                Icon { class: "icon", width: 16, height: 16, icon: LdFolderOpen }
+                                span { class: "btn-label", "Open…" }
                             }
                         }
                     }
@@ -239,8 +243,8 @@ pub fn Console(
                                 on_export.call(());
                             }
                         },
-                        Icon { class: "icon", icon: HiDownload }
-                        "Export…"
+                        Icon { class: "icon", width: 16, height: 16, icon: LdDownload }
+                        span { class: "btn-label", "Export…" }
                     }
                     if let Some(wire) = wire {
                         label {
@@ -250,13 +254,14 @@ pub fn Console(
                             input {
                                 r#type: "checkbox",
                                 class: "checkbox checkbox-xs",
+                                aria_label: "Export with stderr",
                                 checked: (wire.include_stderr)(),
                                 onchange: move |event| {
                                     let mut include = wire.include_stderr;
                                     include.set(event.checked());
                                 },
                             }
-                            "with stderr"
+                            span { class: "btn-label", "with stderr" }
                         }
                     }
                     if !viewing {
@@ -460,8 +465,8 @@ fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
                         }
                     });
                 },
-                Icon { class: "icon", icon: HiTrash }
-                if armed_now { "Confirm clear" } else { "Clear" }
+                Icon { class: "icon", width: 16, height: 16, icon: LdTrash2 }
+                span { class: "btn-label", if armed_now { "Confirm clear" } else { "Clear" } }
             }
             if armed_now {
                 button {
@@ -542,7 +547,7 @@ fn TabControl(
     rsx! {
         button {
             id: tab.id(),
-            class: "wire-tab",
+            class: "tab wire-tab",
             r#type: "button",
             role: "tab",
             aria_selected: tab == selected,
@@ -621,8 +626,8 @@ pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize
 ///
 /// In the page rather than in Rust, because only the page knows which element
 /// a key landed on: a key typed into a field inside a row must stay the
-/// field's. Rows are ordered by where they are drawn, so the list's DOM order
-/// (newest first, laid out bottom-up) does not leak into the keys. Which row
+/// field's. Rows are ordered by where they are drawn — which is also their DOM
+/// order, oldest first (A3) — so ↓ is always the newer row. Which row
 /// holds `tabindex="0"` is the screen's to render; this only moves focus.
 const ROVE: &str = r#"
 const [listSelector, rowSelector, activateSelector] = await dioxus.recv();
@@ -802,15 +807,17 @@ fn Diagnostics(
                 "Everything the transport said about this connection that was not a frame."
             }
         } else {
-            ul { class: "lines", "data-slot": "diagnostics", "data-tail": LINES,
+            div { class: "lines-scroll", "data-tail": LINES,
                 "data-page-latest": "{range.end == ordinals.len()}",
-                // Newest first in the DOM, oldest first on screen: the list is
-                // laid out bottom-up, which is what keeps a streaming console
-                // pinned to its latest line without a scroll script.
+            ul { class: "lines", "data-slot": "diagnostics",
+                // Oldest first, in the DOM as on screen (A3). The scroller
+                // around the list is laid out bottom-up with the list as its
+                // one child, which keeps a streaming console pinned to its
+                // latest line without a scroll script.
                 //
                 // Keyed by the ordinal the line was captured under, the way the
                 // Trace's rows are, even as the retention budgets rotate it.
-                for ordinal in ordinals[range.clone()].iter().copied().rev() {
+                for ordinal in ordinals[range.clone()].iter().copied() {
                     { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
                     li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
@@ -820,6 +827,7 @@ fn Diagnostics(
                     }
                     } }
                 }
+            }
             }
             {crate::tail::to_latest(LINES, "line", Some(anchor))}
         }

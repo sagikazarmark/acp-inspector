@@ -155,7 +155,7 @@ html, body, #main { height: 100%; }
 /* The window is the viewport and the document never scrolls; macOS bounces it
    anyway unless the root says not to (#74). */
 html { overscroll-behavior: none; }
-:is(.rail-body, .turn-stream, .wire-rows, .frame-json, .lines, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
+:is(.rail-body, .turn-stream, .wire-scroll, .frame-json, .lines-scroll, .palette-list, .slash-list, .dialog-body, .quoted, .disclose-body, .prompt-attachments) {
   overscroll-behavior: contain;
 }
 
@@ -180,13 +180,13 @@ a:hover { color: var(--acc); }
 .grow { flex: 1; min-width: 0; }
 
 /* The window's own words are not selectable; what the agent said is. */
-:is(.bar, .pane-head, .rail-tabs, .eyebrow, .wire-filters, .palette-foot, .prompt-foot) {
+:is(.bar, .pane-head, .rail-tabs, .eyebrow, .heading, .wire-name, .wire-filters, .palette-foot, .prompt-foot) {
   user-select: none;
 }
 
 /* One focus treatment across everything a keyboard can reach — and the only
    thing in the window drawn as a lime ring (D5). */
-:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible {
+:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a, [tabindex="0"]):focus-visible {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
 }
@@ -216,7 +216,7 @@ a:hover { color: var(--acc); }
 /* **A heading in a list or a dialog**, in sentence case: a palette group, a
    dialog's section, the line that says a row is outside any turn. Capitals
    for these were the same register shouting in more places. */
-:is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow) {
+.heading {
   font-size: var(--text-row);
   line-height: var(--text-row--line-height);
   letter-spacing: var(--tracking-normal);
@@ -227,7 +227,7 @@ a:hover { color: var(--acc); }
 /* **A name the wire carries**, spelled the way the wire spells it (D9): an
    update's kind, the method a request arrived as. Never capitalised, because
    `agent_message_chunk` in capitals is a word the protocol does not have. */
-:is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow) {
+.wire-name {
   font-family: var(--font-mono);
   font-size: var(--text-meta);
   line-height: var(--text-meta--line-height);
@@ -254,7 +254,7 @@ p.unnamed { color: var(--txt); }
    transport, the build's version. Neutral is a hairline; a toned tag is the
    tone's word on a wash of the same tone, so the hue is never the only thing
    saying it. */
-:is(.tag, .version, .evidence-kind, .frame-kind) {
+:is(.tag, .frame-tag) {
   --tone: var(--dim);
   display: inline-flex;
   align-items: center;
@@ -288,8 +288,11 @@ p.unnamed { color: var(--txt); }
 .dot-done { color: var(--ok); }
 body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: blink 1.6s var(--ease-standard) infinite; }
 
-.icon { width: 13px; height: 13px; flex: none; }
-.icon path { fill: none; stroke: currentColor; }
+/* **One icon family, at one size and one weight** (D8): Lucide, 16px, a 1.5
+   stroke in the colour of the words beside it. The icon's own `stroke-width`
+   attribute is presentational, so this rule is what draws it. */
+.icon { width: 16px; height: 16px; flex: none; stroke-width: 1.5; }
+.role-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
 
 /* ---------------------------------------------------------------------------
    The controls this window draws itself.
@@ -326,7 +329,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
    two. The word is the control's label, so it is 12px and never the metadata
    grey; the one that is open is the ink and a bar in the accent. A choice
    between *values* is a segment (`.seg`), not a tab. */
-:is(.tab, .rail-tab, .wire-tab) {
+.tab {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -341,13 +344,16 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-size: var(--text-row);
   font-weight: var(--font-weight-answer);
 }
-:is(.tab, .rail-tab, .wire-tab):hover { color: var(--txt); }
-:is(.tab, .rail-tab, .wire-tab)[aria-selected="true"] { color: var(--txt); box-shadow: inset 0 -2px 0 var(--acc); }
+.tab:hover { color: var(--txt); }
+.tab[aria-selected="true"] { color: var(--txt); box-shadow: inset 0 -2px 0 var(--acc); }
 
 /* **One chip**, for a value a reader presses: a config option's values, the
    envelope filters, the narrowing over the claims. Chosen is a tint and a
    check (D5) — never the accent ring, which is the keyboard's. */
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   height: 24px;
   padding: 0 8px;
   flex: none;
@@ -369,7 +375,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   display: inline-block;
   width: 4px;
   height: 8px;
-  margin: 0 8px 0 2px;
+  margin: 0 4px 0 2px;
   border: solid var(--acc);
   border-width: 0 2px 2px 0;
   transform: translateY(-2px) rotate(45deg);
@@ -400,7 +406,6 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-size: var(--text-row);
   font-weight: var(--font-weight-label);
   white-space: nowrap;
-  transition: background var(--motion-quick) var(--ease-standard);
 }
 .seg-item:hover { color: var(--txt); }
 .seg-item:is([aria-pressed="true"], [aria-selected="true"]) {
@@ -507,7 +512,31 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .bar-facts .bar-rule { color: var(--line2); }
 .bar-facts .bar-session { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
 
-.body { display: flex; flex: 1; min-height: 0; }
+/* **The bar is the title bar on macOS** (D17): the window's title bar is
+   transparent over the content, so the bar leaves the traffic lights their
+   room at its leading edge, and its empty pieces move the window (`main.rs`).
+   Elsewhere the platform's frame is above it and none of this applies. */
+.bar-lights { width: 72px; height: 100%; flex: none; margin-right: -16px; }
+/* The button that opens the rail as a drawer, drawn only where the rail is
+   one (D18). */
+.bar-drawer { display: none; flex: none; }
+
+.body { position: relative; display: flex; flex: 1; min-height: 0; }
+
+/* The rail's edge, which a reader drags or moves with ←/→ (D18): a 4px strip
+   over the hairline, which takes the accent while it is held or focused. */
+.rail-resize {
+  width: 4px;
+  flex: none;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+}
+.rail-resize:hover, [data-resizing] .rail-resize { background: var(--line2); }
+.rail-resize:focus-visible { background: var(--acc); }
+[data-resizing], [data-resizing] * { cursor: col-resize; user-select: none; }
+.rail-backdrop { display: none; }
 
 /* ---------------------------------------------------------------------------
    The rail: the connection, and the two things scoped to it.
@@ -515,7 +544,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .rail {
   display: flex;
   flex-direction: column;
-  width: 244px;
+  width: var(--rail-width, 244px);
   flex: none;
   min-height: 0;
   background: var(--panel);
@@ -547,7 +576,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .tile-transport { margin-left: auto; color: var(--dim2); }
 .tile-endpoint { min-width: 0; font-family: var(--font-mono); font-size: var(--text-meta); word-break: break-all; }
 .tile-cwd { min-width: 0; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); word-break: break-all; }
-.tile-actions { display: flex; gap: 4px; padding-top: 4px; }
+.tile-actions { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 4px; }
 /* The rail's small button is 24px, which is daisyUI's `xs` here too; written
    out because the rail's two rows of them have to agree.
 
@@ -556,7 +585,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
    was giving these the height of their own text. */
 .tile-actions .btn, .rail-head .btn { height: 24px; }
 .tile-actions.stacked > .btn { flex: none; }
-.tile-actions > .btn { flex: 1; min-width: 0; overflow: hidden; }
+.tile-actions > .btn { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tile-actions.stacked { flex-direction: column; }
 
 .rail-tabs {
@@ -613,8 +642,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-family: inherit;
 }
 .mode-row[aria-pressed="true"] { border-color: var(--tint-selected-edge); background: var(--tint-selected); box-shadow: inset 2px 0 0 var(--acc); }
-.mode-row .mode-id { font-family: var(--font-mono); font-size: var(--text-row); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mode-row .mode-name { flex: none; color: var(--dim); font-size: var(--text-row); }
+.mode-row .mode-id { min-width: 0; margin-left: auto; color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mode-row .mode-name { flex: none; color: var(--txt); font-size: var(--text-row); }
 .mode-row[aria-disabled="true"] { opacity: 0.4; }
 
 /* A config option: its name, and the values it offers as chips. */
@@ -716,25 +745,27 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .pane-scope { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); white-space: nowrap; }
 .pane-head .btn { height: 28px; flex: none; border-radius: var(--radius-control); }
 
+/* Newest at the bottom and the run of them held there (A3). The rows are in
+   the document oldest first, so reading and focus order are the
+   conversation's; the *scroller* is laid out bottom-up with the list as its one
+   child, which is what starts it at its own end and keeps it there while a
+   turn streams in — in both engines, with no scroll script — and leaves it
+   where the reader put it once they scroll back. */
 .turn-stream {
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 16px 24px 8px;
 }
-/* Newest at the bottom and the run of them held there: a stream that started at
-   the top of an empty screen would walk down it as the agent talked.
-
-   In `column-reverse` the end of the main axis is the top, so a conversation
-   with room to spare reads from the top of the screen and one that fills it
-   ends at the bottom — which is where a reader scrolling back to the beginning
-   expects to find it. */
+/* The list grows to the room it has and packs its rows at the top, so a
+   conversation with room to spare reads from the top of the screen and one
+   that fills it ends at the bottom. */
 .stream {
   display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: flex-start;
   flex: 1;
   width: 100%;
   max-width: 760px;
@@ -781,8 +812,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .row.done .row-mark { color: var(--ok); }
 .row-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
 .row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.row-head > .eyebrow { flex: none; }
-.row.unnamed .row-head > .eyebrow { color: var(--vio); }
+.row-head > .wire-name { flex: none; }
+.row.unnamed .row-head > .wire-name { color: var(--vio); }
 .said { font-size: var(--text-read); line-height: var(--text-read--line-height); overflow-wrap: anywhere; white-space: pre-wrap; }
 /* A thought is set off from the flow whole — the name of the update and the
    words under it, inside one rule down the left. */
@@ -938,9 +969,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   padding: 12px;
   border-bottom: 1px solid var(--line);
 }
-.blocking-head > .eyebrow { color: var(--in); font-weight: var(--font-weight-answer); }
-.blocking.elicit .blocking-head > .eyebrow { color: var(--vio); }
-.blocking.answered .blocking-head > .eyebrow { color: var(--dim); }
+.blocking-head > .wire-name { color: var(--in); font-weight: var(--font-weight-answer); }
+.blocking.elicit .blocking-head > .wire-name { color: var(--vio); }
+.blocking.answered .blocking-head > .wire-name { color: var(--dim); }
 .blocking-wait { margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
 .blocking-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; min-width: 0; }
 .blocking-title { font-size: var(--text-read); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
@@ -1006,7 +1037,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   color: var(--dim2);
   font-size: var(--text-meta);
 }
-.boundary > .eyebrow { flex: none; }
+.boundary > .heading { flex: none; }
 /* The line over the composer saying the turn is waiting on the reader — by its
    slot, because `waiting` is also the tone of a plan entry not yet begun. */
 .waiting[data-slot="waiting"] {
@@ -1150,9 +1181,13 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 /* A filter that is off is drawn as off (D5): a dashed edge and no check, so a
    row of chips is never four ways of saying the same thing. */
 .wire-filters .chip[aria-pressed="false"] { border-style: dashed; }
-.wire-rows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
+/* The two lists of arriving lines scroll in a box laid out bottom-up with the
+   list as its one child (A3): the rows are oldest first in the document, the
+   box starts at its newest, and a short list sits at the bottom of the room it
+   has, where the next line will arrive. */
+:is(.wire-scroll, .lines-scroll) { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; }
+.wire-rows { display: flex; flex-direction: column; flex: none; margin: 0; padding: 0; list-style: none; }
 .wire-rows > li { min-width: 0; }
-.wire-rows > li:last-child { margin-top: auto; }
 /* **Zebra rather than a hairline under every row** (D11): a rule on each of
    ten thousand rows is a grid laid over the traffic. */
 .frame-line { display: flex; align-items: center; min-width: 0; }
@@ -1166,6 +1201,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   gap: 8px;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   padding: 4px 12px;
   border: none;
   border-left: 2px solid transparent;
@@ -1181,7 +1217,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
    `#1`. */
 .frame-crossing { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
 .wire-rows:not(:has([data-switched="true"])) .frame-crossing { display: none; }
-.frame-arrow { width: 12px; flex: none; font-family: var(--font-mono); font-size: var(--text-row); }
+.frame-arrow { display: inline-flex; align-items: center; width: 16px; flex: none; }
 .frame-arrow.out { color: var(--out); }
 .frame-arrow.in { color: var(--in); }
 .frame-method { flex: none; color: var(--txt); font-family: var(--font-mono); font-size: var(--text-row); }
@@ -1191,8 +1227,14 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .frame-line .controls { display: flex; align-items: center; gap: 2px; flex: none; padding-right: 8px; }
 /* A wire too narrow for the preview drops it, and the pane below says the
    whole frame anyway. */
-@container (max-width: 440px) {
+@container (max-width: 480px) {
   .frame-peek { display: none; }
+}
+/* Narrower still, the kind tag gives way too: the arrow, the `↳` and the id
+   already say most of it, and the pane below says all of it. */
+@container (max-width: 420px) {
+  .frame-row .frame-kind { display: none; }
+  .pane-head .export-stderr .btn-label { display: none; }
 }
 
 /* The frame a reader chose, read whole. */
@@ -1214,8 +1256,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
 }
-.frame-pane-head .frame-method { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.frame-pane-meta { flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
+.frame-pane-head .frame-method { flex: 0 1 auto; min-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-pane-meta { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); text-overflow: ellipsis; white-space: nowrap; }
 .frame-json {
   flex: 1;
   min-height: 0;
@@ -1235,8 +1277,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .json-punctuation { color: var(--dim2); }
 
 /* The diagnostic channel, striped the way the trace is. */
-.lines { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column-reverse; justify-content: flex-start; margin: 0; padding: 0; list-style: none; }
-.lines > li:last-child { margin-top: auto; }
+.lines { display: flex; flex-direction: column; flex: none; margin: 0; padding: 0; list-style: none; }
 .lines > li:nth-child(even) > .line, .lines > .line:nth-child(even) { background: var(--stripe); }
 .line {
   display: flex;
@@ -1249,7 +1290,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .line.agent .line-text { color: var(--txt); }
 .line.bad .line-text { color: var(--err); }
 .narrowed { margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); color: var(--dim2); font-size: var(--text-meta); }
-.saved { margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
+.saved { display: flex; align-items: center; gap: 8px; margin: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); overflow-wrap: anywhere; }
 .saved.bad { color: var(--err); }
 
 /* The way back to the newest row, which appears once a list is not at its
@@ -1309,7 +1350,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 /* A field in a dialog: the key it goes out under, what it is for, and the box
    — the box the dialog's full width (D13). */
 .form-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.form-label { display: flex; align-items: baseline; gap: 8px; }
+.form-label { display: flex; align-items: baseline; gap: 8px; color: var(--txt); font-size: var(--text-row); font-weight: var(--font-weight-label); }
 .form-key { color: var(--txt); font-family: var(--font-mono); font-size: var(--text-meta); }
 .form-note { color: var(--dim2); font-size: var(--text-meta); }
 .form-field :is(.input, .textarea) { width: 100%; }
@@ -1318,8 +1359,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 /* The MCP servers a launch hands the agent, edited in the connect dialog. */
 .mcp-editor { min-width: 0; margin-block: 12px; }
 .mcp-server { display: grid; gap: 8px; min-width: 0; margin-block: 12px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-control); }
-.mcp-row { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
-.mcp-row .input { flex: 1 1 140px; min-width: 0; }
+.mcp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; color: var(--dim); font-size: var(--text-row); }
+.mcp-row .input { min-width: 0; height: 28px; font-size: var(--text-row); }
 .mcp-actions { display: flex; gap: 4px; }
 .recents { display: flex; flex-direction: column; gap: 4px; }
 .recent-row {
@@ -1419,13 +1460,406 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .toast .alert { border-color: var(--line2); background: var(--panel); box-shadow: var(--shadow-pop); color: var(--txt); }
 
 /* ---------------------------------------------------------------------------
-   The narrow window. Below 1080 one region shows at a time and a bar at the
-   foot chooses between them; the shell's own minimum is 960 × 640.
+   The surfaces the release added, in the same vocabulary: a tag for a shape,
+   a chip for a value, a hairline box in the tone of what it is about, and a
+   sentence register for everything said around them.
+   --------------------------------------------------------------------------- */
+
+/* Trouble, said in words, in the one hue that means it. */
+:is(p, span).bad { margin: 0; color: var(--err); overflow-wrap: anywhere; }
+
+/* A button that says what it does with an icon and a word: the word gives way
+   where the room does (a narrow wire's header), and the button's own name
+   still says it. An armed Clear always keeps its word. */
+.btn-label { white-space: nowrap; }
+@container (max-width: 600px) {
+  .pane-head .btn .btn-label { display: none; }
+  .pane-head .clear-trace[data-armed="true"] .btn-label { display: inline; }
+}
+.wire .pane-head { gap: 4px; padding: 0 12px; }
+.wire .wire-tabs { gap: 12px; margin-right: 8px; }
+.wire .pane-head .btn { padding: 0 8px; }
+/* The two-step deletes: the armed press and its Cancel, side by side. */
+:is(.clear-trace, .session-delete) { display: inline-flex; flex: none; gap: 4px; }
+.claim-refused { color: var(--err); }
+.frame-answers { color: var(--dim2); }
+.btn-filled.btn-bad { --btn-bg: var(--err); --btn-fg: var(--on-hue); }
+.export-stderr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--dim);
+  font-size: var(--text-row);
+  white-space: nowrap;
+}
+
+/* The chips over the trace wrap rather than run off the side. */
+.wire-filters { flex-wrap: wrap; }
+
+/* The title bar's own pieces. A waiting request is flagged on the control
+   that would show it: a small pill in the tone of an ask. */
+.region-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  margin-left: 8px;
+  padding: 0 4px;
+  border-radius: var(--radius-mark);
+  background: color-mix(in oklab, var(--in) 14%, transparent);
+  color: var(--in);
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-label);
+}
+/* The Pretty JSON switch is one segment in a track, raised while it is on. */
+.seg-switch { align-items: center; font: inherit; }
+.seg-switch .seg-item { display: inline-flex; align-items: center; }
+.seg-switch[aria-checked="true"] .seg-item { background: var(--panel2); color: var(--txt); box-shadow: var(--shadow-segment); }
+
+/* A window that could not draw a screen, and the way back. */
+.recovery {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 48px;
+  text-align: center;
+}
+.recovery pre {
+  max-width: 720px;
+  max-height: 40vh;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--sunk);
+  font-size: var(--text-meta);
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.quit-box { width: min(420px, 92vw); }
+
+/* The launch form. A field's name is the label register; what it is for is
+   the hint register, wrapping (daisyUI's label does not); an error is the
+   error ink. */
+.form-field > .label { color: var(--txt); font-family: var(--font-sans); font-size: var(--text-row); font-weight: var(--font-weight-label); }
+.form-field .label.hint { display: block; color: var(--dim2); font-size: var(--text-meta); font-weight: var(--font-weight-normal); white-space: normal; }
+.form-field > .text-error:empty { display: none; }
+.form-check .label { font-size: var(--text-row); }
+.split-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.field-warning { color: var(--in); }
+.launch-failure { flex-direction: column; }
+.launch-failure-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.launch-failure-body > p { margin: 0; }
+.launch-failure-headline { color: var(--err); font-weight: var(--font-weight-label); }
+[data-slot="launch-path"] code { word-break: break-all; }
+:is(.recent-launch, .recent-forget, .recent-remove) { flex: none; }
+.recent-row .btn { height: 24px; }
+
+/* The MCP servers and the client services: two disclosures in the launch
+   form, each a summary line that opens onto its fields. */
+:is(.mcp-disclosure, .client-services-disclosure, .mcp-about, .prompt-link) > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--txt);
+  font-size: var(--text-row);
+  list-style: none;
+}
+:is(.mcp-about, .prompt-link) > summary { color: var(--dim); }
+:is(.mcp-disclosure, .client-services-disclosure, .mcp-about, .prompt-link) > summary::-webkit-details-marker { display: none; }
+:is(.mcp-disclosure, .client-services-disclosure, .mcp-about, .prompt-link) > summary::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border: solid currentColor;
+  border-width: 0 1px 1px 0;
+  transform: translateY(-2px) rotate(-45deg);
+}
+:is(.mcp-disclosure, .client-services-disclosure, .mcp-about, .prompt-link)[open] > summary::before { transform: translateY(-4px) rotate(45deg); }
+:is(.mcp-summary, .client-services-summary) { font-weight: var(--font-weight-label); }
+:is(.mcp-disclosure, .client-services-disclosure, .mcp-about)[open] > :not(summary) { margin-top: 8px; }
+.mcp-field { min-width: 0; }
+.mcp-rows { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mcp-server > legend { padding: 0 4px; color: var(--dim); font-size: var(--text-row); }
+.client-services { min-width: 0; }
+.client-services-claims {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+.client-services-claims > legend { padding: 0 4px; }
+.client-services-option { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; font-size: var(--text-row); }
+.client-services-rules { display: flex; align-items: center; gap: 8px; min-width: 0; font-family: var(--font-mono); font-size: var(--text-row); overflow-wrap: anywhere; }
+.client-services-field { gap: 4px; }
+.client-services-field .input { width: 120px; }
+.client-services-field input[type="file"] { color: var(--dim); font-size: var(--text-row); }
+
+/* A resource link under the composer: three small fields and Add, one row
+   wide enough and wrapping where it is not. */
+.prompt-link { padding-top: 8px; }
+.prompt-link > :not(summary) { margin-top: 8px; }
+.prompt-link-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.prompt-link-fields .input { flex: 1 1 140px; min-width: 0; }
+
+/* The palette: a row is an option, with its state as a pill and its
+   shortcut at the far end. */
+.palette-row { cursor: default; }
+.palette-row .palette-key { flex: none; margin-left: auto; color: var(--dim); font-family: var(--font-mono); font-size: var(--text-meta); }
+.palette-state {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-mark);
+  color: var(--dim);
+  font-size: var(--text-meta);
+}
+.palette-state[data-on="true"] { border-color: var(--tint-selected-edge); background: var(--tint-selected); color: var(--txt); }
+
+/* A permission option that would be remembered says so in a pill. */
+.option-always {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid color-mix(in oklab, var(--in) 40%, transparent);
+  border-radius: var(--radius-mark);
+  color: var(--in);
+  font-size: var(--text-meta);
+  font-weight: var(--font-weight-normal);
+}
+
+/* A tool call's id, beside the copy of it; a window over large content. */
+.evidence-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 12px 8px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+.windowed { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+.required-mark { color: var(--err); }
+
+/* The first run: what this window is for, the one way to start, and what was
+   started before. */
+.onboarding { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 440px; }
+.onboarding-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-card);
+  background: var(--tint-selected);
+  color: var(--acc);
+}
+.onboarding-icon .role-icon, .onboarding-icon .icon { width: 20px; height: 20px; }
+.onboarding-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; }
+[data-slot="palette-hint"] kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-mark);
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
+.onboarding-recent { display: flex; flex-direction: column; gap: 8px; width: 100%; margin-top: 12px; text-align: left; }
+.onboarding-recent h4 { margin: 0; color: var(--dim); font-size: var(--text-row); font-weight: var(--font-weight-answer); }
+.empty-login { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 520px; text-align: left; }
+.methods { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.narrowed[data-slot="pages"] { display: flex; align-items: center; gap: 8px; }
+
+/* The raw request composer, over the trace: a method, a kind, the params
+   as typed, and what came back. */
+.raw-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: none;
+  max-height: 60%;
+  overflow: auto;
+  padding: 12px;
+  border-bottom: 1px solid var(--line2);
+  background: var(--panel2);
+}
+.raw-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.raw-head h3 { flex: none; margin: 0; font-size: var(--text-row); font-weight: var(--font-weight-answer); }
+.raw-head .hint { order: 1; flex-basis: 100%; min-width: 0; }
+.raw-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px 12px; min-width: 0; }
+.raw-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; color: var(--dim); font-size: var(--text-row); }
+.raw-field .input { width: 100%; height: 28px; font-size: var(--text-row); }
+.raw-params { grid-column: 1 / -1; }
+.raw-params .textarea { width: 100%; height: 128px; padding: 8px 12px; font-size: var(--text-meta); field-sizing: fixed; }
+.raw-actions { display: flex; align-items: center; gap: 8px; }
+.raw-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+  font-size: var(--text-row);
+}
+.raw-result p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; }
+.raw-result .frame-json { flex: none; max-height: 200px; padding: 8px; border-radius: var(--radius-mark); background: var(--sunk); }
+[data-slot="raw-answer"] { color: var(--txt); }
+[data-slot="raw-waiting"] { color: var(--dim); }
+
+/* The calls still waiting for an answer, a compact strip over the rows. */
+.pending-calls {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel2);
+}
+.pending-head { margin: 0 0 4px; color: var(--in); font-size: var(--text-meta); font-weight: var(--font-weight-label); }
+.pending-calls ul { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+li[data-slot="pending-call"] { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; color: var(--dim); font-size: var(--text-meta); }
+li[data-slot="pending-call"] .btn { height: 24px; }
+.elapsed { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* What a frame carries besides its shape: who wrote it, whether its bytes
+   were UTF-8, whether its id is the right type, whether it is answered. */
+.frame-tag.bad { --tone: var(--err); }
+.frame-tag[data-slot="hand-sent"] { --tone: var(--acc); }
+.frame-tag[data-slot="unanswered"] { --tone: var(--in); }
+.frame-tag[data-slot="stderr"] { --tone: var(--vio); }
+.wire-rows > li[data-hand-sent="true"] > .frame-line { box-shadow: inset 2px 0 0 color-mix(in oklab, var(--acc) 60%, transparent); }
+.frame-took {
+  flex: none;
+  min-width: 48px;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+li[data-dropped="true"] .frame-peek { color: var(--dim2); font-style: italic; }
+.frame-omitted { margin: 0; padding: 12px; color: var(--dim); font-size: var(--text-row); font-style: italic; }
+.frame-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  flex: none;
+  margin: 0;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: var(--text-meta);
+}
+.frame-pair .btn { height: 24px; }
+
+/* The agent's stderr among the frames: its own ground, a rule down its
+   edge, and the line in the wire's face. */
+.wire-rows > li.stderr-row > .frame-line {
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--sunk);
+  box-shadow: inset 2px 0 0 var(--line2);
+}
+.stderr-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A trace opened from a file: one bar under the toolbar, across the window,
+   saying what is being looked at and how to stop. */
+.view-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  flex: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--out) 8%, var(--panel));
+  color: var(--txt);
+  font-size: var(--text-row);
+}
+.view-banner .hint { color: var(--dim); font-size: var(--text-row); }
+.view-banner .btn { height: 24px; margin-left: auto; }
+.view-banner.bad { background: color-mix(in oklab, var(--err) 8%, var(--panel)); color: var(--err); }
+.view-title strong { font-family: var(--font-mono); font-weight: var(--font-weight-label); }
+.view-banner [data-slot="view-warning"] { flex-basis: 100%; order: 1; color: var(--in); }
+
+/* Client services: the card a request is answered from, and the policy the
+   timeline's header sets for permission requests. */
+.service-editor { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.service-editor .textarea { width: 100%; padding: 8px 12px; font-size: var(--text-meta); field-sizing: fixed; }
+.service-error { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px 12px; }
+.service-error .input { height: 28px; font-size: var(--text-row); }
+.permission-policy { display: inline-flex; align-items: center; flex: none; }
+.permission-policy .select { height: 24px; font-size: var(--text-row); }
+[data-slot="unclaimed"] { color: var(--in); }
+
+/* The two accounts open wide: side by side, the sheet the screens' width. */
+.sheet-box { width: min(1040px, 94vw); max-height: 80vh; }
+.sheet-accounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 24px; }
+
+/* ---------------------------------------------------------------------------
+   The narrower windows (D18).
+
+   **Below 1180 the two screens keep the width and the rail becomes a
+   drawer**: a button in the bar opens it over the screens, with a shade behind
+   it that closes it, and Escape closes it from inside. The turn and the wire
+   stay side by side, because they are what is read together.
+
+   **Below 760 one region shows at a time** and a bar at the foot chooses
+   between them. The desktop shell's own minimum is 960 × 640, so a desktop
+   window never gets there; the web build's can (ADR 0009).
    --------------------------------------------------------------------------- */
 .mobile-bar { display: none; }
 
-@media (max-width: 1080px) {
-  .rail { width: 100%; flex: 1; border-right: none; }
+@media (max-width: 1180px) {
+  .bar-drawer { display: inline-flex; }
+  .rail-resize { display: none; }
+  .rail {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    display: none;
+    width: min(var(--rail-width, 244px), 92%);
+    box-shadow: var(--shadow-dialog);
+  }
+  .body.drawer-open .rail { display: flex; }
+  .body.drawer-open .rail-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: block;
+    background: color-mix(in oklab, var(--ink-shadow) 35%, transparent);
+  }
+  .bar { gap: 12px; }
+  .bar-facts { display: none; }
+}
+
+@media (max-width: 760px) {
+  .bar-drawer, .bar-layout { display: none; }
+  .body.drawer-open .rail-backdrop { display: none; }
+  .rail { position: static; display: flex; width: 100%; flex: 1; border-right: none; box-shadow: none; }
   .body.on-rail .split { display: none; }
   .body:not(.on-rail) .rail { display: none; }
   .body.on-turn .wire { display: none; }

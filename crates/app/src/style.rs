@@ -677,9 +677,9 @@ mod tests {
         for scroller in [
             ".rail-body",
             ".turn-stream",
-            ".wire-rows",
+            ".wire-scroll",
             ".frame-json",
-            ".lines",
+            ".lines-scroll",
             ".palette-list",
             ".slash-list",
             ".dialog-body",
@@ -798,7 +798,12 @@ mod tests {
         assert_eq!(declared(".bar", "flex").as_deref(), Some("none"));
         assert_eq!(declared(".body", "flex").as_deref(), Some("1"));
         assert_eq!(declared(".body", "min-height").as_deref(), Some("0"));
-        assert_eq!(declared(".rail", "width").as_deref(), Some("244px"));
+        // The rail is the drawing's 244px until a reader drags its edge (D18).
+        assert_eq!(
+            declared(".rail", "width").as_deref(),
+            Some("var(--rail-width, 244px)")
+        );
+        assert_eq!(declared(".body", "position").as_deref(), Some("relative"));
         assert_eq!(declared(".rail", "flex").as_deref(), Some("none"));
         assert_eq!(declared(".split", "flex").as_deref(), Some("1"));
         assert_eq!(declared(".turns", "flex").as_deref(), Some("1.45"));
@@ -815,8 +820,47 @@ mod tests {
     }
 
     #[test]
+    fn a_window_too_narrow_for_the_rail_keeps_both_screens_and_opens_the_rail_as_a_drawer() {
+        // **D18.** Below 1180 the turn and the wire keep the width, side by
+        // side, and the rail is drawn over them on request — with a shade
+        // behind it, and the button that asks for it in the bar. Its edge is
+        // not draggable there, because it is not beside anything.
+        let drawer = rules()
+            .into_iter()
+            .filter(|(nesting, _)| {
+                nesting
+                    .first()
+                    .is_some_and(|at| at.contains("max-width: 1180px"))
+            })
+            .map(|(nesting, body)| (selector(&nesting).to_owned(), body))
+            .collect::<Vec<_>>();
+        let says = |subject: &str, wanted: &str| {
+            drawer
+                .iter()
+                .any(|(selector, body)| selector == subject && body.contains(wanted))
+        };
+        assert!(says(".rail", "position: absolute") && says(".rail", "display: none"));
+        assert!(says(".body.drawer-open .rail", "display: flex"));
+        assert!(says(".body.drawer-open .rail-backdrop", "display: block"));
+        assert!(says(".bar-drawer", "display: inline-flex"));
+        assert!(says(".rail-resize", "display: none"));
+        assert!(
+            !drawer
+                .iter()
+                .any(|(selector, body)| selector.contains(".split")
+                    && body.contains("display: none")),
+            "both screens stay on screen"
+        );
+        assert_eq!(declared(".bar-drawer", "display").as_deref(), Some("none"));
+        assert_eq!(
+            declared(".rail-backdrop", "display").as_deref(),
+            Some("none")
+        );
+    }
+
+    #[test]
     fn a_window_too_narrow_for_three_columns_shows_one_region_at_a_time() {
-        // The answer below 1080: one region, and a bar at the foot to choose
+        // The answer below 760: one region, and a bar at the foot to choose
         // between them. The chooser does not exist at full width — a control
         // for switching between three things that are all on screen is three
         // ways to do nothing.
@@ -827,7 +871,7 @@ mod tests {
             .filter(|(nesting, _)| {
                 nesting
                     .first()
-                    .is_some_and(|at| at.contains("max-width: 1080px"))
+                    .is_some_and(|at| at.contains("max-width: 760px"))
             })
             .map(|(nesting, body)| (selector(&nesting).to_owned(), body))
             .collect::<Vec<_>>();
@@ -862,46 +906,51 @@ mod tests {
 
     #[test]
     fn the_lists_that_tail_are_laid_out_bottom_up() {
-        // Three lists arrive newest-last and are read newest-first: the stream,
-        // the wire log and the diagnostic channel. `column-reverse` is what
-        // holds a streaming list at its own end without a scroll script — and
-        // the last DOM child is the topmost one, which is why the free space
-        // above a short list is given to it rather than below it.
-        // The two that scroll themselves start at their own end, and a short
-        // one of either sits at the bottom of the room it has: they are lists
-        // of arriving lines, read newest-first, and a handful of rows floating
-        // at the top of an empty panel reads as a panel that has not finished
-        // drawing.
-        for list in [".wire-rows", ".lines"] {
-            assert_eq!(
-                declared(list, "flex-direction").as_deref(),
-                Some("column-reverse"),
-                "{list} is laid out bottom-up"
-            );
-            assert_eq!(
-                declared(list, "justify-content").as_deref(),
-                Some("flex-start"),
-                "{list} starts at its own end"
-            );
-            assert_eq!(
-                declared(&format!("{list} > li:last-child"), "margin-top").as_deref(),
-                Some("auto"),
-                "and a short {list} sits at the bottom of the room it has"
-            );
-        }
-
-        // The conversation is the same list read the same way round and is
-        // packed the other way: a turn starts at the top of the screen and
-        // grows down to the composer, which is where a reader scrolling back
-        // to the beginning of it expects the beginning to be.
+        // Three lists arrive newest-last: the stream, the wire log and the
+        // diagnostic channel. **Their rows are in the document oldest first**
+        // (A3), so a screen reader and the Tab key meet them in the order they
+        // happened; what is laid out bottom-up is the *scroller* around each,
+        // with the list as its one child. That is what starts a list at its
+        // own end and holds it there while it streams, without a scroll
+        // script, in both engines this shell runs on.
+        let scroller = ":is(.wire-scroll, .lines-scroll)";
         assert_eq!(
-            declared(".stream", "flex-direction").as_deref(),
+            declared(scroller, "flex-direction").as_deref(),
             Some("column-reverse"),
-            "the newest entry is first in the document and last on screen"
+            "the wire log and the diagnostics scroll bottom-up"
         );
         assert_eq!(
+            declared(".turn-stream", "flex-direction").as_deref(),
+            Some("column-reverse"),
+            "and so does the conversation"
+        );
+        // The lists themselves run top to bottom, in document order — none of
+        // them is reversed, which is the whole of A3.
+        for list in [".wire-rows", ".lines", ".stream"] {
+            assert_eq!(
+                declared(list, "flex-direction").as_deref(),
+                Some("column"),
+                "{list} is in reading order"
+            );
+        }
+        for (nesting, body) in rules() {
+            if body.contains("column-reverse") {
+                assert!(
+                    [scroller, ".turn-stream"].contains(&selector(&nesting)),
+                    "`{}` reverses a list rather than its scroller",
+                    selector(&nesting)
+                );
+            }
+        }
+        // A short wire log sits at the bottom of the room it has, where the
+        // next line arrives; a short conversation grows to the room it has and
+        // reads from the top, which is where a reader scrolling back to the
+        // beginning of a turn expects the beginning to be.
+        assert_eq!(declared(".wire-rows", "flex").as_deref(), Some("none"));
+        assert_eq!(declared(".stream", "flex").as_deref(), Some("1"));
+        assert_eq!(
             declared(".stream", "justify-content").as_deref(),
-            Some("flex-end"),
+            Some("flex-start"),
             "and a short conversation reads from the top"
         );
     }
@@ -964,8 +1013,18 @@ mod tests {
                     // the clipped box a visually-hidden control is drawn in, and
                     // it is out of flow so that being off screen costs the row
                     // it is in no room (`timeline.rs`).
-                    [".tail-anchor", ".slash", ".reach"].contains(&selector.as_str()),
-                    "`{selector}` is out of flow and is not one of the three things that may be"
+                    // And the rail where it is a drawer, with the shade behind
+                    // it (D18): both against the body under the bar, which is
+                    // the region the drawer is drawn over.
+                    [
+                        ".tail-anchor",
+                        ".slash",
+                        ".reach",
+                        ".rail",
+                        ".body.drawer-open .rail-backdrop",
+                    ]
+                    .contains(&selector.as_str()),
+                    "`{selector}` is out of flow and is not one of the things that may be"
                 );
             }
         }
@@ -1209,7 +1268,7 @@ mod tests {
 
     #[test]
     fn every_control_family_has_the_same_visible_focus_indicator() {
-        let everything = ":is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible";
+        let everything = ":is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a, [tabindex=\"0\"]):focus-visible";
         let ring = rule(everything);
 
         assert!(
@@ -1446,15 +1505,14 @@ mod tests {
                 "the section name is one size and one tracking: {body}"
             );
         }
-        let wire = ":is(.wire-name, .row-head > .eyebrow, .blocking-head > .eyebrow, .evidence-head > .eyebrow, .slash-head > .eyebrow)";
+        let wire = ".wire-name";
         assert_eq!(declared(wire, "text-transform").as_deref(), Some("none"));
         assert_eq!(
             declared(wire, "font-family").as_deref(),
             Some("var(--font-mono)"),
             "a wire name is spelled in the face the wire is read in"
         );
-        let heading =
-            ":is(.heading, .palette-group.eyebrow, .dialog-body .eyebrow, .boundary > .eyebrow)";
+        let heading = ".heading";
         assert_eq!(declared(heading, "text-transform").as_deref(), Some("none"));
         assert_eq!(
             declared(heading, "font-size").as_deref(),
@@ -1563,7 +1621,7 @@ mod tests {
             assert!(!declares(rule(button), "text-transform"));
         }
         // One tab, for both regions that have panels.
-        let tab = ":is(.tab, .rail-tab, .wire-tab)";
+        let tab = ".tab";
         assert_eq!(
             declared(tab, "font-size").as_deref(),
             Some("var(--text-row)")
@@ -1584,7 +1642,7 @@ mod tests {
             );
         }
         // And one tag, whose tone is a variable rather than a rule per tone.
-        let tag = ":is(.tag, .version, .evidence-kind, .frame-kind)";
+        let tag = ":is(.tag, .frame-tag)";
         assert_eq!(declared(tag, "--tone").as_deref(), Some("var(--dim)"));
         assert_eq!(declared(tag, "color").as_deref(), Some("var(--tone)"));
     }
@@ -1699,7 +1757,7 @@ mod tests {
             (".pane-head", "40px"),
             (".frame-pane-head", "36px"),
             (".palette-query", "48px"),
-            (":is(.tab, .rail-tab, .wire-tab)", "32px"),
+            (".tab", "32px"),
             (".seg-item", "24px"),
             (".mode-row", "32px"),
             (".mode-cycle", "28px"),
@@ -1796,7 +1854,7 @@ mod tests {
             Some("var(--txt)")
         );
         assert_eq!(
-            declared(".row.unnamed .row-head > .eyebrow", "color").as_deref(),
+            declared(".row.unnamed .row-head > .wire-name", "color").as_deref(),
             Some("var(--vio)")
         );
         let ended = rule(".ended");
@@ -1910,17 +1968,7 @@ mod tests {
         // The vocabulary the markup is offered rather than already using (the
         // names the components move onto), and the classes composed at run
         // time from a prefix and a tone.
-        let offered = [
-            "tab",
-            "tag",
-            "tag-ok",
-            "tag-err",
-            "tag-vio",
-            "tag-in",
-            "tag-out",
-            "heading",
-            "wire-name",
-        ];
+        let offered = ["tag-ok", "tag-err", "tag-vio", "tag-in", "tag-out"];
         let composed = ["dot-"];
 
         let mut dead = Vec::new();

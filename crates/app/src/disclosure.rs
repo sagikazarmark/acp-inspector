@@ -4,15 +4,15 @@
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiChevronRight, HiX},
+    icons::ld_icons::{LdChevronRight, LdX},
 };
 
-/// A decorative Heroicons Outline chevron. Native `details[open]` and explicit
+/// A decorative Lucide chevron. Native `details[open]` and explicit
 /// `aria-expanded` state rotate the same marker in the stylesheet.
 pub fn chevron() -> Element {
     rsx! {
         span { class: "disclosure-icon", aria_hidden: "true",
-            Icon { class: "icon", icon: HiChevronRight }
+            Icon { class: "icon", width: 16, height: 16, icon: LdChevronRight }
         }
     }
 }
@@ -27,7 +27,7 @@ pub fn chevron() -> Element {
 pub fn close() -> Element {
     rsx! {
         span { class: "disclosure-icon", aria_hidden: "true",
-            Icon { class: "icon", icon: HiX }
+            Icon { class: "icon", width: 16, height: 16, icon: LdX }
         }
     }
 }
@@ -35,9 +35,8 @@ pub fn close() -> Element {
 /// What an icon stands for, wherever one is drawn.
 ///
 /// **The one place an icon is chosen** (D8). Screens ask for a role and never
-/// name a glyph, so moving the window to another set (Heroicons v2, or Lucide
-/// through `dioxus-free-icons`' `lucide` feature) is an edit to [`icon`] and
-/// nothing else.
+/// name a glyph. The window draws one family, Lucide, at 16px with a 1.5
+/// stroke (the stylesheet's `.icon`), so every icon in it is the same weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Role {
     /// A user's message.
@@ -73,27 +72,30 @@ pub(crate) enum Role {
 /// The icon for a role, decorative: what it stands for is said in text beside
 /// it, so it is hidden from the accessibility tree.
 pub(crate) fn icon(role: Role) -> Element {
-    use dioxus_free_icons::icons::hi_outline_icons::{
-        HiArrowSmLeft, HiArrowSmRight, HiArrowUp, HiBookOpen, HiChat, HiCog, HiHand,
-        HiInformationCircle, HiLightBulb, HiQuestionMarkCircle, HiSparkles, HiStop, HiTerminal,
-        HiViewList,
+    use dioxus_free_icons::icons::ld_icons::{
+        LdArrowLeft, LdArrowRight, LdArrowUp, LdBookOpen, LdCircleHelp, LdCircleStop, LdHand,
+        LdInfo, LdLightbulb, LdListChecks, LdMessageSquare, LdSparkles, LdSquareTerminal, LdWrench,
     };
 
     let drawn = match role {
-        Role::User => rsx! { Icon { class: "icon", icon: HiChat } },
-        Role::Agent => rsx! { Icon { class: "icon", icon: HiSparkles } },
-        Role::Thought => rsx! { Icon { class: "icon", icon: HiLightBulb } },
-        Role::Tool => rsx! { Icon { class: "icon", icon: HiCog } },
-        Role::Plan => rsx! { Icon { class: "icon", icon: HiViewList } },
-        Role::Ask => rsx! { Icon { class: "icon", icon: HiHand } },
-        Role::Spec => rsx! { Icon { class: "icon", icon: HiBookOpen } },
-        Role::Unnamed => rsx! { Icon { class: "icon", icon: HiQuestionMarkCircle } },
-        Role::Note => rsx! { Icon { class: "icon", icon: HiInformationCircle } },
-        Role::Send => rsx! { Icon { class: "icon", icon: HiArrowUp } },
-        Role::Stop => rsx! { Icon { class: "icon", icon: HiStop } },
-        Role::Start => rsx! { Icon { class: "icon", icon: HiTerminal } },
-        Role::Outgoing => rsx! { Icon { class: "icon", icon: HiArrowSmRight } },
-        Role::Incoming => rsx! { Icon { class: "icon", icon: HiArrowSmLeft } },
+        Role::User => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdMessageSquare } },
+        Role::Agent => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSparkles } },
+        Role::Thought => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdLightbulb } },
+        Role::Tool => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdWrench } },
+        Role::Plan => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdListChecks } },
+        Role::Ask => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdHand } },
+        Role::Spec => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdBookOpen } },
+        Role::Unnamed => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdCircleHelp } },
+        Role::Note => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdInfo } },
+        Role::Send => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowUp } },
+        Role::Stop => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdCircleStop } },
+        Role::Start => {
+            rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquareTerminal } }
+        }
+        Role::Outgoing => {
+            rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowRight } }
+        }
+        Role::Incoming => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowLeft } },
     };
 
     rsx! {

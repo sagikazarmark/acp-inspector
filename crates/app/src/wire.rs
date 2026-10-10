@@ -244,12 +244,15 @@ pub fn with_commands(
 ) -> Vec<crate::palette::Command> {
     use crate::palette::Command;
     if crate::view::CAN_OPEN {
-        commands.push(Command::new(
-            "Trace",
-            "Open trace…",
-            "Open an exported trace file, read-only",
-            EventHandler::new(move |()| wire.view.choose(wire.live())),
-        ));
+        commands.push(
+            Command::new(
+                "Trace",
+                "Open trace…",
+                "Open an exported trace file, read-only",
+                EventHandler::new(move |()| wire.view.choose(wire.live())),
+            )
+            .shortcut(crate::palette::shortcut::OPEN_TRACE),
+        );
     }
     if wire.view.is_open() {
         commands.push(Command::new(

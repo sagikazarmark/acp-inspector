@@ -143,7 +143,7 @@ impl Spine {
 
 /// Which region a window too narrow for three columns is showing.
 ///
-/// The drawing shows one at a time below 1080px and puts a bar at the foot to
+/// The drawing shows one at a time below 760px (a width only the web build reaches; between 760 and 1180 the rail is a drawer instead, D18) and puts a bar at the foot to
 /// choose between them. Nothing above that width reads this; the stylesheet
 /// decides where the threshold is, and this decides which one wins when it is
 /// crossed.
@@ -586,6 +586,12 @@ fn App() -> Element {
     // this window's state and nobody else's.
     let revealed = navigation.revealed;
     let sought = navigation.sought;
+    // The rail as a drawer, its width, and its two accounts open wide: the
+    // narrow layout's three pieces of state (D18).
+    let drawer = navigation.drawer;
+    let rail_width = use_signal(|| rail::RAIL_DEFAULT);
+    rail::use_remembered_width(rail_width);
+    use_context_provider(|| rail::WideCapabilities(Signal::new(false)));
     // The one thing that shuts the Sessions dialog which is not the reader: a
     // session that opened. That is what every control in it which opens one was
     // pressed for, and the screen it opened onto is behind the dialog. A session
@@ -1044,7 +1050,10 @@ fn App() -> Element {
     {
         let menu_open = inspector.clone();
         shell::use_menu(move |command| match command {
-            shell::command::EXPORT_TRACE => {
+            // The Console's Open…: a file, read-only, over the live window.
+            shell::command::OPEN_TRACE => wire.view.choose(wire.live()),
+            // The Console's Export…, which asks where with Save As.
+            shell::command::SAVE_TRACE => {
                 on_export.call(());
             }
             // The Console's own two-step Clear, armed (I2).
@@ -1312,6 +1321,8 @@ fn App() -> Element {
             session: session(),
             spine: spine(),
             waiting: blocked(),
+            drawer: drawer(),
+            on_drawer: move |()| navigation.toggle_drawer(status() == ConnectionStatus::Connected || described.read().is_some() || session().is_some()),
             on_spine: move |chosen| navigation.layout(chosen),
             // The choice applies now and is written off the UI thread. A write
             // that fails is not reported: an appearance is one click to redo,
@@ -1333,6 +1344,8 @@ fn App() -> Element {
         // Where a session is opened, switched or ended, over the screen it
         // changes: the Timeline's own header is what opens it (`session.rs`).
         session::Sessions { claims: claims.clone() }
+        // The two accounts, open wide over the screens (D18).
+        rail::CapabilitiesSheet { claims: claims.clone() }
 
         // Where an agent is started, over the window rather than beside it: a
         // task done once per connection does not earn a column of every screen
@@ -1363,7 +1376,7 @@ fn App() -> Element {
             spine: spine(),
             on_spine: EventHandler::new(move |chosen| navigation.layout(chosen)),
             on_tab: EventHandler::new(move |chosen| navigation.console(chosen)),
-            on_rail: EventHandler::new(move |chosen| navigation.rail(chosen)),
+            on_rail: EventHandler::new(move |chosen| navigation.show_rail(chosen)),
             on_new_session: claims.on_new_session,
             on_stop: on_disconnect,
             on_export,
@@ -1416,7 +1429,8 @@ fn App() -> Element {
             }),
         })) }
 
-        div { class: focus().class(),
+        div { class: if drawer() { format!("{} drawer-open", focus().class()) } else { focus().class().to_owned() },
+            style: "--rail-width: {rail_width}px",
             Rail {
                 status: status(),
                 launched: launched(),
@@ -1429,6 +1443,7 @@ fn App() -> Element {
                 commands: timeline::commands(&entries()).len(),
                 tab: rail_tab(),
                 on_tab: move |chosen| navigation.rail(chosen),
+                on_dismiss: move |()| navigation.close_drawer(),
                 on_stop: on_disconnect,
                 launching: launching(),
                 stopping: stopping_agent(),
@@ -1459,6 +1474,16 @@ fn App() -> Element {
                         settings_work.with_mut(|work| work.finish_option(generation));
                     });
                 },
+            }
+            // The rail's edge, which a reader drags to resize it, and the
+            // shade behind it where it is a drawer (D18). Both are drawn by
+            // the stylesheet only where they apply.
+            rail::RailHandle { width: rail_width }
+            div {
+                class: "rail-backdrop",
+                "data-slot": "rail-backdrop",
+                aria_hidden: "true",
+                onclick: move |_| navigation.close_drawer(),
             }
 
             Screens { spine: spine(),
@@ -1575,6 +1600,7 @@ fn App() -> Element {
                 recent: (!remembered.read().is_empty()).then(|| rsx! {
                     spawn::RecentList {
                         entries: remembered(),
+                        labelled_by: "onboarding-recent-label".to_owned(),
                         launching: launching(),
                         on_launch: move |entry: AgentCommand| {
                             if mcp::attempt_launch() {
@@ -2259,6 +2285,28 @@ fn subject(
         .filter(|program| !program.is_empty())
 }
 
+/// Whether the bar is the window's title bar (D17): the desktop build on
+/// macOS, where `shell.rs` makes the title bar transparent over the content.
+const TITLED: bool = cfg!(all(feature = "desktop", target_os = "macos"));
+
+/// A press on the bar's empty space moves the window, where the bar is the
+/// title bar. Only the primary button, and never from a control: the handlers
+/// are on the bar's empty pieces and not on the bar.
+fn drag(event: MouseEvent) {
+    #[cfg(feature = "desktop")]
+    if event.trigger_button() == Some(dioxus::html::input_data::MouseButton::Primary) {
+        shell::drag_window();
+    }
+    #[cfg(not(feature = "desktop"))]
+    let _ = event;
+}
+
+/// And a double-click on it zooms, as one on a title bar does.
+fn zoom(_: MouseEvent) {
+    #[cfg(feature = "desktop")]
+    shell::zoom_window();
+}
+
 /// The bar: the tool's own mark, what it is connected to, the two facts a
 /// reader checks without looking away, and the switches that are about the
 /// whole window.
@@ -2292,15 +2340,43 @@ fn TopBar(
     on_spine: EventHandler<Spine>,
     on_choose: EventHandler<Appearance>,
     on_indent: EventHandler<Indentation>,
+    /// Whether the rail is open as a drawer (D18), which the button that
+    /// opens it says.
+    #[props(default)]
+    drawer: bool,
+    /// Opens or closes the rail's drawer. The button is drawn by the
+    /// stylesheet only where the rail is one.
+    #[props(default)]
+    on_drawer: Option<EventHandler<()>>,
 ) -> Element {
     let (tone, said) = connection_state(status);
 
     rsx! {
-        header { class: "bar",
-            div { class: "bar-brand",
+        header {
+            // Where the toolbar is the title bar (D17, macOS), it leaves room
+            // for the traffic lights and its empty space moves the window.
+            class: if TITLED { "bar titled" } else { "bar" },
+            if TITLED {
+                span { class: "bar-lights", aria_hidden: "true", onmousedown: drag, ondoubleclick: zoom }
+            }
+            if let Some(on_drawer) = on_drawer {
+                button {
+                    id: navigation::DRAWER_TOGGLE,
+                    class: "btn btn-sm btn-quiet btn-square bar-drawer",
+                    "data-slot": "rail-toggle",
+                    r#type: "button",
+                    aria_label: "Details",
+                    aria_expanded: "{drawer}",
+                    aria_controls: navigation::RAIL,
+                    title: if drawer { "Close the details" } else { "Show the connection, session and capabilities" },
+                    onclick: move |_| on_drawer.call(()),
+                    dioxus_free_icons::Icon { class: "icon", width: 16, height: 16, icon: dioxus_free_icons::icons::ld_icons::LdPanelLeft }
+                }
+            }
+            div { class: "bar-brand", onmousedown: drag, ondoubleclick: zoom,
                 span { class: "mark", aria_hidden: "true", "A" }
                 h1 { "ACP Inspector" }
-                span { class: "version", "v{env!(\"CARGO_PKG_VERSION\")}" }
+                span { class: "tag version", "v{env!(\"CARGO_PKG_VERSION\")}" }
             }
             // What is connected, as one chip: the state as a dot, the agent as
             // the name it gave, and the transport it was reached over.
@@ -2316,10 +2392,10 @@ fn TopBar(
                 span { class: "conn-meta", "stdio" }
             }
 
-            span { class: "grow" }
+            span { class: "grow", onmousedown: drag, ondoubleclick: zoom }
 
             // The two protocol facts, in the register the wire is read in.
-            div { class: "bar-facts",
+            div { class: "bar-facts", onmousedown: drag, ondoubleclick: zoom,
                 if let Some(protocol) = protocol {
                     span { class: "bar-protocol", "protocol v{protocol}" }
                 }
@@ -2529,7 +2605,7 @@ mod tests {
         // title are the window's identity, and everything to the right of them
         // is about the agent.
         assert!(
-            html.contains(r#"class="bar""#)
+            html.contains(r#"<header class="bar"#)
                 && html.contains(r#"class="mark""#)
                 && html.contains("<h1>ACP Inspector</h1>")
                 && html.matches("ACP Inspector").count() == 1,

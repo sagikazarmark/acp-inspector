@@ -364,7 +364,7 @@ fn ServiceCard(request: ServiceRequest, state: ServiceState) -> Element {
             // Everything in the card is about answering, not a press of the row.
             onclick: move |event| event.stop_propagation(),
             div { class: "blocking-head",
-                span { class: "eyebrow", "{request.method()}" }
+                span { class: "wire-name", "{request.method()}" }
                 span { class: "blocking-wait",
                     if waiting { "Waiting for you" } else { "Resolved" }
                 }

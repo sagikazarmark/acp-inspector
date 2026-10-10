@@ -105,7 +105,7 @@ use acp_inspector_core::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiPlus, HiRefresh},
+    icons::ld_icons::{LdPlus, LdRefreshCw},
 };
 
 /// A lifecycle call that did not do what it said, and which call it was.
@@ -1629,7 +1629,6 @@ fn method_rows(
 /// for a login (X5). The Timeline's empty state is the caller: a session/new
 /// refused for want of a login leaves it with nothing else to say. `main.rs`
 /// passes it as the Timeline's `login`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn login_guidance(
     methods: &[v1::AuthMethod],
     auth: &AuthState,
@@ -1816,7 +1815,7 @@ pub(crate) fn sessions(
             if let Some(live) = listing.live {
                 section { class: "rail-group", "data-slot": "session-current",
                     div { class: "rail-head",
-                        h3 { class: "eyebrow", "Current session" }
+                        h3 { class: "heading", "Current session" }
                     }
                     ul { class: "session-list",
                         {session_row(current, live, &listing, connected)}
@@ -1830,7 +1829,7 @@ pub(crate) fn sessions(
             if listing.advertised {
                 section { class: "rail-group session-listing",
                     header { class: "rail-head",
-                        h3 { class: "eyebrow", "Other sessions" }
+                        h3 { class: "heading", "Other sessions" }
                         if !others.is_empty() {
                             span { class: "rail-count", "{others.len()}" }
                         }
@@ -1842,7 +1841,7 @@ pub(crate) fn sessions(
                             aria_describedby: (!connected).then_some(UNAVAILABLE),
                             onclick: move |_| if connected { on_list.call(None) },
                             span { class: "disclosure-icon", aria_hidden: "true",
-                                Icon { class: "icon", icon: HiRefresh }
+                                Icon { class: "icon", width: 16, height: 16, icon: LdRefreshCw }
                             }
                             "List sessions"
                         }
@@ -1882,7 +1881,7 @@ pub(crate) fn sessions(
                         // the same thing, and only one of them is true.
                         onclick: move |_| if connected { on_new_session.call(roots.then(|| Roots::supplied(creating()))) },
                         span { class: "disclosure-icon", aria_hidden: "true",
-                            Icon { class: "icon", icon: HiPlus }
+                            Icon { class: "icon", width: 16, height: 16, icon: LdPlus }
                         }
                         "New session"
                     }
@@ -3380,7 +3379,7 @@ mod tests {
         // asks is that the state is carried in words, not that every row
         // repeats its own section.
         assert!(
-            listed.contains(r#"<h3 class="eyebrow">Current session</h3>"#),
+            listed.contains(r#"<h3 class="heading">Current session</h3>"#),
             "the live Session is explicit in words: {listed}"
         );
         assert!(
@@ -3468,7 +3467,7 @@ mod tests {
         assert!(
             lifecycle.contains(r#"class="disclosure-icon" aria-hidden="true""#)
                 && lifecycle.contains("<svg"),
-            "new and reported roots use the shared Heroicons Outline disclosure marker: {lifecycle}"
+            "new and reported roots use the shared Lucide disclosure marker: {lifecycle}"
         );
         // **The hierarchy is the tone now and no longer the size.** Every
         // control on a row is the row's own height in the drawing, so what

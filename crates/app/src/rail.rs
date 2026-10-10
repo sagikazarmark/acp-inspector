@@ -26,7 +26,7 @@ use acp_inspector_core::{AgentCommand, ConnectionStatus, SessionSettings, v1};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdPower, LdRotateCw},
+    icons::ld_icons::{LdMaximize2, LdPower, LdRotateCw},
 };
 
 use crate::agent::{Advertiser, AgentClaims, Claims};
@@ -94,6 +94,208 @@ fn focus_tab(tab: Tab) {
 /// The rail's Restart button, which focus goes to after a disconnect.
 pub const RESTART: &str = "rail-restart";
 
+/// Whether the two accounts are open wide over the screens (D18): the
+/// rail's Capabilities tab, at the width a capability row wants. Provided by
+/// the window, so a rail drawn without it offers no way there.
+#[derive(Clone, Copy)]
+pub struct WideCapabilities(pub Signal<bool>);
+
+/// The sheet the wide capabilities are drawn in, by the id the scripts reach.
+const SHEET: &str = "capabilities-sheet";
+
+impl WideCapabilities {
+    /// Draws the sheet's rows and then shows it modal, so the platform's
+    /// `<dialog>` owns focus, Escape and the backdrop.
+    pub fn open(self) {
+        let mut open = self.0;
+        open.set(true);
+        document::eval(&format!(
+            "requestAnimationFrame(() => document.getElementById({SHEET:?})?.showModal())"
+        ));
+    }
+
+    /// Shuts the sheet and gives the rows back to the rail.
+    pub fn close(self) {
+        let mut open = self.0;
+        open.set(false);
+        document::eval(&format!("document.getElementById({SHEET:?})?.close()"));
+    }
+}
+
+/// The two accounts, side by side over the screens (D18).
+///
+/// **The same rows as the rail's tab, only wider**: a capability row is four
+/// facts and the rail holds two, so a reader comparing what the two parties
+/// claimed gets the width the comparison needs without the rail taking it from
+/// the turn. The rows are drawn here only while the sheet is open, and the
+/// rail's tab says where they went, so no id is on the page twice.
+#[component]
+pub fn CapabilitiesSheet(claims: Claims) -> Element {
+    let Some(wide) = try_use_context::<WideCapabilities>() else {
+        return rsx! {};
+    };
+    let open = (wide.0)();
+    rsx! {
+        dialog {
+            id: SHEET,
+            class: "modal capabilities-sheet",
+            "data-slot": "capabilities-sheet",
+            aria_labelledby: "capabilities-sheet-title",
+            // Escape closes the dialog natively; the rows go back to the rail.
+            oncancel: move |_| {
+                let mut open = wide.0;
+                open.set(false);
+            },
+            div { class: "modal-box dialog-box sheet-box", tabindex: "-1", autofocus: true,
+                header { class: "dialog-head",
+                    h2 { id: "capabilities-sheet-title", "Capabilities" }
+                    span { class: "grow" }
+                    button {
+                        class: "btn btn-sm btn-quiet btn-square",
+                        r#type: "button",
+                        aria_label: "Close",
+                        title: "Close",
+                        onclick: move |_| wide.close(),
+                        {crate::disclosure::close()}
+                    }
+                }
+                if open {
+                    div { class: "dialog-body sheet-accounts",
+                        AgentClaims { claims: claims.clone(), whose: Advertiser::Agent }
+                        AgentClaims { claims, whose: Advertiser::Client }
+                    }
+                }
+            }
+            form { method: "dialog", class: "modal-backdrop",
+                button { tabindex: "-1", aria_hidden: "true", onclick: move |_| { let mut open = wide.0; open.set(false); }, "close" }
+            }
+        }
+    }
+}
+
+/// The rail's narrowest and widest, in CSS pixels (D18).
+pub const RAIL_MIN: u32 = 220;
+pub const RAIL_MAX: u32 = 420;
+/// The rail's width before anybody has dragged it: the drawing's.
+pub const RAIL_DEFAULT: u32 = 244;
+/// How far one arrow key moves the rail's edge.
+const RAIL_STEP: u32 = 16;
+
+/// Where the rail's width is remembered. **Not in core's Settings**, which has
+/// no place for a layout preference; the webview's own storage keeps it per
+/// machine, and a store that refuses (a private profile, a cleared one) leaves
+/// the drawing's width.
+const RAIL_KEY: &str = "acp-inspector.rail-width";
+
+/// A width a reader asked for, held to the rail's range.
+pub fn clamp_width(width: f64) -> u32 {
+    (width.round().max(0.0) as u32).clamp(RAIL_MIN, RAIL_MAX)
+}
+
+/// Reads the remembered width, once, into `width`.
+pub fn use_remembered_width(mut width: Signal<u32>) {
+    use_hook(move || {
+        spawn(async move {
+            let read = document::eval(&format!(
+                "try {{ return Number(localStorage.getItem({RAIL_KEY:?})) || null; }} catch (_) {{ return null; }}"
+            ));
+            if let Ok(serde_json::Value::Number(stored)) = read.await
+                && let Some(stored) = stored.as_f64()
+            {
+                width.set(clamp_width(stored));
+            }
+        });
+    });
+}
+
+fn remember_width(width: u32) {
+    document::eval(&format!(
+        "try {{ localStorage.setItem({RAIL_KEY:?}, \"{width}\"); }} catch (_) {{}}"
+    ));
+}
+
+/// Follows the pointer from a press on the handle to its release, in the page:
+/// the width is written to the screen as a variable on every move, without a
+/// render, and only the final one comes back to be kept.
+const RESIZE: &str = r#"
+const [min, max] = await dioxus.recv();
+const handle = document.querySelector('[data-slot="rail-resize"]');
+const body = handle?.closest('.body');
+const rail = body?.querySelector('.rail');
+if (!handle || !body || !rail) return;
+const left = rail.getBoundingClientRect().left;
+let width = rail.getBoundingClientRect().width;
+const move = (event) => {
+  width = Math.round(Math.min(max, Math.max(min, event.clientX - left)));
+  body.style.setProperty('--rail-width', `${width}px`);
+  handle.setAttribute('aria-valuenow', String(width));
+};
+const up = () => {
+  document.removeEventListener('pointermove', move);
+  document.removeEventListener('pointerup', up);
+  document.documentElement.removeAttribute('data-resizing');
+  dioxus.send(width);
+};
+document.documentElement.setAttribute('data-resizing', 'true');
+document.addEventListener('pointermove', move);
+document.addEventListener('pointerup', up);
+"#;
+
+/// The edge between the rail and the screens, which a reader drags — or, with
+/// the keyboard on it, moves with ←/→ — to make the rail wider or narrower
+/// (D18). A window separator in the WAI-ARIA sense: focusable, with its value.
+#[component]
+pub fn RailHandle(width: Signal<u32>) -> Element {
+    let mut width = width;
+    let mut set = move |next: u32| {
+        let next = next.clamp(RAIL_MIN, RAIL_MAX);
+        if next != *width.peek() {
+            width.set(next);
+            remember_width(next);
+        }
+    };
+    rsx! {
+        div {
+            class: "rail-resize",
+            "data-slot": "rail-resize",
+            role: "separator",
+            aria_orientation: "vertical",
+            aria_label: "Rail width",
+            aria_controls: crate::navigation::RAIL,
+            aria_valuemin: "{RAIL_MIN}",
+            aria_valuemax: "{RAIL_MAX}",
+            aria_valuenow: "{width}",
+            tabindex: "0",
+            title: "Drag, or use ←/→, to resize the rail",
+            onpointerdown: move |event| {
+                if event.trigger_button() != Some(dioxus::html::input_data::MouseButton::Primary) {
+                    return;
+                }
+                event.prevent_default();
+                let mut resizing = document::eval(RESIZE);
+                let _ = resizing.send((RAIL_MIN, RAIL_MAX));
+                spawn(async move {
+                    if let Ok(done) = resizing.recv::<f64>().await {
+                        set(clamp_width(done));
+                    }
+                });
+            },
+            onkeydown: move |event| {
+                let now = *width.peek();
+                let next = match event.key() {
+                    Key::ArrowLeft => now.saturating_sub(RAIL_STEP),
+                    Key::ArrowRight => now + RAIL_STEP,
+                    Key::Home => RAIL_MIN,
+                    Key::End => RAIL_MAX,
+                    _ => return,
+                };
+                event.prevent_default();
+                set(next);
+            },
+        }
+    }
+}
+
 /// The rail.
 #[component]
 pub fn Rail(
@@ -127,7 +329,15 @@ pub fn Rail(
     on_restart: Option<EventHandler<()>>,
     on_set_mode: EventHandler<v1::SessionModeId>,
     on_set_config_option: EventHandler<Choice>,
+    /// Closes the rail where it is a drawer over the screens (D18), for
+    /// Escape pressed inside it. `None` where it is not one.
+    #[props(default)]
+    on_dismiss: Option<EventHandler<()>>,
 ) -> Element {
+    // Whether the capabilities are open wide, over the screens (D18). While
+    // they are, the rail's tab says so rather than drawing them twice.
+    let wide = try_use_context::<WideCapabilities>();
+    let widened = wide.is_some_and(|wide| (wide.0)());
     let connected = status == ConnectionStatus::Connected;
     let described = claims.agent.is_some();
     let on_new_session = claims.on_new_session;
@@ -139,6 +349,16 @@ pub fn Rail(
 
     rsx! {
         aside { class: "rail", "data-slot": "rail", aria_label: "Connection",
+            id: crate::navigation::RAIL,
+            tabindex: "-1",
+            onkeydown: move |event| {
+                if event.key() == Key::Escape
+                    && let Some(dismiss) = on_dismiss
+                {
+                    event.prevent_default();
+                    dismiss.call(());
+                }
+            },
             section { class: "rail-conn",
                 span { class: "eyebrow", "Connection" }
                 {connection(status, launched.as_ref(), connected, stopping, on_stop, restart)}
@@ -150,7 +370,7 @@ pub fn Rail(
                         button {
                             key: "{choice.label()}",
                             id: choice.id(),
-                            class: "rail-tab",
+                            class: "tab rail-tab",
                             r#type: "button",
                             role: "tab",
                             aria_selected: choice == tab,
@@ -191,7 +411,27 @@ pub fn Rail(
                                 }
                             }
                         },
+                        Tab::Capabilities if widened => rsx! {
+                            p { class: "hint", "data-slot": "capabilities-wide", "Shown open wide over the screens." }
+                        },
                         Tab::Capabilities => rsx! {
+                            // A capability row is four facts and the rail holds
+                            // two (ADR 0006); the same rows, the screens' width.
+                            if let Some(wide) = wide {
+                                div { class: "rail-head",
+                                    span { class: "grow" }
+                                    button {
+                                        class: "btn btn-xs btn-quiet",
+                                        "data-slot": "open-wide",
+                                        r#type: "button",
+                                        aria_haspopup: "dialog",
+                                        title: "Read both accounts side by side, over the screens",
+                                        onclick: move |_| wide.open(),
+                                        Icon { class: "icon", width: 16, height: 16, icon: LdMaximize2 }
+                                        "Open wide"
+                                    }
+                                }
+                            }
                             AgentClaims { claims: claims.clone(), whose: Advertiser::Agent }
                             AgentClaims { claims, whose: Advertiser::Client }
                         },
@@ -499,6 +739,75 @@ mod tests {
     }
 
     #[test]
+    fn the_rails_width_is_held_to_its_range() {
+        assert_eq!(clamp_width(100.0), RAIL_MIN);
+        assert_eq!(clamp_width(-5.0), RAIL_MIN);
+        assert_eq!(clamp_width(300.4), 300);
+        assert_eq!(clamp_width(9999.0), RAIL_MAX);
+    }
+
+    #[test]
+    fn the_rails_edge_is_a_separator_a_keyboard_can_move() {
+        #[component]
+        fn Host() -> Element {
+            let width = use_signal(|| RAIL_DEFAULT);
+            rsx! { RailHandle { width } }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        for wanted in [
+            r#"role="separator""#,
+            r#"aria-orientation="vertical""#,
+            r#"aria-valuenow="244""#,
+            r#"aria-valuemin="220""#,
+            r#"aria-valuemax="420""#,
+            r#"tabindex="0""#,
+        ] {
+            assert!(html.contains(wanted), "{wanted}: {html}");
+        }
+    }
+
+    #[test]
+    fn the_capabilities_open_wide_where_the_window_offers_it() {
+        #[component]
+        fn Host() -> Element {
+            use_context_provider(|| WideCapabilities(Signal::new(false)));
+            let claims = Claims::about(None);
+            rsx! {
+                Rail {
+                    status: ConnectionStatus::Connected,
+                    launched: None,
+                    session: None,
+                    claims: claims.clone(),
+                    settings: SessionSettings::default(),
+                    settings_epoch: 0,
+                    changing_mode: false,
+                    setting_option: None,
+                    commands: 0,
+                    tab: Tab::Capabilities,
+                    on_tab: move |_| {},
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_set_config_option: move |_| {},
+                }
+                CapabilitiesSheet { claims }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains(r#"data-slot="open-wide""#), "{html}");
+        assert!(
+            html.contains(r#"id="capabilities-sheet""#)
+                && html.contains(r#"aria-labelledby="capabilities-sheet-title""#),
+            "{html}"
+        );
+        // Closed, the sheet draws no rows, so nothing is on the page twice.
+        assert_eq!(html.matches(r#"data-slot="claims""#).count(), 2, "{html}");
+    }
+
+    #[test]
     fn the_card_says_what_is_connected_and_what_it_was_launched_from() {
         let html = shown(Screen::default());
         assert!(
@@ -687,12 +996,15 @@ mod tests {
         set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
         let mut dom = VirtualDom::new(Host);
         let edits = dom.rebuild_to_vec().edits;
+        // The rail itself listens first (Escape closes its drawer); the
+        // first tab is the next.
         let first = edits
             .iter()
-            .find_map(|edit| match edit {
+            .filter_map(|edit| match edit {
                 Mutation::NewEventListener { name, id } if name == "keydown" => Some(*id),
                 _ => None,
             })
+            .nth(1)
             .expect("the tabs listen for keys");
         let key = SerializedKeyboardData::new(
             Key::ArrowRight,
