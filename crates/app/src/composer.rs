@@ -1,13 +1,8 @@
-//! The composer, and where the turn stands (`docs/architecture.md` §9): what
-//! starts a turn, what stops it, and what the stream said became of it.
+//! The composer, and where the turn stands. See `docs/architecture.md` §9.
 //!
-//! **The turn's state is read, never inferred.** Nothing here waits on the
-//! prompt call: the turn is a field the update stream drives (§11 seam 2), so
-//! this renders [`TurnState`] and hands clicks back to core, and a turn that
-//! ends while nobody is awaiting anything ends on screen just the same. That is
-//! also why the stop button is honest about what it does — `session/cancel` is
-//! a request, and the turn is over when the agent says it is, with
-//! `stopReason: "cancelled"` if it behaves (§7.1).
+//! The turn's state is read from [`TurnState`], which the update stream drives;
+//! nothing here waits on the prompt call. Stop sends `session/cancel`, and the
+//! turn is over only when the agent says so.
 
 use crate::attachment::{Attachment, AttachmentPreview};
 use crate::attachment_draft::{AttachmentDraft, AttachmentState};
@@ -88,13 +83,7 @@ enum ComposerAffordance {
     Stopping,
 }
 
-/// One command the agent said it can run, as the composer offers it.
-///
-/// **The agent's own list and nothing else** (`available_commands_update`): a
-/// completion this window invented would be a command nobody can run, and one
-/// it remembered after the agent stopped publishing it would be a command that
-/// used to exist. Two owned strings rather than the protocol type, because what
-/// the control needs is a name to type and a sentence to read.
+/// One command from the agent's latest `available_commands_update`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     pub name: String,
@@ -140,38 +129,23 @@ pub fn Composer(
     turn: TurnState,
     /// Whether there is a session to prompt into.
     ready: bool,
-    /// Whether there is an agent at all, which is what tells the two absences
-    /// apart: a window that has launched nothing, and an agent that is right
-    /// there with no session open in it — which is where closing or deleting
-    /// the live session leaves this (§7.5). Telling the reader to launch an
-    /// agent that is already running would be the screen misreading itself.
+    /// Whether there is an agent, to tell "no agent" from "no session open".
     connected: bool,
-    /// Whether the agent is waiting on an answer from the user — a blocking
-    /// request nobody has answered yet (§7.2).
-    ///
-    /// Not a turn state and deliberately not one: a turn stopped on a blocking
-    /// request — a permission request or an elicitation (§7.8) — is still the
-    /// turn that was running, so this is *derived* from a request that is
-    /// waiting, and the line below says which of the two the turn is doing.
+    /// Whether a blocking request is waiting on the user. Derived from pending
+    /// requests, not a turn state: the turn is still running.
     blocked: bool,
-    /// Why there is not, when the handshake that opens one failed.
+    /// Why there is no session, when the handshake that opens one failed.
     problem: Option<CallError>,
-    /// What the agent last said it can be asked to run, newest announcement
-    /// only (§7.2's `available_commands_update`). Empty where it has said
-    /// nothing, which is most agents and is why the control appears and
-    /// disappears with the list rather than being drawn empty.
+    /// The agent's latest published commands; the list is hidden when empty.
     commands: Vec<Command>,
-    /// The mode the next prompt goes out under, where the agent published any
-    /// ([`Cycle`]). `None` is an agent that published none, which is most of
-    /// them, and the control is not drawn at all.
+    /// The mode the next prompt goes out under, or `None` for no control.
     mode: Option<Cycle>,
     #[props(default)] image_advertised: bool,
     #[props(default)] audio_advertised: bool,
     #[props(default)] embedded_advertised: bool,
     on_prompt: Callback<Vec<v1::ContentBlock>, Result<(), CallError>>,
     on_stop: EventHandler<()>,
-    /// A mode the reader cycled to, on its way to `session/set_mode` — the same
-    /// handler the rail's own rows call.
+    /// Sends `session/set_mode`; the same handler the rail's rows call.
     on_set_mode: EventHandler<v1::SessionModeId>,
 ) -> Element {
     let mut text = use_signal(String::new);
@@ -183,7 +157,7 @@ pub fn Composer(
     let mut clipboard_bridge = use_signal(|| None::<document::Eval>);
     let mut paste_waiting = use_signal(|| 0usize);
     let mut deferred_files = use_signal(Vec::<(usize, Vec<FileData>)>::new);
-    // The resource link being typed (F12): a URI, a name, a MIME type.
+    // The resource link being typed: a URI, a name, a MIME type.
     let mut link_uri = use_signal(String::new);
     let mut link_name = use_signal(String::new);
     let mut link_mime = use_signal(String::new);
@@ -196,9 +170,7 @@ pub fn Composer(
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
     });
-    // Which of the matching commands the keyboard is on, and whether the reader
-    // has waved the list away. Both are window-session state of one control and
-    // neither outlives the draft they are about.
+    // The command the keyboard is on, and whether the list was dismissed.
     let mut highlighted = use_signal(|| 0usize);
     let mut dismissed = use_signal(|| false);
     let running = turn.is_running();
@@ -267,8 +239,7 @@ pub fn Composer(
             reading.set(false);
         });
     });
-    // A resource link joins the same ordered rows as the files, and the same
-    // eight-row limit; it costs none of the byte budget.
+    // A resource link takes a row (and counts toward the row limit) but no bytes.
     let add_link = use_callback(move |()| {
         if !ready || running {
             return;
@@ -332,8 +303,7 @@ pub fn Composer(
     use_hook(move || {
         tests::CLIPBOARD_INPUT.with(|slot| *slot.borrow_mut() = Some(clipboard_input))
     });
-    // Nothing to send while a turn is running: ACP has one turn per session at
-    // a time, and a second prompt is the stop button's job first.
+    // ACP has one turn per session at a time.
     let sendable = ready
         && !running
         && draft.read().sendable()
@@ -368,8 +338,7 @@ pub fn Composer(
             if !prompt.trim().is_empty() {
                 content.push(v1::ContentBlock::from(prompt));
             }
-            // Every row was checked against the advertisement when it was
-            // added, and links need none (F12).
+            // Rows were checked against the advertisement when added.
             content.extend(attachments);
             if let Err(error) = on_prompt.call(content) {
                 attachment_problem.set(Some(error.to_string()));
@@ -381,9 +350,8 @@ pub fn Composer(
             queued.write().clear();
         }
     };
-    // Putting one in the box is a *refill*, not a send: what a command takes
-    // after its name is the reader's to type, and a control that sent on
-    // selection would be prompting with half a sentence.
+    // Choosing a command fills the box rather than sending, so its arguments
+    // can be typed.
     let mut fill = move |name: &str| {
         text.set(format!("/{name} "));
         highlighted.set(0);
@@ -435,14 +403,7 @@ pub fn Composer(
                 }
             }
 
-            // One box, with the field and its footer inside it: a textarea
-            // scrolls its bottom padding with its content, so a footer floating
-            // over one is a band a third line of a prompt runs through.
-            //
-            // The commands the agent published, over the box they are typed
-            // into — the one thing on this window that overlaps content and is
-            // not a dialog, because what it is about is the half-typed word
-            // underneath it.
+            // The command list overlays the box it completes.
             if !matches.is_empty() {
                 div { class: "slash", "data-slot": "commands",
                     div { class: "slash-head",
@@ -540,10 +501,6 @@ pub fn Composer(
                     aria_describedby: show_shortcut.then_some("prompt-shortcut"),
                     placeholder: match (ready, connected) {
                         (true, _) => "Send a prompt to the agent…  type / for commands",
-                        // The agent is there and nothing is open in it: what to
-                        // do about that is beside the capability display, and
-                        // saying which two things do it is the difference
-                        // between a dead box and a next step.
                         (false, true) => "Open a session to start prompting.",
                         (false, false) => "Start your agent to open a session.",
                     },
@@ -553,10 +510,8 @@ pub fn Composer(
                         highlighted.set(0);
                     },
                     onkeydown: move |event| {
-                        // The command list, while there is one: the arrows move
-                        // through it, Enter takes the one under the keyboard
-                        // rather than sending half a command, and Escape puts it
-                        // away without touching what has been typed.
+                        // While the command list is open, arrows move, Enter or
+                        // Tab fills, and Escape dismisses it.
                         if !matches.is_empty() {
                             match event.key() {
                                 Key::ArrowDown => {
@@ -583,10 +538,6 @@ pub fn Composer(
                                 _ => {}
                             }
                         }
-                        // Enter sends, shift-enter is a newline: a prompt is
-                        // usually a line, and the agents worth pointing this at
-                        // are driven by pasted JSON often enough that the
-                        // multi-line case has to stay typeable.
                         if submits_prompt(
                             event.key(),
                             event.modifiers().shift(),
@@ -598,16 +549,10 @@ pub fn Composer(
                     },
                 }
 
-                // The field's footer: what the keyboard does, and the one
-                // control that starts or stops a turn. It is here whether or
-                // not it has a hint to carry, because the Affordance is always
-                // in it and the field's height must not change with the hint.
+                // Always drawn, so the field's height does not change with the
+                // hint.
                 div { class: "prompt-foot",
-                    // The mode the next prompt goes out under, cycled from
-                    // where the prompt is written — the drawing puts it here as
-                    // well as on the rail, because what a reader checks before
-                    // pressing Send is beside Send. Both controls drive the one
-                    // call and read the one store, so they cannot disagree.
+                    // Mirrors the rail's mode row: same call, same store.
                     if let Some(mode) = &mode {
                         button {
                             class: "mode-cycle",
@@ -660,22 +605,13 @@ pub fn Composer(
                             {icon(Role::Stop)}
                             if matches!(affordance, ComposerAffordance::Stopping) { "Stopping" } else { "Stop" }
                         } else {
-                            // An arrow up, not the v1 paper aeroplane: drawn at
-                            // 16px that one read as a warning sign (D6).
                             {icon(Role::Send)}
-                            // The word beside the glyph. It was a circle with an
-                            // aeroplane in it, which is what a chat client draws
-                            // when its send is the only control on the row; this
-                            // one shares a footer with a keyboard hint and a
-                            // turn's state, and the primary action of a region
-                            // says what it does.
                             "Send"
                         }
                     }
                 }
 
-                // A resource link (F12), below the footer so the field and Send
-                // keep their places in the tab order.
+                // Below the footer, so the field and Send keep their tab order.
                 if ready {
                     details { class: "prompt-link", "data-slot": "resource-link",
                         // The fields exist only while the disclosure is open.
@@ -712,13 +648,8 @@ pub fn Composer(
     }
 }
 
-/// The mode the next prompt goes out under, as the composer's own control needs
-/// it: what the agent last said it is, which one comes after it, and whether
-/// there is anybody to ask.
-///
-/// **The store's, not the control's.** What is displayed is the mode the *agent*
-/// stated (§7.6), and cycling asks for the next one the agent published — the
-/// same call the rail's rows send, from the same list.
+/// The mode the composer's control shows: the agent's current mode, the next
+/// one it published, and whether there is anyone to ask (§7.6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cycle {
     pub id: String,
@@ -734,18 +665,11 @@ fn submits_prompt(key: Key, shifted: bool, composing: bool) -> bool {
     key == Key::Enter && !shifted && !composing
 }
 
-/// Where the turn stands, in a line.
+/// Where the turn stands: a tone, a label, a detail and what to announce.
 ///
-/// Every state the stream can put it in has one, including the two nobody
-/// wants: a turn that ended without a stop reason says so rather than looking
-/// like one that never started, and a turn waiting on a cancel says *that*,
-/// because an agent that never resolves it is a conformance violation the
-/// screen should be showing while it happens (§7.1).
-///
-/// A running turn says which of two things it is doing, because the difference
-/// is whose move it is: an agent that is working, or an agent that has stopped
-/// on a question and is waiting for the reader to answer it in the timeline
-/// above.
+/// Every turn state has one, including a pending cancel (an agent that never
+/// resolves it is a violation worth seeing) and a running turn blocked on the
+/// reader.
 pub(crate) struct TurnPresentation {
     tone: &'static str,
     label: &'static str,
@@ -762,15 +686,10 @@ pub(crate) fn presented(
 ) -> TurnPresentation {
     let (tone, label, detail, announcement) = match turn {
         TurnState::Idle => match (problem, ready, connected) {
-            // No turn has happened, and there is a reason there cannot be one
-            // yet: the handshake behind the session is what failed, and the
-            // console and the trace are where it is written down.
+            // The handshake behind the session failed.
             (Some(problem), ..) => ("bad", "No session", Some(problem.to_string()), None),
-            // A session that was closed or deleted, or one switched away from
-            // that never arrived (§7.5). It is not a turn that has not started
-            // — there is nothing for a turn to happen in — and it is not a
-            // failure either, because it is usually what the reader just asked
-            // for.
+            // No session open (closed, deleted, or a switch that never
+            // arrived); usually what the reader asked for, so not a failure.
             (None, false, true) => ("off", "No session", Some("not open".to_owned()), None),
             (None, false, false) => ("off", "No agent", None, None),
             (None, true, _) => ("off", "No turn yet", None, None),
@@ -782,24 +701,15 @@ pub(crate) fn presented(
             None,
         ),
         TurnState::InFlight => ("live", "Running", None, None),
-        // A cancel that is still owed an answer says the cancel, not the
-        // question: the requests it left waiting have already been answered
-        // `cancelled` on the way past (§7.2), and what the turn is waiting for
-        // now is the agent.
+        // Pending requests were already answered `cancelled`; the turn now
+        // waits on the agent.
         TurnState::Cancelling => (
             "warn",
             "Cancelling",
             Some("waiting for the agent to end the turn".to_owned()),
             None,
         ),
-        // The stop reason verbatim, because it is the artifact: a client that
-        // paraphrased it would be standing between the reader and the wire. A
-        // cancelled turn reads differently from one that ran out, though — the
-        // reader is the one who asked for it.
-        //
-        // The badge is the plain word for it: a turn that ended normally is
-        // done, and the others say how they stopped. The wire's word stays in
-        // the detail beside it.
+        // The badge is a plain word; the detail is the stop reason verbatim.
         TurnState::Ended(reason) => {
             let (tone, label) = match reason {
                 v1::StopReason::EndTurn => ("off", "Done"),
@@ -815,9 +725,7 @@ pub(crate) fn presented(
                 Some(format!("Turn ended: {reason}.")),
             )
         }
-        // The agent never said why, so neither does this: an inspector
-        // reporting a stop reason the agent did not give is the one thing it
-        // may not do. What happened is that the prompt call failed.
+        // The prompt call failed; no stop reason is invented.
         TurnState::Failed(error) => {
             let error = error.to_string();
             (
@@ -827,8 +735,8 @@ pub(crate) fn presented(
                 Some(format!("Prompt failed: {error}")),
             )
         }
-        // `TurnState` is non-exhaustive, and a state this window has not heard
-        // of must not be rendered as one it has.
+        // `TurnState` is non-exhaustive; never render an unknown state as a
+        // known one.
         _ => ("off", "Unrecognized turn state", None, None),
     };
 
@@ -840,22 +748,14 @@ pub(crate) fn presented(
     }
 }
 
-/// Where the turn stands, as the badge in the Timeline's own header.
-///
-/// **The state of a region belongs to that region's header**, which is where a
-/// desktop application puts it and where the drawing this window was rebuilt
-/// from puts it (ADR 0009). The badge is the word alone; the sentence that
-/// explains it stays above the box a reader would act in ([`state`]), so
-/// nothing is said twice.
+/// Where the turn stands, as the badge in the Timeline's header. The detail is
+/// drawn separately above the box ([`state`]).
 pub(crate) fn badge(presentation: &TurnPresentation) -> Element {
     let component_tone = badge_tone(presentation.tone);
     let tone = presentation.tone;
     let label = presentation.label;
 
     rsx! {
-        // Soft, like every other badge that carries a meaning: a solid fill
-        // would make where the turn stands the loudest thing on the screen, and
-        // a turn that ended normally is not news.
         span { class: "badge badge-soft {component_tone} badge-sm {tone}", "data-slot": "turn-state",
             "{label}"
         }
@@ -875,14 +775,8 @@ fn state(presentation: &TurnPresentation) -> Element {
     }
 }
 
-/// The commands whose names the draft has begun, or nothing at all.
-///
-/// **Only while the draft is one word beginning with a slash.** A command's
-/// arguments are typed after its name, so the moment there is a space the
-/// reader is writing the ask rather than choosing it — and a list still open
-/// over the box would be a control competing with the Enter that sends.
-/// Owned rather than borrowed, because the keydown handler that moves through
-/// this list outlives the render that built it.
+/// The commands whose names the draft begins, only while the draft is a single
+/// `/word`. Owned, because the keydown handler outlives the render.
 fn matching(commands: &[Command], draft: &str, dismissed: bool) -> Vec<Command> {
     if dismissed {
         return Vec::new();
@@ -907,8 +801,7 @@ fn badge_tone(tone: &str) -> &'static str {
         "bad" => "badge-error",
         "warn" => "badge-warning",
         "live" => "badge-success",
-        // No role, so the badge keeps the base content colour its soft variant
-        // gives it: a turn that has ended is a fact, not a grade.
+        // An ended turn is a fact, not a grade: no colour role.
         _ => "",
     }
 }
@@ -927,11 +820,8 @@ fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
-/// The `stopReason` an agent gave, as it gave it.
-///
-/// Shared with the Timeline, which says the same thing about a turn that is
-/// over as this says about the one that just ended: one wording, so the record
-/// and the live state cannot describe the same stop two ways.
+/// The `stopReason` an agent gave, as it gave it. Shared with the Timeline so
+/// both describe a stop the same way.
 pub(crate) fn stopped(reason: &v1::StopReason) -> &'static str {
     match reason {
         v1::StopReason::EndTurn => "end_turn",
@@ -939,9 +829,7 @@ pub(crate) fn stopped(reason: &v1::StopReason) -> &'static str {
         v1::StopReason::MaxTurnRequests => "max_turn_requests",
         v1::StopReason::Refusal => "refusal",
         v1::StopReason::Cancelled => "cancelled",
-        // `StopReason` is non-exhaustive: a reason this window has not been
-        // taught is still a reason the agent gave, and the frame carrying it is
-        // in the trace.
+        // `StopReason` is non-exhaustive; the frame is in the trace.
         _ => "a stop reason this window has no name for",
     }
 }
@@ -1585,9 +1473,7 @@ mod tests {
     fn composer_uses_compact_daisyui_controls_in_one_bounded_field() {
         let ready = shown(TurnState::Idle, true, true, false);
         assert!(
-            // One box, with the field and its footer inside it: the radius and
-            // the boundary are the box's, because the footer is in flow under
-            // the text rather than floating over it.
+            // The footer is in flow inside the box, under the text.
             ready.contains(r#"class="prompt-box""#)
                 && ready.contains("<textarea")
                 && ready.contains(r#"class="prompt-foot""#)
@@ -1599,8 +1485,7 @@ mod tests {
                 && ready.contains(r#"aria-label="Send prompt""#)
                 && ready.contains(r#"title="Send prompt""#)
                 && ready.contains(r#"<svg class="icon""#)
-                // The word beside the glyph: the primary action of a region
-                // says what it does (ADR 0009).
+                // The primary action is labelled with a word, not only a glyph.
                 && ready.contains(">Send</button>"),
             "the Prompt and its Send Affordance retain durable accessible names: {ready}"
         );
@@ -1631,12 +1516,7 @@ mod tests {
 
     #[test]
     fn where_the_turn_stands_is_one_badge_and_the_sentence_under_it_is_not_a_second() {
-        // **The word is the header's and the sentence is the composer's**
-        // (ADR 0009). The badge says where the turn stands at the far end of the
-        // region's own header, which is where a desktop application puts the
-        // state of what a region is showing; the sentence that explains it sits
-        // above the box a reader would act in. Neither says the other's half, so
-        // nothing on the screen is drawn twice.
+        // The badge (header) carries the word; the composer carries the detail.
         for (turn, blocked, words, component) in [
             (
                 TurnState::InFlight,
@@ -1682,8 +1562,7 @@ mod tests {
                     && html.contains(r#"data-slot="turn-state""#),
                 "the {words} Turn state uses a fitting daisyUI status: {html}"
             );
-            // And the detail, where it has one, is the composer's — never the
-            // badge's, which carries the word alone.
+            // The detail is the composer's, never the badge's.
             let composed = shown(turn, true, true, blocked);
             assert!(
                 !composed.contains("turn-badge"),
@@ -1711,10 +1590,7 @@ mod tests {
             "the no-Session state remains distinct: {no_session}"
         );
 
-        // And a handshake that never reached a session says why, in the agent's
-        // own words: a launch that failed must not fail silently, which is the
-        // one reason this surface is drawn with no session at all
-        // (`timeline.rs`).
+        // A handshake that never reached a session says why.
         let refused = shown_with_problem(CallError::Disconnected);
         assert!(
             refused.contains(&CallError::Disconnected.to_string()),
@@ -1743,8 +1619,7 @@ mod tests {
 
     #[test]
     fn the_commands_offered_are_the_agents_own_and_only_while_one_is_being_typed() {
-        // **The agent's list and nothing else.** A completion this window
-        // invented would be a command nobody can run.
+        // Only the agent's own commands are offered.
         assert_eq!(
             offering(published(), "/c")
                 .into_iter()
@@ -1762,9 +1637,7 @@ mod tests {
             offering(published(), "").is_empty(),
             "an ordinary prompt is not a command"
         );
-        // A command's arguments are typed after its name, so the moment there is
-        // a space the reader is writing the ask rather than choosing it — and a
-        // list still open over the box would compete with the Enter that sends.
+        // Once there is a space the reader is typing arguments; the list closes.
         assert!(
             offering(published(), "/init ").is_empty(),
             "the list closes when the name is complete"
@@ -1800,8 +1673,7 @@ mod tests {
         let mut dom = VirtualDom::new(Host);
         dom.rebuild_in_place();
         let empty = dioxus_ssr::render(&dom);
-        // Nothing is offered until a command is being typed: the control appears
-        // with the question rather than sitting over the box.
+        // Nothing is offered until a command is being typed.
         assert!(
             !empty.contains(r#"data-slot="commands""#),
             "an ordinary draft draws no list: {empty}"
