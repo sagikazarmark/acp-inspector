@@ -5,7 +5,7 @@
    drawing's — `bg`, `panel`, `panel2`, `sunk`, `line`, `line2`, `txt`, `dim`,
    `dim2`, `acc`, `out`, `in`, `ok`, `err`, `vio` — and the values started as
    the drawing's; where one was moved to clear a floor, the line says so
-   ([ADR 0009](../../../docs/adr/0009-the-window-is-the-drawing.md)).
+   (ADR 0009, docs/adr/0009-the-window-is-the-drawing.md).
 
    Nothing here paints anything: every declaration is a name for a value, and
    every rule that uses one is in `input.css` or in a component. The two daisyUI
