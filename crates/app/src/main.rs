@@ -947,12 +947,20 @@ fn App() -> Element {
                 .read()
                 .unexported(dropped() + frames.read().len())
     });
+    // Quitting for good: the connection is stopped here rather than left to a
+    // teardown the event loop may not reach.
+    let quitting = inspector.clone();
+    let quit_now = EventHandler::new(move |()| {
+        quitting.disconnect();
+        #[cfg(feature = "desktop")]
+        shell::quit();
+    });
     #[cfg(feature = "desktop")]
     let on_quit = EventHandler::new(move |()| {
         if unexported() {
             quit_dialog::open();
         } else {
-            shell::quit();
+            quit_now.call(());
         }
     });
     #[cfg(feature = "desktop")]
@@ -1271,7 +1279,7 @@ fn App() -> Element {
         }
 
         // Quitting with frames nobody exported asks first (F9).
-        QuitDialog { on_export }
+        QuitDialog { on_export, on_quit: quit_now }
 
         // Everything a command in the palette can ask for is a control that is
         // also on screen (`palette.rs`), and every one of them is built from a
@@ -1554,7 +1562,7 @@ fn RegionBar(
 /// exported (F9). Opened by `quit_dialog::open`; answered by exporting,
 /// quitting anyway, or staying.
 #[component]
-fn QuitDialog(on_export: EventHandler<()>) -> Element {
+fn QuitDialog(on_export: EventHandler<()>, on_quit: EventHandler<()>) -> Element {
     rsx! {
         dialog {
             id: quit_dialog::DIALOG,
@@ -1593,7 +1601,10 @@ fn QuitDialog(on_export: EventHandler<()>) -> Element {
                         class: "btn btn-md btn-filled btn-bad",
                         "data-slot": "quit-anyway",
                         r#type: "button",
-                        onclick: move |_| quit_dialog::quit(),
+                        onclick: move |_| {
+                            quit_dialog::close();
+                            on_quit.call(());
+                        },
                         "Quit anyway"
                     }
                 }
@@ -1620,13 +1631,6 @@ mod quit_dialog {
 
     pub fn close() {
         document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
-    }
-
-    /// Quit regardless of what the trace holds.
-    pub fn quit() {
-        close();
-        #[cfg(feature = "desktop")]
-        crate::shell::quit();
     }
 }
 
@@ -2627,7 +2631,7 @@ mod tests {
     fn the_quit_question_is_named_and_offers_export_first() {
         #[component]
         fn Host() -> Element {
-            rsx! { QuitDialog { on_export: move |()| {} } }
+            rsx! { QuitDialog { on_export: move |()| {}, on_quit: move |()| {} } }
         }
         let mut dom = VirtualDom::new(Host);
         dom.rebuild_in_place();
