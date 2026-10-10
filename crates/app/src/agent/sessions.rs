@@ -1,4 +1,5 @@
 //! The Sessions dialog: the live session, the listing, and the ways in and out.
+//! See `docs/architecture.md` §7.5.
 
 use acp_inspector_core::{Cursor, Restore, Roots, SessionListing, v1};
 use dioxus::prelude::*;
@@ -11,27 +12,11 @@ use super::roots::{Reopen, roots_field, roots_rule};
 use super::{Failed, Opening};
 
 /// The session lifecycle affordances, and whatever the agent last answered into
-/// them (§7.5).
+/// them: the current session, the other listed sessions, and a new session at
+/// the foot (with its roots, where `additionalDirectories` was advertised).
 ///
-/// **Three parts, in the order a reader needs them**: the session they are in,
-/// the sessions they could be in, and the way to a new one. It was one flat
-/// run — two buttons, five paragraphs of consequence, then every session the
-/// agent named as an undifferentiated list with the live one marked by a word
-/// halfway down its row. That is the shape a rail leaves behind, where a block
-/// is read top to bottom once; a surface opened to *change* the session is read
-/// by looking for the one you are in and the one you want.
-///
-/// **The live session is stated whether or not it was listed.** It is what the
-/// window is showing, and it used to appear only if `session/list` had been
-/// pressed and only as one row among the others — so a dialog opened on a
-/// working connection could say nothing at all about the session behind it. An
-/// agent that never advertised listing still has a live session, and the calls
-/// that end one carry nothing but its id.
-///
-/// **The way to a new session is at the foot**, where a dialog's own action
-/// goes, because it is what a reader does when none of the above was what they
-/// wanted. The roots the session opens with are beside it (§7.7), where the
-/// agent advertised `additionalDirectories` and nowhere else.
+/// The live session is shown whether or not it was listed; the calls that end
+/// it need only its id.
 pub(crate) fn sessions(
     listing: Listing<'_>,
     connected: bool,
@@ -41,18 +26,12 @@ pub(crate) fn sessions(
 ) -> Element {
     let roots = listing.roots;
     let on_list = listing.on_list;
-    // The listed sessions, split on the one the window is showing. Two lists
-    // rather than one with a marked row: which session you are in is the first
-    // question this surface is opened with, and a word in the middle of the
-    // fourth row is an answer a reader has to search for.
+    // The listed sessions, split into the live one and the others.
     let answered = listing
         .answered
         .map(|answered| answered.sessions.as_slice());
-    // **While a listing is in flight, the live session keeps its id and loses
-    // its description.** Which session the window is in is not the listing's to
-    // say — it is the one that was opened — but where it runs and what it is
-    // called came out of the answer now being replaced, and a row that went on
-    // showing them would be presenting a stale page as the current one.
+    // While a listing is in flight the live row keeps its id but not the
+    // description, which came from the page being replaced.
     let current = (!listing.pending)
         .then(|| {
             answered.and_then(|sessions| {
@@ -70,14 +49,8 @@ pub(crate) fn sessions(
 
     rsx! {
         div { class: "dialog-body", "data-slot": "sessions",
-            // **What is on this surface outlives the agent on purpose** (§5),
-            // and until this line existed the whole of what it said about that
-            // was a screen of controls nobody could press. The record stays —
-            // an agent that went away mid-session is the finding, and a window
-            // that emptied itself would be deleting the evidence to tidy up —
-            // so what changes is that it says which of the two it is. The same
-            // sentence in the same register as Session Settings and the login,
-            // and only where there is a control it is about.
+            // The listing outlives the agent on purpose (§5); say why its
+            // controls are unavailable.
             if !connected {
                 p {
                     class: "hint availability",
@@ -88,8 +61,7 @@ pub(crate) fn sessions(
                 }
             }
 
-            // **Where you are**, drawn from the listing where the agent has
-            // been asked for one and from the live id alone where it has not.
+            // From the listing where there is one, else from the live id alone.
             if let Some(live) = listing.live {
                 section { class: "rail-group", "data-slot": "session-current",
                     div { class: "rail-head",
@@ -101,9 +73,7 @@ pub(crate) fn sessions(
                 }
             }
 
-            // **What else the agent is holding**, behind the advertisement that
-            // gates it: an agent that never claimed `session/list` has no
-            // listing and no button to ask for one (§7.5).
+            // Gated on the `session/list` advertisement (§7.5).
             if listing.advertised {
                 section { class: "rail-group session-listing",
                     header { class: "rail-head",
@@ -128,13 +98,8 @@ pub(crate) fn sessions(
                 }
             }
 
-            // The agent's own refusal, or the news that it is no longer there:
-            // an affordance that did nothing and said nothing would be the
-            // window keeping a secret core is there to tell. The call is named
-            // because there are four of them here — an agent that advertised a
-            // capability and then failed it is a finding about *that* method,
-            // and one is worth reading precisely because the other three may
-            // have worked.
+            // The failure names its method: any of the four calls here may fail
+            // on its own.
             if let Some(failed) = failed {
                 p { class: "alert alert-error", "data-slot": "session-failure", role: "alert",
                     code { "{failed.method}" }
@@ -148,15 +113,10 @@ pub(crate) fn sessions(
                         class: "btn btn-sm btn-filled",
                         r#type: "button",
                         aria_disabled: (!connected).then_some("true"),
-                        // What pressing it costs, on the control rather than
-                        // under it, with the method it sends: the label is the
-                        // verb, and the wire name is the tooltip (D7).
+                        // The label is the verb; the wire name and cost are the tooltip.
                         title: "{v1::AGENT_METHOD_NAMES.session_new}: {SESSION_NEW_COSTS}",
                         aria_describedby: if connected { "session-new-costs".to_owned() } else { format!("session-new-costs {UNAVAILABLE}") },
-                        // `None` where the agent advertised no control, so that a click
-                        // says *no roots were asked for* rather than *the empty control
-                        // was*: for a session that does not exist yet the two ask for
-                        // the same thing, and only one of them is true.
+                        // `None` where no roots control was advertised: none were asked for.
                         onclick: move |_| if connected { on_new_session.call(roots.then(|| Roots::supplied(creating()))) },
                         span { class: "disclosure-icon", aria_hidden: "true",
                             Icon { class: "icon", width: 16, height: 16, icon: LdPlus }
@@ -164,9 +124,6 @@ pub(crate) fn sessions(
                         "New session"
                     }
 
-                    // Said once for every roots control in this block — the one
-                    // beside `session/new` and the one on each listed row —
-                    // rather than on each of them.
                     if roots {
                         details { class: "disclose bare roots-new",
                             summary {
@@ -176,11 +133,6 @@ pub(crate) fn sessions(
                                 code { "additionalDirectories" }
                             }
                             div { class: "disclose-body",
-                                // Inside the disclosure, which is where the field it
-                                // is a rule about is. Above it, it was a paragraph
-                                // about a box nobody had opened yet — always drawn,
-                                // read once, and read at the moment it is least
-                                // useful.
                                 {roots_rule()}
                                 {roots_field(
                                     creating,
@@ -192,27 +144,17 @@ pub(crate) fn sessions(
                     }
                 }
 
-                // The same sentence the control carries, kept in the document
-                // for the reader who is not pointing at anything: a tooltip is
-                // not an accessible name and `aria-describedby` needs something
-                // to point at.
+                // The tooltip's sentence, in the document for `aria-describedby`.
                 p { class: "sr-only", id: "session-new-costs", {SESSION_NEW_COSTS} }
             }
         }
     }
 }
 
-/// One session, as a row of either list.
+/// One session, as a row of either list, with every advertised affordance.
 ///
-/// **The same row for the live session and for the rest**, which is what keeps
-/// the two lists two lists rather than two designs: every affordance the agent
-/// advertised is on both, gated the way §7.5 gates it, and what differs is the
-/// heading above the list and the word the row says about itself.
-///
-/// `info` is `None` for a live session the agent has not listed — there is no
-/// `SessionInfo` to draw, and no reopen either, because reopening one hands the
-/// agent back its own description of it. What the row can still carry is the
-/// two calls that take nothing but an id.
+/// `info` is `None` for a live session the agent has not listed: no reopen
+/// (which needs the agent's description), only close and delete.
 fn session_row(
     info: Option<&v1::SessionInfo>,
     id: &v1::SessionId,
@@ -236,8 +178,6 @@ fn session_row(
         li {
             key: "{id}",
             class: if current { "session-row live" } else { "session-row" },
-            // The drawing's row: a dot for which one this is, the title the
-            // agent gave it, and what it last said about it at the far end.
             div { class: "session-head",
                 span {
                     class: if current { "dot dot-live" } else { "dot dot-idle" },
@@ -249,7 +189,7 @@ fn session_row(
                         None => rsx! { span { class: "cleared", "untitled session" } },
                     }
                 }
-                // What a row *is*, in words, because a dot is decoration (§7.5).
+                // The dot is decoration; say which row this is in words.
                 span { class: "sr-only",
                     if current { "Current session. " } else { "Available session. " }
                 }
@@ -266,14 +206,6 @@ fn session_row(
                 if let Some(info) = info {
                     span { class: "session-id", title: "{info.cwd.display()}", "{info.cwd.display()}" }
                 }
-            // **Every control on this row is bounded**, which is the one thing
-            // the row's hierarchy was saying that nobody meant. Reopen and
-            // close were `ghost` — a label and no boundary — beside a `delete`
-            // that carries the outline its tone comes with, so a row of three
-            // calls read as one control with two headings over it, and the
-            // control it read as was the destructive one. They are one group of
-            // push buttons now and the tone is the only thing that still tells
-            // them apart, which is the difference there actually is.
                 div { class: "session-actions",
                 if let (Some(info), Some(how)) = (info, restores) {
                     Reopen {
@@ -284,20 +216,9 @@ fn session_row(
                         on_open,
                     }
                 }
-                // Each on its own claim: an agent that advertised one of the
-                // two is offered that one, and the row is a report of what it
-                // said rather than a menu of what a session can have done to
-                // it. **A step down from the way in, and never hidden.** They
-                // were revealed on hover, which is the rule for a control that
-                // repeats something already on the row and the wrong one for
-                // the only way to do a thing: what is not drawn cannot be
-                // looked for, and a list that has to be swept with a pointer to
-                // be read is a list that cannot be read at a glance. `btn-xs`
-                // against the reopen's `btn-sm` is the difference that was
-                // meant all along.
-                // **One disabled pattern, with its reason** (A5): unavailable
-                // controls stay focusable and say why through the availability
-                // line, rather than dropping out of the Tab order unexplained.
+                // Close and delete are each gated on their own claim and never
+                // hidden. Unavailable controls stay focusable and say why through
+                // the availability line.
                 if closes {
                     button {
                         class: "btn btn-xs btn-quiet session-end",
@@ -338,13 +259,11 @@ pub(super) fn described_unless(connected: bool, consequence: &str) -> String {
 /// How long an armed delete waits for its confirmation before it disarms.
 const CONFIRM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// `session/delete`, confirmed in two steps (B6).
+/// `session/delete`, confirmed in two steps because it cannot be undone.
 ///
-/// **Delete, then Confirm delete.** It is the one call in the dialog that
-/// cannot be taken back, and it sat beside Close at the same size. The first
-/// press arms it, the second sends; Cancel, Escape, or a few seconds of
-/// nothing disarm it. The label changes on the same button, so focus stays
-/// where the reader pressed.
+/// The first press arms it, the second sends; Cancel, Escape, or
+/// [`CONFIRM_FOR`] of nothing disarm it. The label changes on the same button,
+/// so focus stays put.
 #[component]
 fn DeleteSession(
     id: v1::SessionId,
@@ -410,33 +329,27 @@ fn DeleteSession(
     }
 }
 
-/// What the listing affordance is made of: what the agent said it can do, what
-/// it last answered, and the two ways of asking it for more.
-///
-/// One value rather than a fistful of arguments threaded through two functions
-/// — they are one question the panel asks about sessions, and what a row can do
-/// is only meaningful beside the row it does it to.
+/// What the listing is drawn from: what the agent advertised, what it last
+/// answered, and the handlers for its rows.
 #[derive(Clone, Copy)]
 pub(crate) struct Listing<'a> {
-    /// Whether the agent advertised `session/list` — core's answer, and the
-    /// gate this whole group sits behind.
+    /// Whether the agent advertised `session/list` (core's answer).
     pub(super) advertised: bool,
     /// What it answered the last time it was asked, if it has been.
     pub(super) answered: Option<&'a SessionListing>,
-    /// The live Session, used only to state current versus available in words.
+    /// The live session.
     pub(super) live: Option<&'a v1::SessionId>,
     /// Whether the answer, or its next page, is currently in flight.
     pub(super) pending: bool,
     /// How a listed session is opened, or `None` where the agent advertised no
     /// way to.
     pub(super) restores: Option<Restore>,
-    /// Whether the agent advertised `session/close`, and whether it advertised
-    /// `session/delete` — two gates because they are two claims, each made in
-    /// its own field (§7.5).
+    /// Whether `session/close` and `session/delete` were advertised: two
+    /// separate claims (§7.5).
     pub(super) closes: bool,
     pub(super) deletes: bool,
-    /// Whether the agent advertised `additionalDirectories` — the gate on the
-    /// roots control, beside the create button and on every row (§7.7).
+    /// Whether `additionalDirectories` was advertised, gating every roots
+    /// control (§7.7).
     pub(super) roots: bool,
     pub(super) on_list: EventHandler<Option<Cursor>>,
     pub(super) on_open: EventHandler<Opening>,
@@ -444,18 +357,11 @@ pub(crate) struct Listing<'a> {
     pub(super) on_delete: EventHandler<v1::SessionId>,
 }
 
-/// The sessions the agent named that are not the one in front of the reader,
-/// and the states that stand in for them.
+/// The listed sessions other than the live one, or the state standing in for
+/// them.
 ///
-/// **A listed session is a way into that session** (§7.5), which is what makes
-/// the listing actionable rather than text to read. One affordance per row and
-/// never two: `session/load` and `session/resume` restore the same thing and
-/// differ only in whether the conversation replays first, so the *call* carries
-/// the difference ([`Restore`]) and the screen states it — [`opening`] is where
-/// it is stated. Which call this agent gets is core's answer, preference and
-/// all; a row is offered it whenever the agent advertised one, and an agent that
-/// advertised a method it never implemented is driven anyway, because its
-/// refusal is the finding.
+/// One reopen per row: load and resume differ only in replay, which the call
+/// carries ([`Restore`]) and [`opening`] states (§7.5).
 fn listed(sessions: &Listing<'_>, others: &[&v1::SessionInfo], connected: bool) -> Element {
     let Listing {
         answered,
@@ -482,24 +388,15 @@ fn listed(sessions: &Listing<'_>, others: &[&v1::SessionInfo], connected: bool) 
                 }
             }
         } else { match answered {
-            // Advertised and unasked: the button is here because the agent
-            // said it lists, not because there is anything to see yet.
+            // Advertised and not yet asked: a plain line, not an alert.
             None => rsx! {
-                // A line rather than a bounded notice. The other two states of
-                // this region are news that arrived — a page loading, a page
-                // that came back empty — and a box is right for those; this one
-                // is what the surface says before anything has been asked, and
-                // drawing it as an alert made *nothing has happened yet* the
-                // most boxed-in thing in the dialog.
                 p { class: "hint", "data-slot": "session-list-status", role: "status", "The agent says it can list its sessions." }
             },
             Some(listing) if listing.sessions.is_empty() => rsx! {
                 p { class: "alert", "data-slot": "session-list-status", role: "status", aria_live: "polite", "The agent listed no sessions." }
             },
-            // Listed, and every session it named is the one already in front of
-            // the reader. Said rather than left as a gap under a heading: an
-            // empty region where rows were is a listing that failed, and this
-            // one succeeded.
+            // Only the live session was listed; said so an empty region is not
+            // read as a failure.
             Some(_) if others.is_empty() => rsx! {
                 p { class: "hint", "data-slot": "session-list-status", role: "status", aria_live: "polite",
                     "The agent listed no sessions besides this one."
@@ -516,10 +413,7 @@ fn listed(sessions: &Listing<'_>, others: &[&v1::SessionInfo], connected: bool) 
             },
         } }
 
-        // A page the agent kept back. The cursor goes straight back to core,
-        // unread: what is inside it is the agent's business, and a client that
-        // parsed it would be guessing at a token no agent in the survey has
-        // ever sent.
+        // The cursor goes back to core unread: it is opaque.
         SessionPaging {
             available: next_page.is_some(),
             connected,
@@ -528,11 +422,10 @@ fn listed(sessions: &Listing<'_>, others: &[&v1::SessionInfo], connected: bool) 
     }
 }
 
-/// The Affordance for a page the Agent kept back.
-///
-/// Availability is separate from the callback so presentation tests never need
-/// to manufacture or inspect the opaque [`Cursor`] the callback closes over.
+/// The next-page button. Availability is separate from the callback so tests
+/// need not build the opaque [`Cursor`] it closes over.
 #[component]
+
 fn SessionPaging(available: bool, connected: bool, on_next: EventHandler<()>) -> Element {
     rsx! {
         if available {
@@ -558,67 +451,26 @@ fn SessionPaging(available: bool, connected: bool, on_next: EventHandler<()>) ->
     }
 }
 
-/// What every one of those controls is held to, said once above all of them
-/// (§7.7).
-///
-/// **It is a sentence about this tool, so it is said once.** The rule is the
-/// inspector's — the schema names the session's `cwd` as the base, and this
-/// window resolves a relative path against it before anything crosses rather
-/// than letting a malformed request go out ([`Roots`]) — and a control drawn on
-/// `session/new` and again on every listed session repeated it verbatim on each.
-/// An agent advertising `additionalDirectories` with ten sessions listed printed
-/// this paragraph eleven times, which is the shape §7.7 already refused for the
-/// fourth fact: one fact about the inspector drawn as eleven about the agent.
-///
-/// The control keeps the half that is about *its own* field — one absolute path
-/// per line, beside the box it is typed in — because that half is a label rather
-/// than a rule, and a label belongs on the thing it labels.
-/// What pressing `session/new` costs, in the words the rail used to print.
-///
-/// One string, because it is now said in two places that must not drift: on the
-/// control as its tooltip, and in the document as what the control is described
-/// by.
+/// What pressing `session/new` costs: the button's tooltip and its description.
 pub(crate) const SESSION_NEW_COSTS: &str = "Opens and switches to a new session. A turn still running is cancelled first; the trace keeps every frame.";
 
-/// What the row's own controls cost, by the ids they point at.
-///
-/// **The same treatment `session/new` already gets.** These sentences were five
-/// visible paragraphs above the list — written for a rail read once, and a wall
-/// between a reader and the thing they opened this to press. They are on the
-/// controls they are about now: on the tooltip for a pointer, in the document
-/// for `aria-describedby`, and the accessibility tree carries exactly what it
-/// carried before. What stays visible is the one that is not about a control at
-/// all — an agent that advertised no way back into a session has an absence to
-/// explain, and an absence has nothing to hang a description on.
+/// The ids of what the row's reopen and end controls cost, which those controls
+/// are described by.
 pub(crate) const OPENING: &str = "session-open-costs";
 
 pub(crate) const ENDING: &str = "session-end-costs";
 
-/// What opening one of the listed sessions will do, said once above them all.
+/// What opening a listed session will do, said once above them all.
 ///
-/// **Replay is a property of the call, and this is where the property is
-/// read.** The two calls restore the same thing; the one difference is whether
-/// the conversation arrives with it, and that difference decides whether the
-/// timeline below can be rebuilt at all — so it is stated in words rather than
-/// left to be inferred from what does or does not turn up.
-///
-/// Where the agent offers only `session/resume`, saying so is the whole point:
-/// a resumed session's **empty timeline is correct**, and a screen that let the
-/// reader discover that on their own would have them reading a fault in the
-/// inspector instead of a fact about the agent.
-///
-/// Which sentence is drawn is decided by [`Restore::replays`] and not by which
-/// call it is — the property is core's, and a window that re-derived it from
-/// the method name would be a second place to get it wrong.
+/// Whether the conversation replays decides whether the timeline is rebuilt, so
+/// it is stated: after a resume an empty timeline is correct. Decided by
+/// [`Restore::replays`], not by the method name.
 fn opening(restores: Option<Restore>) -> Element {
     rsx! {
         p {
             class: if restores.is_some() { "sr-only" } else { "hint" },
             id: OPENING,
             {match restores {
-                // Gated on the advertisement, here as everywhere: an agent that
-                // claimed neither is asked for neither, and its listing is a
-                // description with nothing to click.
                 None => rsx! {
                     "The agent advertised neither "
                     code { "session/load" }
@@ -626,11 +478,7 @@ fn opening(restores: Option<Restore>) -> Element {
                     code { "session/resume" }
                     ", so there is no way in to a session it already has."
                 },
-                // Split on the *property* rather than on which call it is, which
-                // is what makes this two sentences and not one per method:
-                // `Restore` is non-exhaustive, and a way of opening a session
-                // that this window has never heard of still either brings the
-                // conversation with it or does not.
+                // On the property, since `Restore` is non-exhaustive.
                 Some(how) if how.replays() => rsx! {
                     "Opening one makes it the live session. "
                     code { "{how.method()}" }
@@ -655,27 +503,15 @@ fn opening(restores: Option<Restore>) -> Element {
     }
 }
 
-/// What ending one of the listed sessions will do, said once above them all.
-///
-/// **Three things a reader cannot get from the button** (§7.5). That the
-/// listing is asked again afterwards, because whether a closed session is still
-/// there is the agent's answer and the reason to press the button at all. That
-/// ending the *live* session is allowed and leaves the inspector with none open
-/// — the timeline goes with it and the trace keeps every frame. And that the
-/// corners the specification leaves undefined are offered rather than withheld,
-/// so a button that does something surprising is the agent being surprising.
-///
-/// Nothing here says what the agent *should* do with any of it, because the
-/// specification does not: close and delete are advertised capabilities with
-/// undefined edges, and a window that promised an outcome would be inventing
-/// one.
+/// What ending a listed session will do, said once above them all (§7.5): the
+/// call is sent whatever the session's state, the list is refreshed after, and
+/// ending the live session leaves none open. It promises no outcome, since the
+/// specification defines none.
 fn ending(closes: bool, deletes: bool) -> Element {
     let named = match (closes, deletes) {
         (true, true) => "session/close and session/delete",
         (true, false) => "session/close",
         (false, true) => "session/delete",
-        // The agent claimed neither, so there is nothing to explain: the rows
-        // below carry no way to end a session.
         (false, false) => return rsx! {},
     };
 
@@ -778,8 +614,7 @@ mod tests {
         );
     }
 
-    /// The panel over an agent that claims everything, with a lifecycle call
-    /// that did not do what it said.
+    /// The panel over an agent that claims everything, with this failed call.
     fn rendered_failing(failed: Option<Failed>) -> String {
         rendered_with(
             Some(everything()),
@@ -792,8 +627,7 @@ mod tests {
         )
     }
 
-    /// The listing as it is drawn, for an agent that lists and opens sessions
-    /// the way `restores` says.
+    /// The listing for an agent that reopens sessions the way `restores` says.
     fn listing_for(restores: Option<Restore>) -> String {
         affordances(&rendered(
             everything(),
@@ -805,8 +639,6 @@ mod tests {
 
     #[test]
     fn a_listed_session_can_be_closed_and_deleted_where_the_agent_advertised_them() {
-        // The end of the lifecycle ring (§7.5): every row carries the two calls
-        // this agent claimed, named by the method each will send.
         let listed = listing_for(Some(Restore::Load));
 
         for row in rows_shown(&listed) {
@@ -857,10 +689,7 @@ mod tests {
         let listed = listing_for(Some(Restore::Load));
         let rows = rows_shown(&listed);
 
-        // The live one is under a heading that says so, which is where the
-        // word moved when the marked row became a section of its own: what §7.5
-        // asks is that the state is carried in words, not that every row
-        // repeats its own section.
+        // The live one's state is carried by its section heading.
         assert!(
             listed.contains(r#"<h3 class="heading">Current session</h3>"#),
             "the live Session is explicit in words: {listed}"
@@ -919,11 +748,7 @@ mod tests {
                 && lifecycle.contains("<svg"),
             "new and reported roots use the shared Lucide disclosure marker: {lifecycle}"
         );
-        // **The hierarchy is the tone now and no longer the size.** Every
-        // control on a row is the row's own height in the drawing, so what
-        // separates the way in from the ways out is the accent one carries and
-        // the other two do not — and the destructive one is the only one drawn
-        // in the failure hue.
+        // The way in carries the accent; only delete is drawn in the failure hue.
         for (class, method) in [
             ("btn btn-sm btn-filled", "New session"),
             ("btn btn-xs btn-quiet btn-go reopen", "Load"),
@@ -985,10 +810,8 @@ mod tests {
             !listed_while_loading.contains("session-row"),
             "stale rows are not presented as the pending page: {loading}"
         );
-        // And the live session keeps its id while that page is in flight,
-        // because which session the window is in is not the listing's answer —
-        // but it loses the description that *was* the listing's, so a refresh
-        // never leaves a stale working directory on screen.
+        // The live session keeps its id while a page is in flight, but not the
+        // listing's description of it.
         assert!(
             loading.contains("session-row live") && loading.contains("sess-1"),
             "the live session is still named while the listing reloads: {loading}"
@@ -1038,10 +861,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_advertised_one_of_the_two_is_offered_that_one() {
-        // Two claims in two fields, so two gates: an agent that closes sessions
-        // and does not delete them is offered close and not delete (§7.5). Both
-        // ways round, because a screen wired to the wrong field would pass every
-        // test that only ever advertised both.
+        // Two claims, two gates, checked both ways round (§7.5).
         for (claimed, offered, withheld) in [
             ("close", "session/close", "session/delete"),
             ("delete", "session/delete", "session/close"),
@@ -1065,8 +885,6 @@ mod tests {
                 assert!(row.contains(offered), "the claim it made: {row}");
                 assert!(!row.contains(withheld), "and only that one: {row}");
             }
-            // And the sentence above the rows names what it will send, which is
-            // the same one claim.
             assert!(
                 listed.contains(offered) && !listed.contains(withheld),
                 "said once above them all: {listed}"
@@ -1076,9 +894,6 @@ mod tests {
 
     #[test]
     fn an_agent_that_advertised_neither_close_nor_delete_is_offered_neither() {
-        // Gated on the advertisement and on nothing else, each gate its own: the
-        // listing is still here, the rows are still here, and there is nothing
-        // on them to close or delete with.
         let listed = affordances(&rendered(only_listing(), true, None, Some(two_sessions())));
 
         assert!(
@@ -1095,10 +910,7 @@ mod tests {
 
     #[test]
     fn a_capability_the_agent_advertised_and_then_failed_says_which_one() {
-        // §7.5's capability lie, where a reader meets it: the affordance was
-        // drawn because the agent claimed the method, so the failure is about
-        // that method — and four affordances sit here, three of which may have
-        // worked. The agent's own words are kept whole beside it.
+        // The failure names the method the agent claimed, in its own words.
         let refused = affordances(&rendered_failing(Some(Failed {
             method: "session/close",
             error: CallError::Undecodable("not what a close answers".to_owned()),
@@ -1116,11 +928,7 @@ mod tests {
 
     #[test]
     fn the_ways_out_of_a_session_are_quieter_than_the_way_in_and_never_hidden() {
-        // Revealing a control on hover is the rule for one that repeats
-        // something already on the row — the Timeline's `raw` and its way back
-        // to the wire. It is the wrong rule for the only way to do a thing:
-        // what is not drawn cannot be looked for, and a list that has to be
-        // swept with a pointer to be read cannot be read at a glance.
+        // Never revealed on hover: they are the only way to do these things.
         let listed = affordances(&rendered(
             everything(),
             true,
@@ -1133,8 +941,6 @@ mod tests {
             }
         }
 
-        // What separates them from the way in is the size the two are drawn at,
-        // which is the difference that was meant when they were hidden.
         assert!(
             listed.contains("btn btn-xs btn-quiet btn-go reopen")
                 && listed.contains("btn btn-xs btn-quiet session-end"),
@@ -1144,11 +950,7 @@ mod tests {
 
     #[test]
     fn a_connection_that_ended_says_so_where_its_controls_are() {
-        // The record outlives the agent on purpose (§5) — an agent that went
-        // away mid-session is the finding, and a window that emptied itself
-        // would be deleting the evidence to tidy up. What it owes is to say
-        // which of the two states it is in, where there are controls it is
-        // about.
+        // The record outlives the agent (§5); the dialog says it is disconnected.
         let gone = affordances(&rendered(
             everything(),
             false,
@@ -1179,8 +981,6 @@ mod tests {
 
     #[test]
     fn an_agent_that_has_gone_cannot_be_asked_to_close_or_delete_one() {
-        // The rule every button here follows: one that cannot do what it says is
-        // worse than one that says it cannot.
         let listed = affordances(&rendered(
             everything(),
             false,
@@ -1199,10 +999,7 @@ mod tests {
 
     #[test]
     fn a_session_can_be_opened_whatever_the_agent_advertised_about_sessions() {
-        // `session/new` is the one lifecycle method the protocol does not gate
-        // (§7.5): every v1 agent opens sessions, so the affordance is there for
-        // an agent that advertised nothing at all — while the listing beside it
-        // is absent, because that one *is* the agent's claim to make.
+        // `session/new` is ungated (§7.5); the listing is the agent's claim to make.
         let offered = affordances(&shown(nothing(), true));
 
         assert!(
@@ -1218,8 +1015,6 @@ mod tests {
             "what a switch costs is stated where the button is: {offered}"
         );
 
-        // The other half of the same rule: an agent that claimed listing is
-        // offered both, and neither of them because there is anything to list.
         let claimed = affordances(&shown(everything(), true));
         assert!(
             claimed.contains("session/new") && claimed.contains("session/list"),
@@ -1255,9 +1050,6 @@ mod tests {
 
     #[test]
     fn an_agent_that_has_gone_leaves_the_affordance_saying_it_cannot() {
-        // What the panel already does with the buttons it had: the claims
-        // outlive the agent that made them (§5), and a button that cannot do
-        // what it says is worse than one that says it cannot.
         let offered = affordances(&shown(nothing(), false));
 
         let button = offered
@@ -1275,10 +1067,6 @@ mod tests {
 
     #[test]
     fn a_listed_session_is_a_way_into_that_session() {
-        // The ring's point about the listing (§7.5): it stops being text you
-        // can read. Every row the agent named carries the affordance, and the
-        // affordance is named by the method it will send — the reader of an
-        // inspector is reading the protocol.
         let listed = listing_for(Some(Restore::Load));
         let rows = rows_shown(&listed);
 
@@ -1293,12 +1081,7 @@ mod tests {
 
     #[test]
     fn replay_is_a_property_of_the_call_and_not_two_buttons() {
-        // **One screen, one affordance per session** (§7.5). `session/load` and
-        // `session/resume` restore the same thing and differ only in whether
-        // the conversation replays first, so a row offers the one this agent
-        // gets and says what that means — never both, which would ask the
-        // reader to choose between two calls the protocol says are the same
-        // call.
+        // One reopen per row: load and resume are one operation (§7.5).
         for (how, sent, other) in [
             (Restore::Load, "session/load", "session/resume"),
             (Restore::Resume, "session/resume", "session/load"),
@@ -1307,10 +1090,6 @@ mod tests {
             for row in rows_shown(&listed) {
                 assert!(row.contains(sent), "{row}");
                 assert!(!row.contains(other), "and only the one: {row}");
-                // Counted among the ways *in* rather than among the buttons:
-                // the row also carries the two ways out (§7.5), and those are
-                // two calls the protocol keeps apart rather than one with a
-                // property.
                 assert_eq!(ways_in(row), 1, "one way in, not two: {row}");
             }
         }
@@ -1318,9 +1097,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_only_resumes_says_previous_messages_cannot_be_viewed() {
-        // Which is the whole reason the screen says anything at all: a resumed
-        // session's timeline is empty and *correct*, and a reader left to work
-        // that out reads it as a fault in the inspector.
+        // After a resume an empty timeline is correct, so it is said.
         let resuming = listing_for(Some(Restore::Resume));
 
         assert!(
@@ -1332,7 +1109,6 @@ mod tests {
             "and says what the empty timeline means: {resuming}"
         );
 
-        // And the other way round, the replay is what is promised.
         let loading = listing_for(Some(Restore::Load));
         assert!(
             loading.contains("replays its conversation into the timeline before it answers"),
@@ -1346,9 +1122,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_advertised_neither_is_offered_neither() {
-        // Gated on the advertisement, like everything else here: the listing is
-        // still shown — the agent said it lists — and there is nothing to click
-        // on a row, with the reason said rather than left as an absence.
+        // The listing still shows; the rows have nothing to click, and say why.
         let listed = listing_for(None);
 
         assert!(
@@ -1366,8 +1140,6 @@ mod tests {
 
     #[test]
     fn an_agent_that_has_gone_cannot_be_asked_to_open_one() {
-        // The rule the other two buttons already follow: a button that cannot
-        // do what it says is worse than one that says it cannot.
         let listed = affordances(&rendered(
             everything(),
             false,

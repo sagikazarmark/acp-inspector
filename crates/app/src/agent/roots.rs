@@ -6,37 +6,14 @@ use dioxus::prelude::*;
 use super::Opening;
 use super::sessions::{OPENING, described_unless};
 
-/// The way into one listed session, and the roots it will be reopened with
+/// The reopen button for one listed session, and the roots it reopens with
 /// (§7.7).
 ///
-/// **A component rather than more markup in the row above**, because the roots
-/// are state: each row's control holds its own list, and a list somebody typed
-/// survives the listing being asked for again — which it is, on the tool's own
-/// initiative, after every close and delete.
-///
-/// **Prefilled with what the listing reported**, so that reopening stays a
-/// reopen unless the user deliberately changes it (§7.5). Changing it is the
-/// point of the control and not a hazard: the schema permits a list that differs
-/// from any previously reported one as long as the `cwd` matches, and what the
-/// agent does with a list it did not report is the finding.
-///
-/// **A control nobody changed asks for nothing**, and says so with `None` rather
-/// than by handing back a copy of what it was prefilled with. That is what keeps
-/// a default reopen the *listing's own* roots however this window rendered them
-/// — a path this control could not draw faithfully would otherwise reach the
-/// wire as the drawing rather than as the path.
-///
-/// **The control is gated and the reopen is not.** Where the agent advertised no
-/// `additionalDirectories` there is nothing here to type in and the click says
-/// `None` for that reason instead, which is core's cue to hand the agent back
-/// the roots it reported — because a reopen gated into asking for less would be
-/// reopening a different session from the one it named.
-///
-/// **What the user typed survives the listing being asked for again**, which it
-/// is on the tool's own initiative after every close and delete: the row keeps
-/// its own state for as long as the session keeps its place in the listing, and
-/// a control that emptied itself out from under the typing would be spending the
-/// user's work on housekeeping they did not ask for.
+/// A component because each row keeps its own roots, so typing survives the
+/// listing being refreshed after a close or delete. Prefilled with the reported
+/// roots; an unchanged control sends `None` so core sends the listing's own
+/// roots byte for byte. Only the control is gated on `additionalDirectories`;
+/// the reopen is always offered.
 #[component]
 pub(super) fn Reopen(
     /// The session this row is about, as the agent described it.
@@ -61,11 +38,7 @@ pub(super) fn Reopen(
     let field_label = format!("additionalDirectories for session {session_id}");
     let opened = session.clone();
 
-    // What the agent said this session's roots are, as one line. The summary
-    // carries it so that shutting the control does not take away the agent's own
-    // words: those are what the field is prefilled from and what will cross the
-    // wire if nobody edits them, and a disclosure that hid them would be buying
-    // room with the evidence (§7.7).
+    // The reported roots on one line, so the shut summary still shows them.
     let announced = reported.text().trim().replace('\n', " · ");
 
     rsx! {
@@ -74,8 +47,6 @@ pub(super) fn Reopen(
             r#type: "button",
             title: "{how.method()}",
             aria_label: "{open_label}",
-            // What pressing it costs, on the control rather than above the
-            // list of them (`OPENING`).
             aria_describedby: described_unless(connected, OPENING),
             aria_disabled: (!connected).then_some("true"),
             onclick: move |_| {
@@ -89,32 +60,13 @@ pub(super) fn Reopen(
             "{verb}"
         }
         if roots {
-            // **Under the call rather than in front of it.** These are what the
-            // reopen will carry, so they belong to that button — and drawn
-            // first, at the head of the row's action column, the disclosure was
-            // the widest thing on the row: a modifier read as the row's
-            // subject, with the session's own working directory squeezed into
-            // an ellipsis beside it.
-            //
-            // **Shut by default, and one per row.** Eleven of these textareas —
-            // one for `session/new` and one for each listed session — were two
-            // and a half screens of the same control repeated, on a rail already
-            // six screens long. What it costs is a click before the roots of a
-            // *particular* listed session can be edited; what it does not cost
-            // is knowing what they are, which the summary says whether it is
-            // open or shut, or that they can be edited at all, which is what the
-            // control being named rather than hidden is for.
+            // After the button it belongs to, and shut by default so a long
+            // listing is not a column of textareas.
             details { class: "disclose bare roots-supplied", "data-slot": "roots-supplied",
                 summary { aria_label: "{roots_label}", title: "{roots_label}",
                     {crate::disclosure::chevron()}
-                    // No `reported` badge in front of it. The badge and the
-                    // words after it said one thing twice — *reported ·
-                    // additionalDirectories · the agent reported none* — which
-                    // on a row is three chips for one fact.
                     code { "additionalDirectories" }
-                    // The agent's own words get the row's colour, not a hint's:
-                    // what it reported is content here, and the word saying it
-                    // reported nothing is this window talking.
+                    // The agent's words are content; "none reported" is a hint.
                     if announced.is_empty() {
                         span { class: "hint", " none reported" }
                     } else {
@@ -129,48 +81,23 @@ pub(super) fn Reopen(
     }
 }
 
-/// What a click on a listing row asks for: the roots the user supplied, or
-/// `None` for the ones the listing reported (§7.7).
-///
-/// **Two ways to mean the default and one to mean a change.** An agent that
-/// advertised no `additionalDirectories` drew no control, and a control nobody
-/// changed is not a change — both say `None`, which is core's cue to hand the
-/// agent back the roots it reported rather than a rendering of them. A control
-/// the user *emptied* is a change like any other and asks for no roots at all,
-/// which is the one thing a fallback to the reported list would get wrong.
+/// The roots a reopen asks for: `None` (the reported roots) when nothing was
+/// advertised or the control is unchanged, otherwise what the user supplied.
+/// An emptied control asks for no roots, not for the reported ones.
 fn asking(advertised: bool, supplied: &str, reported: &Roots) -> Option<Roots> {
     let supplied = Roots::supplied(supplied);
     (advertised && &supplied != reported).then_some(supplied)
 }
 
-/// The roots control: the list of additional workspace roots a session is to be
-/// opened with, as the user supplies them (§7.7).
+/// The roots field, one absolute path per line, for `session/new`,
+/// `session/load` and `session/resume` (§7.7).
 ///
-/// One control for both places it appears, because it is one thing: the field
-/// `session/new`, `session/load` and `session/resume` all carry, and the same
-/// rules for reading it either way.
-///
-/// **It says the paths must be absolute**, and says what happens to one that is
-/// not, because that is the rule the user would otherwise learn from the agent's
-/// error — and would learn wrongly, since the inspector resolves a relative path
-/// against the session's own `cwd` before it sends one rather than letting a
-/// malformed request cross ([`Roots`]).
-///
-/// **It stays live when the agent is gone**, unlike the button beside it. A
-/// field is not an affordance — nothing here sends anything — and the spawn
-/// form's own fields keep the same rule while its Launch button is disabled: a
-/// list typed against an agent that has just died is a list the next one is
-/// asked for, and a control that emptied itself out from under the user would be
-/// this window throwing their typing away to make a point the button already
-/// makes.
+/// It stays editable while disconnected: it sends nothing, and what was typed
+/// is kept for the next agent.
 pub(super) fn roots_field(mut roots: Signal<String>, named: bool, field_label: String) -> Element {
     rsx! {
         label { class: "form-field", "data-slot": "roots",
-            // The field it supplies, except where the control is inside a
-            // disclosure whose summary already names it. Left out of the markup
-            // rather than hidden by a rule: a fact kept in the document and
-            // painted away is the dimness rule broken by another name, which is
-            // the reason `hushed` removes the fourth fact rather than dimming it.
+            // The field name is left out, not hidden, where a summary names it.
             div { class: "form-label",
                 if named {
                     code { class: "form-key", "additionalDirectories" }
@@ -192,6 +119,7 @@ pub(super) fn roots_field(mut roots: Signal<String>, named: bool, field_label: S
     }
 }
 
+/// The rule every roots control is held to, said once above them.
 pub(super) fn roots_rule() -> Element {
     rsx! {
         p { class: "hint", "data-slot": "roots-rule",
@@ -242,11 +170,9 @@ mod tests {
         }
     }
 
-    /// The roots a session would be opened with.
     const ROOTS: &str = r#"data-slot="roots""#;
 
-    /// Every roots control in a fragment of the screen, one string each — cut at
-    /// the label that holds it, which is the whole control.
+    /// Every roots control in a fragment, cut at its label.
     fn roots_controls(html: &str) -> Vec<&str> {
         html.split(ROOTS)
             .skip(1)
@@ -261,11 +187,6 @@ mod tests {
 
     #[test]
     fn the_roots_a_session_opens_with_are_asked_for_where_the_agent_advertised_them() {
-        // **The advertisement gates the control** (§7.7), like every other
-        // affordance here: `additionalDirectories` is a field on a request
-        // rather than a method, so what an agent that claimed it gets is a place
-        // to supply one — beside the create button, and on each row that reopens
-        // a session.
         let offered = affordances(&rendered(
             everything(),
             true,
@@ -285,9 +206,6 @@ mod tests {
                 "each is somewhere to type one: {control}"
             );
         }
-        // And each is named as the protocol names it — once per control, on the
-        // control itself beside `session/new` and on the summary that stands for
-        // it on a listing row, where the disclosure is what carries the name.
         assert_eq!(
             offered
                 .matches("<code>additionalDirectories</code>")
@@ -305,10 +223,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_advertised_no_additional_directories_is_offered_nowhere_to_supply_any() {
-        // Gated on the advertisement and on nothing else — and the rest of the
-        // row is untouched, because the reopen goes on being offered and goes on
-        // sending the roots the listing reported (core's rule, asserted in
-        // `crates/core/tests/roots.rs`). What is withheld is the control, not the call.
+        // The control is withheld, not the reopen.
         let listed = affordances(&rendered(
             only_listing(),
             true,
@@ -327,10 +242,7 @@ mod tests {
 
     #[test]
     fn a_reopen_is_prefilled_with_the_roots_the_listing_reported_for_that_session() {
-        // **So that reopening stays a reopen unless the user deliberately
-        // changes it** (§7.5). Per row, because the roots are the session's: a
-        // control that showed one session's roots on another's row would ask an
-        // agent to reopen a session as a different one.
+        // Per row, because the roots are the session's.
         let listed = affordances(&rendered(
             everything(),
             true,
@@ -354,13 +266,6 @@ mod tests {
 
     #[test]
     fn a_reopen_asks_for_the_reported_roots_unless_the_user_changed_them() {
-        // **What a click means, decided where it can be asserted** (§12). A
-        // control the user has not touched is not a change: it says `None`, and
-        // core hands the agent back the roots it reported — byte for byte, and
-        // not a rendering of them that came back through a textarea. A control
-        // they *emptied* is a change like any other and asks for no roots at
-        // all, which is the case a fallback to the reported list would get
-        // exactly backwards.
         let reported = Roots::reported(&["/srv/data".into()]);
 
         assert_eq!(
@@ -387,16 +292,6 @@ mod tests {
 
     #[test]
     fn the_rule_a_root_must_keep_is_stated_once_above_every_control_it_binds() {
-        // The rule the user would otherwise learn from the agent's error — and
-        // learn wrongly, because a relative path never reaches the wire: it is
-        // resolved against the session's own `cwd` first (§7.7).
-        //
-        // It used to be said inside each control, which meant an agent
-        // advertising `additionalDirectories` with two sessions listed said it
-        // three times and one with ten said it eleven. That is the shape §7.7
-        // already refused for the fourth fact — one sentence about the inspector
-        // drawn as eleven facts about the agent — so it is hoisted here for the
-        // same reason and held to the same rule: said once, not dropped.
         let offered = affordances(&rendered(
             everything(),
             true,
@@ -414,8 +309,6 @@ mod tests {
             "and what becomes of a path that is not: {offered}"
         );
 
-        // What stays on every control is the half that labels the box it is
-        // beside rather than the half that states the rule.
         let controls = roots_controls(&offered);
         assert!(controls.len() > 1, "more than one control to bind");
         for control in controls {
@@ -428,12 +321,7 @@ mod tests {
 
     #[test]
     fn a_listed_sessions_roots_are_legible_without_opening_its_control() {
-        // The control is shut on a listing row (§7.7) — eleven textareas was
-        // two and a half screens of one control repeated. What must survive
-        // shutting it is the agent's own words: the roots it reported are what
-        // the field is prefilled from and what crosses the wire if nobody edits
-        // them, so a disclosure that hid them would be buying room with the
-        // evidence.
+        // A shut control's summary still shows the reported roots.
         let offered = affordances(&rendered(
             everything(),
             true,
