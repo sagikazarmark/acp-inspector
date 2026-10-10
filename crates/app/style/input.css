@@ -186,7 +186,7 @@ a:hover { color: var(--acc); }
 
 /* One focus treatment across everything a keyboard can reach — and the only
    thing in the window drawn as a lime ring (D5). */
-:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible {
+:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a, [tabindex="0"]):focus-visible {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
 }
@@ -403,7 +403,6 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-size: var(--text-row);
   font-weight: var(--font-weight-label);
   white-space: nowrap;
-  transition: background var(--motion-quick) var(--ease-standard);
 }
 .seg-item:hover { color: var(--txt); }
 .seg-item:is([aria-pressed="true"], [aria-selected="true"]) {
@@ -510,7 +509,31 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .bar-facts .bar-rule { color: var(--line2); }
 .bar-facts .bar-session { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
 
-.body { display: flex; flex: 1; min-height: 0; }
+/* **The bar is the title bar on macOS** (D17): the window's title bar is
+   transparent over the content, so the bar leaves the traffic lights their
+   room at its leading edge, and its empty pieces move the window (`main.rs`).
+   Elsewhere the platform's frame is above it and none of this applies. */
+.bar-lights { width: 72px; height: 100%; flex: none; margin-right: -16px; }
+/* The button that opens the rail as a drawer, drawn only where the rail is
+   one (D18). */
+.bar-drawer { display: none; flex: none; }
+
+.body { position: relative; display: flex; flex: 1; min-height: 0; }
+
+/* The rail's edge, which a reader drags or moves with ←/→ (D18): a 4px strip
+   over the hairline, which takes the accent while it is held or focused. */
+.rail-resize {
+  width: 4px;
+  flex: none;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+}
+.rail-resize:hover, [data-resizing] .rail-resize { background: var(--line2); }
+.rail-resize:focus-visible { background: var(--acc); }
+[data-resizing], [data-resizing] * { cursor: col-resize; user-select: none; }
+.rail-backdrop { display: none; }
 
 /* ---------------------------------------------------------------------------
    The rail: the connection, and the two things scoped to it.
@@ -518,7 +541,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .rail {
   display: flex;
   flex-direction: column;
-  width: 244px;
+  width: var(--rail-width, 244px);
   flex: none;
   min-height: 0;
   background: var(--panel);
@@ -1427,13 +1450,48 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .toast .alert { border-color: var(--line2); background: var(--panel); box-shadow: var(--shadow-pop); color: var(--txt); }
 
 /* ---------------------------------------------------------------------------
-   The narrow window. Below 1080 one region shows at a time and a bar at the
-   foot chooses between them; the shell's own minimum is 960 × 640.
+   The narrower windows (D18).
+
+   **Below 1180 the two screens keep the width and the rail becomes a
+   drawer**: a button in the bar opens it over the screens, with a shade behind
+   it that closes it, and Escape closes it from inside. The turn and the wire
+   stay side by side, because they are what is read together.
+
+   **Below 760 one region shows at a time** and a bar at the foot chooses
+   between them. The desktop shell's own minimum is 960 × 640, so a desktop
+   window never gets there; the web build's can (ADR 0009).
    --------------------------------------------------------------------------- */
 .mobile-bar { display: none; }
 
-@media (max-width: 1080px) {
-  .rail { width: 100%; flex: 1; border-right: none; }
+@media (max-width: 1180px) {
+  .bar-drawer { display: inline-flex; }
+  .rail-resize { display: none; }
+  .rail {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    display: none;
+    width: min(var(--rail-width, 244px), 92%);
+    box-shadow: var(--shadow-dialog);
+  }
+  .body.drawer-open .rail { display: flex; }
+  .body.drawer-open .rail-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: block;
+    background: color-mix(in oklab, var(--ink-shadow) 35%, transparent);
+  }
+  .bar { gap: 12px; }
+  .bar-facts { display: none; }
+}
+
+@media (max-width: 760px) {
+  .bar-drawer, .bar-layout { display: none; }
+  .body.drawer-open .rail-backdrop { display: none; }
+  .rail { position: static; display: flex; width: 100%; flex: 1; border-right: none; box-shadow: none; }
   .body.on-rail .split { display: none; }
   .body:not(.on-rail) .rail { display: none; }
   .body.on-turn .wire { display: none; }

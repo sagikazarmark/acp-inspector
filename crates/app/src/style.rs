@@ -798,7 +798,12 @@ mod tests {
         assert_eq!(declared(".bar", "flex").as_deref(), Some("none"));
         assert_eq!(declared(".body", "flex").as_deref(), Some("1"));
         assert_eq!(declared(".body", "min-height").as_deref(), Some("0"));
-        assert_eq!(declared(".rail", "width").as_deref(), Some("244px"));
+        // The rail is the drawing's 244px until a reader drags its edge (D18).
+        assert_eq!(
+            declared(".rail", "width").as_deref(),
+            Some("var(--rail-width, 244px)")
+        );
+        assert_eq!(declared(".body", "position").as_deref(), Some("relative"));
         assert_eq!(declared(".rail", "flex").as_deref(), Some("none"));
         assert_eq!(declared(".split", "flex").as_deref(), Some("1"));
         assert_eq!(declared(".turns", "flex").as_deref(), Some("1.45"));
@@ -815,8 +820,47 @@ mod tests {
     }
 
     #[test]
+    fn a_window_too_narrow_for_the_rail_keeps_both_screens_and_opens_the_rail_as_a_drawer() {
+        // **D18.** Below 1180 the turn and the wire keep the width, side by
+        // side, and the rail is drawn over them on request — with a shade
+        // behind it, and the button that asks for it in the bar. Its edge is
+        // not draggable there, because it is not beside anything.
+        let drawer = rules()
+            .into_iter()
+            .filter(|(nesting, _)| {
+                nesting
+                    .first()
+                    .is_some_and(|at| at.contains("max-width: 1180px"))
+            })
+            .map(|(nesting, body)| (selector(&nesting).to_owned(), body))
+            .collect::<Vec<_>>();
+        let says = |subject: &str, wanted: &str| {
+            drawer
+                .iter()
+                .any(|(selector, body)| selector == subject && body.contains(wanted))
+        };
+        assert!(says(".rail", "position: absolute") && says(".rail", "display: none"));
+        assert!(says(".body.drawer-open .rail", "display: flex"));
+        assert!(says(".body.drawer-open .rail-backdrop", "display: block"));
+        assert!(says(".bar-drawer", "display: inline-flex"));
+        assert!(says(".rail-resize", "display: none"));
+        assert!(
+            !drawer
+                .iter()
+                .any(|(selector, body)| selector.contains(".split")
+                    && body.contains("display: none")),
+            "both screens stay on screen"
+        );
+        assert_eq!(declared(".bar-drawer", "display").as_deref(), Some("none"));
+        assert_eq!(
+            declared(".rail-backdrop", "display").as_deref(),
+            Some("none")
+        );
+    }
+
+    #[test]
     fn a_window_too_narrow_for_three_columns_shows_one_region_at_a_time() {
-        // The answer below 1080: one region, and a bar at the foot to choose
+        // The answer below 760: one region, and a bar at the foot to choose
         // between them. The chooser does not exist at full width — a control
         // for switching between three things that are all on screen is three
         // ways to do nothing.
@@ -827,7 +871,7 @@ mod tests {
             .filter(|(nesting, _)| {
                 nesting
                     .first()
-                    .is_some_and(|at| at.contains("max-width: 1080px"))
+                    .is_some_and(|at| at.contains("max-width: 760px"))
             })
             .map(|(nesting, body)| (selector(&nesting).to_owned(), body))
             .collect::<Vec<_>>();
@@ -969,8 +1013,18 @@ mod tests {
                     // the clipped box a visually-hidden control is drawn in, and
                     // it is out of flow so that being off screen costs the row
                     // it is in no room (`timeline.rs`).
-                    [".tail-anchor", ".slash", ".reach"].contains(&selector.as_str()),
-                    "`{selector}` is out of flow and is not one of the three things that may be"
+                    // And the rail where it is a drawer, with the shade behind
+                    // it (D18): both against the body under the bar, which is
+                    // the region the drawer is drawn over.
+                    [
+                        ".tail-anchor",
+                        ".slash",
+                        ".reach",
+                        ".rail",
+                        ".body.drawer-open .rail-backdrop",
+                    ]
+                    .contains(&selector.as_str()),
+                    "`{selector}` is out of flow and is not one of the things that may be"
                 );
             }
         }
@@ -1214,7 +1268,7 @@ mod tests {
 
     #[test]
     fn every_control_family_has_the_same_visible_focus_indicator() {
-        let everything = ":is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible";
+        let everything = ":is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a, [tabindex=\"0\"]):focus-visible";
         let ring = rule(everything);
 
         assert!(

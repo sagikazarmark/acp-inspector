@@ -1938,6 +1938,9 @@
       outline-offset: 2px;
     }
   }
+  .resize {
+    resize: both;
+  }
   .flex-col {
     flex-direction: column;
   }
@@ -2879,7 +2882,7 @@ a:hover {
 :is(.bar, .pane-head, .rail-tabs, .eyebrow, .heading, .wire-name, .wire-filters, .palette-foot, .prompt-foot) {
   user-select: none;
 }
-:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a):focus-visible {
+:is(.btn, .input, .textarea, .select, .toggle, .checkbox, textarea, input, button, summary, a, [tabindex="0"]):focus-visible {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
 }
@@ -3130,7 +3133,6 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   font-size: var(--text-row);
   font-weight: var(--font-weight-label);
   white-space: nowrap;
-  transition: background var(--motion-quick) var(--ease-standard);
 }
 .seg-item:hover {
   color: var(--txt);
@@ -3254,15 +3256,47 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.bar-lights {
+  width: 72px;
+  height: 100%;
+  flex: none;
+  margin-right: -16px;
+}
+.bar-drawer {
+  display: none;
+  flex: none;
+}
 .body {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
 }
+.rail-resize {
+  width: 4px;
+  flex: none;
+  margin-left: -4px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+}
+.rail-resize:hover, [data-resizing] .rail-resize {
+  background: var(--line2);
+}
+.rail-resize:focus-visible {
+  background: var(--acc);
+}
+[data-resizing], [data-resizing] * {
+  cursor: col-resize;
+  user-select: none;
+}
+.rail-backdrop {
+  display: none;
+}
 .rail {
   display: flex;
   flex-direction: column;
-  width: 244px;
+  width: var(--rail-width, 244px);
   flex: none;
   min-height: 0;
   background: var(--panel);
@@ -5124,11 +5158,57 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 .mobile-bar {
   display: none;
 }
-@media (max-width: 1080px) {
+@media (max-width: 1180px) {
+  .bar-drawer {
+    display: inline-flex;
+  }
+  .rail-resize {
+    display: none;
+  }
   .rail {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    display: none;
+    width: min(var(--rail-width, 244px), 92%);
+    box-shadow: var(--shadow-dialog);
+  }
+  .body.drawer-open .rail {
+    display: flex;
+  }
+  .body.drawer-open .rail-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: block;
+    background: var(--ink-shadow);
+    @supports (color: color-mix(in lab, red, red)) {
+      background: color-mix(in oklab, var(--ink-shadow) 35%, transparent);
+    }
+  }
+  .bar {
+    gap: 12px;
+  }
+  .bar-facts {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .bar-drawer, .bar-layout {
+    display: none;
+  }
+  .body.drawer-open .rail-backdrop {
+    display: none;
+  }
+  .rail {
+    position: static;
+    display: flex;
     width: 100%;
     flex: 1;
     border-right: none;
+    box-shadow: none;
   }
   .body.on-rail .split {
     display: none;
