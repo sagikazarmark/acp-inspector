@@ -210,7 +210,7 @@ pub fn Console(
             }
 
             if export_pending {
-                p { class: "saved", role: "status", "Writing Trace snapshot…" }
+                p { class: "saved", role: "status", "Writing the trace…" }
             }
 
             // Only where there is something to narrow. A surface that has

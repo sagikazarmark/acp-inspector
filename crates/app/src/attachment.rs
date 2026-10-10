@@ -247,7 +247,7 @@ impl Attachment {
         if advertised {
             Ok(())
         } else {
-            Err(format!("The Agent did not advertise {kind} prompts."))
+            Err(format!("The agent did not advertise {kind} prompts."))
         }
     }
 }

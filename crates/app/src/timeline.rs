@@ -1047,7 +1047,7 @@ fn unnamed(kind: &EntryKind) -> Element {
                 EntryKind::Unrecognized(Unrecognized::NotServiced { method }) => rsx! {
                     "The agent called "
                     code { "{method}" }
-                    ", which this client does not service — it advertised no capability for it, and answered method-not-found."
+                    ". This client advertised no capability for it, so it answered method-not-found."
                 },
                 EntryKind::Unrecognized(Unrecognized::Undecodable { method, problem }) => rsx! {
                     if let Some(method) = method {

@@ -1025,7 +1025,7 @@ mod tests {
         audio_only.wait_for_work().await;
         audio_only.render_immediate(&mut NoOpMutations);
         assert!(
-            dioxus_ssr::render(&audio_only).contains("The Agent did not advertise image prompts.")
+            dioxus_ssr::render(&audio_only).contains("The agent did not advertise image prompts.")
         );
         dom.runtime().handle_event("change", select(), picker);
         let mut mutations = Vec::new();
