@@ -61,6 +61,7 @@ pub mod shortcut {
 
     pub const PALETTE: Chord = primary(Key::Letter('K'));
     pub const EXPORT: Chord = primary(Key::Letter('E'));
+    pub const OPEN_TRACE: Chord = primary(Key::Letter('O'));
     pub const CLEAR: Chord = Chord {
         shift: true,
         key: Key::Backspace,

@@ -1044,7 +1044,10 @@ fn App() -> Element {
     {
         let menu_open = inspector.clone();
         shell::use_menu(move |command| match command {
-            shell::command::EXPORT_TRACE => {
+            // The Console's Open…: a file, read-only, over the live window.
+            shell::command::OPEN_TRACE => wire.view.choose(wire.live()),
+            // The Console's Export…, which asks where with Save As.
+            shell::command::SAVE_TRACE => {
                 on_export.call(());
             }
             // The Console's own two-step Clear, armed (I2).

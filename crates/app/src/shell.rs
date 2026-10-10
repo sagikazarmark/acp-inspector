@@ -328,7 +328,8 @@ pub fn use_menu(mut answer: impl FnMut(&str) + 'static) {
 
 /// What a menu item asks for. The ids are matched in `main.rs`.
 pub mod command {
-    pub const EXPORT_TRACE: &str = "trace-export";
+    pub const OPEN_TRACE: &str = "trace-open";
+    pub const SAVE_TRACE: &str = "trace-export";
     pub const CLEAR_TRACE: &str = "trace-clear";
     pub const NEW_SESSION: &str = "agent-new-session";
     pub const RESTART: &str = "agent-restart";
@@ -378,6 +379,7 @@ pub fn keys(chord: Chord, mac: bool) -> (Modifiers, Code) {
         Key::Letter('R') => Code::KeyR,
         Key::Letter('K') => Code::KeyK,
         Key::Letter('Q') => Code::KeyQ,
+        Key::Letter('O') => Code::KeyO,
         Key::Letter(_) => Code::Unidentified,
         Key::Digit(1) => Code::Digit1,
         Key::Digit(2) => Code::Digit2,
@@ -432,7 +434,19 @@ pub fn menu() -> Option<Menu> {
     let trace = Submenu::new("Trace", true);
     trace
         .append_items(&[
-            &item(command::EXPORT_TRACE, "Export…", Some(shortcut::EXPORT)),
+            // Opening a file is the view the Console's own Open… shows;
+            // saving is the Console's Export…, which asks where with the
+            // platform's Save As (F5).
+            &item(
+                command::OPEN_TRACE,
+                "Open trace…",
+                Some(shortcut::OPEN_TRACE),
+            ),
+            &item(
+                command::SAVE_TRACE,
+                "Save trace as…",
+                Some(shortcut::EXPORT),
+            ),
             &PredefinedMenuItem::separator(),
             &item(command::CLEAR_TRACE, "Clear", Some(shortcut::CLEAR)),
         ])
@@ -608,6 +622,7 @@ mod tests {
         );
         for chord in [
             shortcut::EXPORT,
+            shortcut::OPEN_TRACE,
             shortcut::CLEAR,
             shortcut::NEW_SESSION,
             shortcut::RESTART,
@@ -640,7 +655,7 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("pub const "))
             .filter_map(|line| line.split_once(':').map(|(name, _)| name))
             .collect::<Vec<_>>();
-        assert_eq!(declared.len(), 10, "every command is found: {declared:?}");
+        assert_eq!(declared.len(), 11, "every command is found: {declared:?}");
 
         for name in declared {
             assert!(
