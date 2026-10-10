@@ -374,16 +374,14 @@ fn focus_tab(tab: Tab) {
 pub(crate) enum Axis {
     /// A tablist: ←/→ move and wrap, the WAI-ARIA tabs pattern.
     Horizontal,
-    /// A list of rows: ↑/↓ move and stop at the ends.
-    Vertical,
 }
 
 /// Where a key moves the focus in a set of `len` items, from `at` — or `None`
 /// for a key that does not move it.
 ///
-/// One answer for every roving set in the window (the Console's tabs, the
-/// elicitation's Form/Raw tabs, the Timeline and Trace rows), so they cannot
-/// come to disagree about what Home means.
+/// One answer for the roving sets drawn in Rust (the Console's tabs, the
+/// elicitation's Form/Raw tabs, and the rail's tabs if it wants them). The
+/// Timeline and Trace lists rove in [`ROVE`], which moves the same way.
 pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize> {
     if len == 0 {
         return None;
@@ -395,10 +393,57 @@ pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize
         (_, Key::End) => Some(last),
         (Axis::Horizontal, Key::ArrowRight) => Some(if at == last { 0 } else { at + 1 }),
         (Axis::Horizontal, Key::ArrowLeft) => Some(if at == 0 { last } else { at - 1 }),
-        (Axis::Vertical, Key::ArrowDown) => Some((at + 1).min(last)),
-        (Axis::Vertical, Key::ArrowUp) => Some(at.saturating_sub(1)),
         _ => None,
     }
+}
+
+/// One Tab stop for a long list (A4): ↑/↓ move to the row above or below *on
+/// screen*, Home/End to the first and last, and Enter presses the row's
+/// `activate` control where one is named.
+///
+/// In the page rather than in Rust, because only the page knows which element
+/// a key landed on: a key typed into a field inside a row must stay the
+/// field's. Rows are ordered by where they are drawn, so the list's DOM order
+/// (newest first, laid out bottom-up) does not leak into the keys. Which row
+/// holds `tabindex="0"` is the screen's to render; this only moves focus.
+const ROVE: &str = r#"
+const [listSelector, rowSelector, activateSelector] = await dioxus.recv();
+await new Promise(requestAnimationFrame);
+const list = document.querySelector(listSelector);
+if (!list || list.dataset.roving === "true") return;
+list.dataset.roving = "true";
+list.addEventListener("keydown", (event) => {
+  const row = event.target;
+  if (!(row instanceof HTMLElement) || !row.matches(rowSelector)) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === "Enter" && activateSelector) {
+    const control = row.querySelector(activateSelector);
+    if (control) { event.preventDefault(); control.click(); }
+    return;
+  }
+  const rows = Array.from(list.querySelectorAll(rowSelector))
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  const at = rows.indexOf(row);
+  let next;
+  switch (event.key) {
+    case "ArrowDown": next = rows[Math.min(at + 1, rows.length - 1)]; break;
+    case "ArrowUp": next = rows[Math.max(at - 1, 0)]; break;
+    case "Home": next = rows[0]; break;
+    case "End": next = rows[rows.length - 1]; break;
+    default: return;
+  }
+  event.preventDefault();
+  if (next && next !== row) {
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "nearest" });
+  }
+});
+"#;
+
+/// Makes the list `list` (a selector) rove between its `row`s, once.
+pub(crate) fn rove(list: &str, row: &str, activate: Option<&str>) {
+    let roving = document::eval(ROVE);
+    let _ = roving.send((list.to_owned(), row.to_owned(), activate.map(str::to_owned)));
 }
 
 /// Moves focus to the element with this id, once it is in the document.
