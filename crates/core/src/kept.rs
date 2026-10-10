@@ -14,6 +14,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The directory the inspector keeps its own state under, inside the platform's.
 const DIRECTORY: &str = "acp-inspector";
@@ -49,14 +50,31 @@ pub(crate) fn location(file: &str) -> Option<PathBuf> {
     Some(base.join(DIRECTORY).join(file))
 }
 
+/// Reads a document and parses it with `parse`.
+///
+/// A file that is there but cannot be read as one of these is moved aside to
+/// `<name>.bak` rather than left for the next save to overwrite; the second
+/// value is where it went. A missing file is just an empty answer.
+pub(crate) fn load<T>(
+    path: &Path,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> (Option<T>, Option<PathBuf>) {
+    let Ok(bytes) = fs::read(path) else {
+        return (None, None);
+    };
+    if let Some(parsed) = std::str::from_utf8(&bytes).ok().and_then(parse) {
+        return (Some(parsed), None);
+    }
+    let backup = beside(path, ".bak");
+    (None, fs::rename(path, &backup).ok().map(|()| backup))
+}
+
 /// Puts a document where it lives, making the directory if it is not there yet.
 ///
-/// **Written beside and moved into place**, so a save interrupted partway — the
-/// window quit, the disk filled — leaves either the old file or the new one and
-/// never half of one, which would read as no file at all and take everything
-/// that was already in it along. Nothing is flushed to the platter: these are
-/// conveniences, and a file that survives a crash but not a power cut is the
-/// trade the export makes too.
+/// **Written beside, synced, and moved into place**, so a save interrupted
+/// partway — the window quit, the disk filled, the power cut — leaves either
+/// the old file or the new one and never half of one. The staging name is
+/// unique, so two saves at once cannot write into each other's.
 pub(crate) fn replace(path: &Path, document: &str, access: Access) -> io::Result<()> {
     if let Some(directory) = path.parent() {
         fs::create_dir_all(directory)?;
@@ -67,7 +85,14 @@ pub(crate) fn replace(path: &Path, document: &str, access: Access) -> io::Result
         .and_then(|()| fs::rename(&staged, path))
         .inspect_err(|_| {
             let _ = fs::remove_file(&staged);
-        })
+        })?;
+    // Makes the rename itself durable; best effort, as not every filesystem
+    // lets a directory be synced.
+    #[cfg(unix)]
+    if let Some(directory) = path.parent() {
+        let _ = File::open(directory).and_then(|directory| directory.sync_all());
+    }
+    Ok(())
 }
 
 /// Where a new document is written before it becomes the file.
@@ -75,22 +100,27 @@ pub(crate) fn replace(path: &Path, document: &str, access: Access) -> io::Result
 /// Beside the real file rather than in a temp directory, because the move that
 /// puts it in place is only atomic within one filesystem.
 fn staging(path: &Path) -> PathBuf {
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(".new");
-    PathBuf::from(staged)
+    static STAGED: AtomicU64 = AtomicU64::new(0);
+    let nth = STAGED.fetch_add(1, Ordering::Relaxed);
+    beside(path, &format!(".{}-{nth}.new", std::process::id()))
+}
+
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut beside = path.as_os_str().to_owned();
+    beside.push(suffix);
+    PathBuf::from(beside)
 }
 
 fn write(path: &Path, document: &str, access: Access) -> io::Result<()> {
     let mut file = create(path, access)?;
     file.write_all(document.as_bytes())?;
-    file.flush()
+    file.sync_all()
 }
 
-/// Creates the staging file, over whatever a previous interrupted save left
-/// there.
+/// Creates the staging file, which no one else can have.
 fn create(path: &Path, access: Access) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

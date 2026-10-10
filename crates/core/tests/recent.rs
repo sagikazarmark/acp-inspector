@@ -117,6 +117,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "\n  --flag  \n\n  value\n".to_owned(),
             env: "\n ACP_LOG=debug \n".to_owned(),
             cwd: " /tmp \n".to_owned(),
+            ..AgentCommand::default()
         })
         .expect("somewhere to write");
 
@@ -127,6 +128,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "--flag\nvalue".to_owned(),
             env: "ACP_LOG=debug".to_owned(),
             cwd: "/tmp".to_owned(),
+            ..AgentCommand::default()
         }],
         "the blank lines and the padding are what the spawn already ignores"
     );
@@ -139,6 +141,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "--flag\n\nvalue  ".to_owned(),
             env: "ACP_LOG=debug".to_owned(),
             cwd: "/tmp".to_owned(),
+            ..AgentCommand::default()
         })
         .expect("somewhere to write");
     assert_eq!(recent.entries().len(), 1, "{:?}", recent.entries());
@@ -168,6 +171,13 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
     // that keeps the form working.
     let recent = RecentCommands::load_from(&path);
     assert!(recent.entries().is_empty());
+    // Set aside rather than overwritten by the next save.
+    let backup = recent.backup().expect("the unreadable file was kept");
+    assert_eq!(backup, path.with_extension("json.bak"));
+    assert_eq!(
+        std::fs::read_to_string(backup).unwrap(),
+        "{ this is not the file we left }"
+    );
 
     recent
         .record(&typed("npx", ""))
@@ -176,6 +186,42 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
         named(&RecentCommands::load_from(&path)),
         ["npx"],
         "and the next launch is remembered over it"
+    );
+    assert!(RecentCommands::load_from(&path).backup().is_none());
+    let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        left.iter().all(|name| !name.ends_with(".new")),
+        "no staging file is left behind: {left:?}"
+    );
+}
+
+#[test]
+fn an_environment_to_unset_or_clear_is_remembered_and_older_files_still_load() {
+    let path = scratch("environment").join("recent.json");
+    std::fs::write(
+        &path,
+        r#"{"format":"acp-inspector-recent","version":1,"commands":[{"command":"old","args":"","env":"","cwd":""}]}"#,
+    )
+    .unwrap();
+    let recent = RecentCommands::load_from(&path);
+    assert_eq!(named(&recent), ["old"], "a file without the new fields");
+
+    let command = AgentCommand {
+        command: "agent".to_owned(),
+        unset: "\n OPENAI_API_KEY \n".to_owned(),
+        clear_env: true,
+        ..AgentCommand::default()
+    };
+    recent.record(&command).unwrap();
+    let reloaded = RecentCommands::load_from(&path).entries();
+    assert_eq!(reloaded[0].unset, "OPENAI_API_KEY");
+    assert!(reloaded[0].clear_env);
+    assert_eq!(
+        reloaded[0].unset_names().collect::<Vec<_>>(),
+        ["OPENAI_API_KEY"]
     );
 }
 

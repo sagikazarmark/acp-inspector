@@ -65,6 +65,7 @@ pub struct Settings {
     /// Where they are kept, or `None` on a machine with nowhere to keep them.
     path: Option<PathBuf>,
     held: Arc<Mutex<Preferences>>,
+    backup: Option<PathBuf>,
 }
 
 /// Everything the window remembers, which is what a save writes and what a load
@@ -116,6 +117,7 @@ impl Settings {
             None => Self {
                 path: None,
                 held: Arc::default(),
+                backup: None,
             },
         }
     }
@@ -124,11 +126,17 @@ impl Settings {
     /// does once it knows where, and what the tests drive.
     pub fn load_from(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let held = read(&path).unwrap_or_default();
+        let (held, backup) = read(&path);
         Self {
             path: Some(path),
-            held: Arc::new(Mutex::new(held)),
+            held: Arc::new(Mutex::new(held.unwrap_or_default())),
+            backup,
         }
+    }
+
+    /// Where loading set aside a file it could not read, if it did.
+    pub fn backup(&self) -> Option<&Path> {
+        self.backup.as_deref()
     }
 
     /// Where the preferences live when nobody says otherwise: the platform's own
@@ -220,10 +228,13 @@ impl Settings {
 /// is a file this cannot use — and all four are the same answer, because none of
 /// them is a reason a window should not open: the operating system has an answer
 /// for how the window should look, and the wire is an answer for how a payload
-/// is drawn.
-fn read(path: &Path) -> Option<Preferences> {
-    let document = std::fs::read_to_string(path).ok()?;
-    let file: Stored = serde_json::from_str(&document).ok()?;
+/// is drawn. An unusable file is set aside as `.bak` rather than overwritten.
+fn read(path: &Path) -> (Option<Preferences>, Option<PathBuf>) {
+    kept::load(path, parse)
+}
+
+fn parse(document: &str) -> Option<Preferences> {
+    let file: Stored = serde_json::from_str(document).ok()?;
     (file.format == FORMAT && file.version == VERSION).then_some(Preferences {
         appearance: file.appearance,
         indentation: file.indentation,

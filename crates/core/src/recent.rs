@@ -21,7 +21,6 @@
 //! convenience is not evidence about an agent, and a form that refused to open
 //! over it would be the tail wagging the tool.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -63,6 +62,7 @@ pub struct RecentCommands {
     /// Where the list is kept, or `None` on a machine with nowhere to keep it.
     path: Option<PathBuf>,
     held: Arc<Mutex<Vec<AgentCommand>>>,
+    backup: Option<PathBuf>,
 }
 
 /// The file, as this writes it.
@@ -103,6 +103,7 @@ impl RecentCommands {
             None => Self {
                 path: None,
                 held: Arc::default(),
+                backup: None,
             },
         }
     }
@@ -111,11 +112,17 @@ impl RecentCommands {
     /// it knows where, and what the tests drive.
     pub fn load_from(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let held = read(&path).unwrap_or_default();
+        let (held, backup) = read(&path);
         Self {
             path: Some(path),
-            held: Arc::new(Mutex::new(held)),
+            held: Arc::new(Mutex::new(held.unwrap_or_default())),
+            backup,
         }
+    }
+
+    /// Where loading set aside a file it could not read, if it did.
+    pub fn backup(&self) -> Option<&Path> {
+        self.backup.as_deref()
     }
 
     /// Where the list lives when nobody says otherwise: the platform's own
@@ -215,16 +222,20 @@ impl RecentCommands {
 ///
 /// A missing file is the first run of the app; a file that will not parse, or
 /// says it is something else, is a file this cannot use — and all three are the
-/// same answer, because none of them is a reason a form should not open.
+/// same answer, because none of them is a reason a form should not open. An
+/// unusable file is set aside as `.bak` rather than overwritten.
 ///
 /// What comes in is held to what [`record`](RecentCommands::record) would have
 /// written: trimmed to the bound, so a hand-enlarged file does not become a list
 /// the form has to scroll, and normalized, so an entry somebody typed into the
 /// file is the same value as the one relaunching it would record — otherwise the
 /// relaunch would sit beside its own copy.
-fn read(path: &Path) -> Option<Vec<AgentCommand>> {
-    let document = fs::read_to_string(path).ok()?;
-    let file: Stored = serde_json::from_str(&document).ok()?;
+fn read(path: &Path) -> (Option<Vec<AgentCommand>>, Option<PathBuf>) {
+    kept::load(path, parse)
+}
+
+fn parse(document: &str) -> Option<Vec<AgentCommand>> {
+    let file: Stored = serde_json::from_str(document).ok()?;
     (file.format == FORMAT && file.version == VERSION).then(|| {
         let mut commands: Vec<_> = file.commands.iter().map(AgentCommand::normalized).collect();
         commands.truncate(RecentCommands::CAPACITY);

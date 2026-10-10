@@ -32,7 +32,7 @@ use crate::call::CallError;
 use crate::client::{Client, Stores, drives};
 use crate::command::AgentCommand;
 use crate::connection::{
-    ConnectionFactory, Diagnostic, DiagnosticKind, DiagnosticStream, FrameStream,
+    ConnectionFactory, Diagnostic, DiagnosticKind, DiagnosticStream, FrameSink, FrameStream,
 };
 use crate::driven::{AgentCapability, DrivenRecord};
 use crate::elicitation::ElicitationRequest;
@@ -40,7 +40,9 @@ use crate::listing::{Cursor, SessionListing};
 use crate::permission::PermissionRequest;
 use crate::restore::Restore;
 use crate::roots::{self, Roots};
+use crate::rpc::PendingCall;
 use crate::session_settings::SessionSettings;
+use crate::store::locked;
 use crate::store::{Changes, Field, Log};
 use crate::timeline::Timeline;
 use crate::trace::Trace;
@@ -131,7 +133,10 @@ impl std::ops::Deref for Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        self.0.release(ConnectionStatus::Disconnected);
+        self.0.release(ConnectionStatus::Disconnected, false);
+        for stopping in std::mem::take(&mut *locked(&self.0.stopping)) {
+            stopping.kill();
+        }
     }
 }
 
@@ -143,6 +148,9 @@ struct State {
     status: Field<ConnectionStatus>,
     stores: Stores,
     connection: Mutex<Option<Live>>,
+    /// Connections released gracefully whose agent may still be stopping, so
+    /// an immediate disconnect or teardown can still kill it.
+    stopping: Mutex<Vec<FrameSink>>,
 }
 
 /// The connection the inspector currently has, and the two things that end it.
@@ -189,7 +197,7 @@ impl Inspector {
         // Read before the teardown below clears it: what the timeline is a view
         // of, if it is a view of anything.
         let leaving = self.0.stores.session.get().is_some();
-        self.disconnect();
+        self.disconnect_gracefully();
 
         let connection = self.0.trace.tap(factory.connect());
         let (outgoing, incoming, diagnostics) = connection.into_parts();
@@ -779,8 +787,40 @@ impl Inspector {
     /// A connection that already ended by itself leaves nothing to disconnect,
     /// and this says nothing over the status that reported it: the news that an
     /// agent was lost has to survive a click.
+    ///
+    /// Immediate: the agent's process group is killed before this returns,
+    /// with no further executor ticks — the path for window and runtime
+    /// teardown. It also ends any graceful stop still in progress.
     pub fn disconnect(&self) {
-        self.0.release(ConnectionStatus::Disconnected);
+        self.0.release(ConnectionStatus::Disconnected, false);
+        for stopping in std::mem::take(&mut *locked(&self.0.stopping)) {
+            stopping.kill();
+        }
+    }
+
+    /// Ends the connection like [`disconnect`](Self::disconnect), but asks the
+    /// agent to stop rather than killing it: stdin is closed, then after a
+    /// short grace its process group gets SIGTERM, then SIGKILL. Which step
+    /// ended it is recorded as a [`DiagnosticKind::Stopped`] line.
+    ///
+    /// For an explicit disconnect; a reconnect does the same to the old agent.
+    pub fn disconnect_gracefully(&self) {
+        self.0.release(ConnectionStatus::Disconnected, true);
+    }
+
+    /// The calls this client sent on the live connection that have no answer
+    /// yet, oldest first. Empty when there is no connection.
+    pub fn pending_calls(&self) -> Vec<PendingCall> {
+        self.client()
+            .map(|client| client.pending_calls())
+            .unwrap_or_default()
+    }
+
+    /// Sends `$/cancel_request` for a call still waiting on its answer. The
+    /// call stays pending until the agent answers it, as the protocol asks it
+    /// to (a result, or error -32800).
+    pub async fn cancel_call(&self, id: i64) -> Result<(), CallError> {
+        self.client()?.cancel_call(id).await
     }
 
     pub fn status(&self) -> ConnectionStatus {
@@ -1163,7 +1203,7 @@ impl State {
             // Nothing is on the other end any more, so nothing here should be
             // holding a connection to it: "connected" and "holding a
             // connection" are the same fact, and this is where they stay one.
-            self.release_locked(&mut connection, status);
+            self.release_locked(&mut connection, status, false);
         }
     }
 
@@ -1187,13 +1227,21 @@ impl State {
     /// one. A call left pending across a teardown is the hang this design is
     /// against, and a turn is the one that would be visible: it would sit on
     /// the screen looking like it was still running.
-    fn release(&self, status: ConnectionStatus) {
-        self.release_locked(&mut self.connection(), status);
+    ///
+    /// `graceful` asks the transport to stop the agent politely rather than at
+    /// once ([`Inspector::disconnect_gracefully`]).
+    fn release(&self, status: ConnectionStatus, graceful: bool) {
+        self.release_locked(&mut self.connection(), status, graceful);
     }
 
-    fn release_locked(&self, live: &mut Option<Live>, status: ConnectionStatus) {
+    fn release_locked(&self, live: &mut Option<Live>, status: ConnectionStatus, graceful: bool) {
         if let Some(connection) = live.take() {
             self.status.set(status);
+            if graceful {
+                let sink = connection.client.sink();
+                sink.stop_gracefully();
+                locked(&self.stopping).push(sink.clone());
+            }
             connection.client.disconnected();
             connection.shutdown.cancel();
         }
@@ -1245,17 +1293,52 @@ impl State {
 async fn read(
     state: Arc<State>,
     client: Client,
-    mut incoming: FrameStream,
+    incoming: FrameStream,
     mut diagnostics: DiagnosticStream,
     shutdown: CancellationToken,
 ) {
+    let sink = client.sink().clone();
+    let released = drain(&state, client, incoming, &mut diagnostics, &shutdown).await;
+    if released && sink.stopping_gracefully() {
+        stopped(&state, &sink, diagnostics).await;
+    }
+}
+
+/// How long a graceful stop may take to report how it ended.
+const STOPPING: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// After a graceful disconnect, logs the one line saying how the agent
+/// stopped. The frames are no longer read; the rest of its stderr is drained
+/// and dropped.
+async fn stopped(state: &State, sink: &FrameSink, mut diagnostics: DiagnosticStream) {
+    let _ = tokio::time::timeout(STOPPING, async {
+        while let Some(diagnostic) = diagnostics.recv().await {
+            if matches!(diagnostic.kind, DiagnosticKind::Stopped { .. }) {
+                state.diagnostics.entries.append(diagnostic);
+                return;
+            }
+        }
+    })
+    .await;
+    locked(&state.stopping).retain(|stopping| !stopping.same(sink));
+}
+
+/// Reads frames and diagnostics into the stores. True when it stopped because
+/// the inspector released the connection.
+async fn drain(
+    state: &State,
+    client: Client,
+    mut incoming: FrameStream,
+    diagnostics: &mut DiagnosticStream,
+    shutdown: &CancellationToken,
+) -> bool {
     // Keep ordered Frame handling (including bounded automatic reply sends)
     // concurrent with diagnostics. A stalled reply must not prevent observing
     // a terminal read failure or draining stderr that the Agent is waiting on.
     let receive = async {
-        while let Some(Some(frame)) = state.while_connected(&shutdown, incoming.recv()).await {
+        while let Some(Some(frame)) = state.while_connected(shutdown, incoming.recv()).await {
             if state
-                .while_connected(&shutdown, client.receive(frame))
+                .while_connected(shutdown, client.receive(frame))
                 .await
                 .is_none()
             {
@@ -1270,7 +1353,7 @@ async fn read(
 
     while frames || lines {
         tokio::select! {
-            () = shutdown.cancelled() => return,
+            () = shutdown.cancelled() => return true,
             () = &mut receive, if frames => frames = false,
             diagnostic = diagnostics.recv(), if lines && exit.is_none() => match diagnostic {
                 Some(diagnostic) if matches!(diagnostic.kind, DiagnosticKind::AgentExited(_)) => {
@@ -1278,13 +1361,14 @@ async fn read(
                     // channel means its exit can overtake the queued tail.
                     exit = Some(diagnostic);
                 }
-                Some(diagnostic) => state.observe(diagnostic, &shutdown),
+                Some(diagnostic) => state.observe(diagnostic, shutdown),
                 None => lines = false,
             },
         }
         if !frames && let Some(diagnostic) = exit.take() {
-            state.observe(diagnostic, &shutdown);
-            return;
+            state.observe(diagnostic, shutdown);
+            return false;
         }
     }
+    false
 }

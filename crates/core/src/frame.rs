@@ -3,6 +3,7 @@
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+use std::time::{Instant, SystemTime};
 
 /// One JSON-RPC message as it crossed the wire (`CONTEXT.md`, *Frame*).
 ///
@@ -20,6 +21,27 @@ pub struct Frame(Arc<Contents>);
 struct Contents {
     text: Arc<str>,
     summary: OnceLock<FrameSummary>,
+    origin: Origin,
+    /// When a transport read it, for frames that came off a pipe.
+    read: Option<(SystemTime, Instant)>,
+}
+
+/// How the text relates to the bytes that crossed.
+enum Origin {
+    Verbatim,
+    /// Not valid UTF-8: the text is a lossy decoding of these bytes.
+    Lossy(Box<[u8]>),
+    /// Too long to carry: the text is a lossy decoding of the retained prefix.
+    Omitted(Omission),
+}
+
+/// What a placeholder stands in for: a line the transport read but dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Omission {
+    /// The line's length in bytes, line ending excluded.
+    pub length: usize,
+    /// The transport's limit it was over.
+    pub limit: usize,
 }
 
 impl PartialEq for Frame {
@@ -38,16 +60,85 @@ pub enum Direction {
     FromAgent,
 }
 
+impl Direction {
+    pub(crate) fn opposite(self) -> Self {
+        match self {
+            Self::ToAgent => Self::FromAgent,
+            Self::FromAgent => Self::ToAgent,
+        }
+    }
+}
+
 impl Frame {
     pub fn new(text: impl Into<Arc<str>>) -> Self {
+        Self::build(text.into(), Origin::Verbatim, None)
+    }
+
+    /// A line a transport has just read, stamped now. Bytes that are not UTF-8
+    /// are decoded lossily and kept, so the frame is recorded rather than lost.
+    pub fn read(bytes: Vec<u8>) -> Self {
+        let read = Some((SystemTime::now(), Instant::now()));
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::build(text.into(), Origin::Verbatim, read),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                Self::build(text.into(), Origin::Lossy(bytes.into()), read)
+            }
+        }
+    }
+
+    /// A placeholder for a line a transport read but could not carry. `prefix`
+    /// is what it kept of the line's start.
+    pub fn omitted(prefix: &[u8], omission: Omission) -> Self {
+        let text = String::from_utf8_lossy(prefix).into_owned();
+        let read = Some((SystemTime::now(), Instant::now()));
+        Self::build(text.into(), Origin::Omitted(omission), read)
+    }
+
+    fn build(text: Arc<str>, origin: Origin, read: Option<(SystemTime, Instant)>) -> Self {
         Self(Arc::new(Contents {
-            text: text.into(),
+            text,
             summary: OnceLock::new(),
+            origin,
+            read,
         }))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0.text
+    }
+
+    /// The bytes that crossed: the text's own, unless the frame
+    /// [is lossy](Self::is_lossy).
+    pub fn bytes(&self) -> &[u8] {
+        match &self.0.origin {
+            Origin::Lossy(bytes) => bytes,
+            _ => self.0.text.as_bytes(),
+        }
+    }
+
+    /// Whether the text is a lossy decoding of bytes that were not UTF-8.
+    pub fn is_lossy(&self) -> bool {
+        matches!(self.0.origin, Origin::Lossy(_))
+    }
+
+    /// Set when this is a placeholder for a frame the transport dropped; the
+    /// text is then the start of that frame, not the frame.
+    pub fn omission(&self) -> Option<Omission> {
+        match self.0.origin {
+            Origin::Omitted(omission) => Some(omission),
+            _ => None,
+        }
+    }
+
+    /// When a transport read this frame, for one that came off a pipe.
+    pub fn read_at(&self) -> Option<SystemTime> {
+        self.0.read.map(|(at, _)| at)
+    }
+
+    pub(crate) fn read_instant(&self) -> Option<Instant> {
+        self.0.read.map(|(_, at)| at)
     }
 
     /// What the frame says it is, for a surface that has to draw a thousand of
@@ -67,6 +158,9 @@ impl Frame {
     /// summary is a thing put *in front of* the bytes, never instead of them.
     pub fn summary(&self) -> &FrameSummary {
         self.0.summary.get_or_init(|| {
+            if self.omission().is_some() {
+                return FrameSummary::unreadable();
+            }
             serde_json::from_str(self.as_str()).unwrap_or_else(|_| FrameSummary::unreadable())
         })
     }
@@ -111,6 +205,42 @@ pub struct FrameSummary {
     pub method: Option<String>,
     /// The id it carried, as it was written.
     pub id: Option<String>,
+    /// The id as a match key, keeping its JSON type.
+    pub(crate) key: Option<IdKey>,
+}
+
+/// An id as JSON-RPC matches it, and as a careless agent might.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdKey {
+    /// The id's JSON: `3` and `"3"` differ, as JSON-RPC says they do.
+    pub(crate) exact: String,
+    /// The integer it means whatever its type, where it means one.
+    pub(crate) loose: Option<String>,
+}
+
+impl IdKey {
+    fn of(raw: &str, value: &serde_json::Value) -> Option<Self> {
+        match value {
+            serde_json::Value::String(text) => Some(Self {
+                exact: serde_json::to_string(text).ok()?,
+                loose: integral(text).map(|id| id.to_string()),
+            }),
+            serde_json::Value::Number(_) => Some(Self {
+                exact: raw.trim().to_owned(),
+                loose: integral(raw).map(|id| id.to_string()),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The integer a number's spelling means, if it means one: `3`, `3.0`, `"3"`.
+pub(crate) fn integral(text: &str) -> Option<i64> {
+    let text = text.trim();
+    text.parse::<i64>().ok().or_else(|| {
+        let float = text.parse::<f64>().ok()?;
+        (float.fract() == 0.0 && float.abs() < 9.0e15).then_some(float as i64)
+    })
 }
 
 // Validate the envelope once, borrowing and skipping payloads without allocating
@@ -125,6 +255,7 @@ impl<'de> Deserialize<'de> for FrameSummary {
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                 let (mut method, mut id, mut result, mut error) = (None, None, false, false);
+                let mut id_key = None;
                 while let Some(key) = map.next_key::<String>()? {
                     let raw = map.next_value::<&serde_json::value::RawValue>()?;
                     match key.as_str() {
@@ -132,9 +263,10 @@ impl<'de> Deserialize<'de> for FrameSummary {
                         "id" => {
                             // Use the existing Value number semantics for this label only;
                             // never convert IDs through f64 ourselves or decode payloads.
-                            id = match serde_json::from_str::<serde_json::Value>(raw.get())
-                                .map_err(serde::de::Error::custom)?
-                            {
+                            let value = serde_json::from_str::<serde_json::Value>(raw.get())
+                                .map_err(serde::de::Error::custom)?;
+                            id_key = IdKey::of(raw.get(), &value);
+                            id = match value {
                                 serde_json::Value::String(s) => Some(s),
                                 serde_json::Value::Number(n) => Some(n.to_string()),
                                 _ => None,
@@ -152,7 +284,12 @@ impl<'de> Deserialize<'de> for FrameSummary {
                     (None, false, _) if result => FrameKind::Result,
                     _ => FrameKind::Unreadable,
                 };
-                Ok(FrameSummary { kind, method, id })
+                Ok(FrameSummary {
+                    kind,
+                    method,
+                    id,
+                    key: id_key,
+                })
             }
         }
         deserializer.deserialize_map(Envelope)
@@ -165,6 +302,7 @@ impl FrameSummary {
             kind: FrameKind::Unreadable,
             method: None,
             id: None,
+            key: None,
         }
     }
 

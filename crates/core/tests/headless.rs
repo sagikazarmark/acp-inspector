@@ -1,7 +1,7 @@
 //! The core's dependency boundary, verified against the resolved graph rather
-//! than promised in prose — the host repo's `no_dioxus.rs` habit
-//! (`crates/dioxus-agent-ui-core/tests/no_dioxus.rs`, ADR 0006), applied to the
-//! two rules `docs/architecture.md` §3 and §5 set for this crate:
+//! than promised in prose — a habit carried over from the host project
+//! (`docs/architecture.md` §13), applied to the two rules §3 and §5 set for
+//! this crate:
 //!
 //! - **zero UI dependencies**, which is what keeps a web surface additive
 //!   instead of a rewrite, and what makes "if it needs a window to test, it

@@ -54,6 +54,7 @@ pub fn SpawnForm(
         args: args(),
         env: env(),
         cwd: cwd(),
+        ..AgentCommand::default()
     });
 
     // Selecting a remembered invocation is a *refill*, not a launch: the fields
@@ -682,6 +683,7 @@ agent-package""#,
             args: args.to_owned(),
             env: env.to_owned(),
             cwd: cwd.to_owned(),
+            ..AgentCommand::default()
         }
     }
 
