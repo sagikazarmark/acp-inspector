@@ -322,7 +322,6 @@ fn invocation(command: &AgentCommand) -> String {
 #[cfg(test)]
 mod tests {
     use acp_inspector_core::{ProtocolVersion, v1};
-    use dioxus::prelude::*;
 
     use super::*;
 

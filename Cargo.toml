@@ -8,6 +8,10 @@ members = ["crates/core", "crates/app"]
 
 [workspace.package]
 edition = "2024"
+# The oldest toolchain the workspace builds on, checked with `cargo check
+# --workspace --all-targets`: dioxus-field and schemaform need 1.92. The
+# toolchain checks run on is pinned separately, in `rust-toolchain.toml`.
+rust-version = "1.92"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sagikazarmark/acp-inspector"
 # Nothing here is published yet; the names are already the ones that would be.

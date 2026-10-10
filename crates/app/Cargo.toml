@@ -3,6 +3,7 @@ name = "acp-inspector"
 version = "0.0.1"
 description = "The ACP Inspector: strictly presentational screens over acp-inspector-core, one binary with a feature per renderer"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
