@@ -9,13 +9,17 @@
 # CI step both call it, so a green CI run and a local `cargo test` are running
 # the same agent.
 #
-# The revision defaults to `main`: the spec accepts rust-sdk `main` as a
-# dev-time moving part rather than pinning a rev that would silently rot.
-# Override any of the three environment variables to test against a fixed rev.
+# The revision is pinned to rust-sdk v3.3.0, by the commit the tag points at so
+# a moved tag cannot change it: the suite asserts on Testy's exact behaviour,
+# and tracking `main` lets an upstream change turn a green checkout red with no
+# commit here. Bump it deliberately, in the same commit as whatever the new
+# Testy needs. The same rev is the default in `dagger.dang`. Override any of the
+# three environment variables to build another checkout or rev
+# (`ACP_RUST_SDK_REV=main` for the moving one).
 set -euo pipefail
 
 repo="${ACP_RUST_SDK_REPO:-https://github.com/agentclientprotocol/rust-sdk.git}"
-rev="${ACP_RUST_SDK_REV:-main}"
+rev="${ACP_RUST_SDK_REV:-199532c7433f1aec207dd0cada299901a5621ece}" # v3.3.0
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checkout="${ACP_RUST_SDK_DIR:-$root/.testy/rust-sdk}"

@@ -31,9 +31,10 @@ type AcpInspector {
     """
     repo: String! = "https://github.com/agentclientprotocol/rust-sdk.git",
     """
-    Git ref (branch, tag or commit) to build Testy from.
+    Git ref (branch, tag or commit) to build Testy from. Pinned to rust-sdk v3.3.0, the same
+    rev `scripts/build-testy.sh` defaults to: the suite asserts on Testy's exact behaviour.
     """
-    rev: String! = "main",
+    rev: String! = "199532c7433f1aec207dd0cada299901a5621ece",
     """
     Platform to build the binary for: linux/amd64, linux/arm64, darwin/amd64 or darwin/arm64.
     """
