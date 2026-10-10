@@ -7,20 +7,6 @@ version may change the trace export, the state files or the window.
 
 ## [Unreleased]
 
-### Added
-
-- **Headless CLI** (`acp-inspector-cli`, a new `crates/cli`). `run` spawns an
-  agent (with `--cwd`, `--env`, `--unset`, `--clear-env`), drives `initialize`,
-  `session/new` and each `--prompt`/`--prompt-file` in order, answers
-  permission requests by `--permission ask|allow|reject` (never an
-  `*_always` option when allowing), cancels elicitations, stops the agent
-  gracefully, writes the app's JSONL trace with `--export`, and prints a text
-  or `--json` summary with the agent, capabilities, stop reasons, tool calls,
-  conformance annotations and diagnostics. Exit codes: 0 ok, 1 agent or
-  protocol failure, 2 conformance annotations, 3 `--timeout`, 64 usage, 130
-  Ctrl-C. `inspect` counts an exported trace's frames by direction and
-  method. No renderer and no new dependency; see "Headless CLI" in the README.
-
 ## [0.1.0]
 
 The first release: a desktop tool that spawns one Agent Client Protocol agent
@@ -69,16 +55,29 @@ wire side by side.
 - **MCP server definitions** (stdio, HTTP, SSE) supplied on session opening.
 - **Conformance annotations** where captured traffic decides a MUST (for
   example, a `session/load` that answered without replaying).
-- **Trace console.** Filters, paging, a selected-frame pane with optional
-  indentation that never changes the bytes, and copy of the complete original
-  frame. Bounded retention with explicit, counted loss.
-- **JSONL trace export** with a self-describing header
-  ([schema](docs/trace-export.md)).
-- **Window.** Light and dark themes following the system or chosen, a command
-  palette, keyboard navigation, and a single-region layout for narrow windows.
-  The window navigates only to its own pages. A background task that panics
-  loses the connection with a diagnostic instead of leaving its calls hanging,
-  and a state file that cannot be read is set aside and said.
+- **Trace console.** Filters by kind, direction, method and id; paging; a
+  selected-frame pane with optional indentation that never changes the bytes,
+  and copy of the complete original frame. Requests are paired with their
+  responses, with durations, jumps between the two, and live elapsed time on
+  calls still waiting, which can be cancelled with `$/cancel_request`. Frames
+  that are not UTF-8 are kept and flagged; frames over 10 MiB leave a counted
+  placeholder. An optional merged view interleaves the agent's stderr. Bounded
+  retention with explicit, counted loss.
+- **Send by hand.** Compose any request or notification, or edit and resend a
+  frame the client sent; hand-sent traffic is marked and never drives the
+  typed state.
+- **JSONL trace export and import** with a self-describing header
+  ([schema](docs/trace-export.md)), optional stderr records, Save As, and
+  reopening an export read-only with its timeline rebuilt.
+- **Window.** Light and dark themes following the system or chosen, IBM Plex
+  bundled, Lucide icons, a command palette covering every action, keyboard
+  navigation on ⌘ on macOS, one-click Restart, the toolbar in the macOS title
+  bar, a resizable rail that becomes a drawer on narrower windows, and the
+  timeline and trace read oldest-first. Launch failures are explained in the
+  Connect dialog, and a Finder-launched app finds agents on the login shell's
+  `PATH`. The window navigates only to its own pages. A background task that
+  panics loses the connection with a diagnostic instead of leaving its calls
+  hanging, and a state file that cannot be read is set aside and said.
 - **Client services, answered by hand or by rules.** The launch dialog can claim
   `fs.readTextFile`, `fs.writeTextFile` and `terminal`; each claimed call, and
   optionally any other unhandled agent request, becomes a timeline card answered
@@ -90,6 +89,17 @@ wire side by side.
   answered shown and a difference flagged.
 - Tool-call names, session notices and context compactions (schema 1.11) are
   decoded and shown.
+- **Headless CLI** (`acp-inspector-cli`, `crates/cli`). `run` spawns an
+  agent (with `--cwd`, `--env`, `--unset`, `--clear-env`), drives `initialize`,
+  `session/new` and each `--prompt`/`--prompt-file` in order, answers
+  permission requests by `--permission ask|allow|reject` (never an
+  `*_always` option when allowing), cancels elicitations, stops the agent
+  gracefully, writes the app's JSONL trace with `--export`, and prints a text
+  or `--json` summary with the agent, capabilities, stop reasons, tool calls,
+  conformance annotations and diagnostics. Exit codes: 0 ok, 1 agent or
+  protocol failure, 2 conformance annotations, 3 `--timeout`, 64 usage, 130
+  Ctrl-C. `inspect` counts an exported trace's frames by direction and
+  method. No renderer and no new dependency; see "Headless CLI" in the README.
 
 ### Known limitations
 
