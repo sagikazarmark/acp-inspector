@@ -161,42 +161,67 @@ impl RecentCommands {
     /// invocation already in the list comes back to the front instead of joining
     /// itself, because relaunching from the list is what the list is for and the
     /// common case must not be the one that fills it with copies. The oldest
-    /// goes when there is no room, which is the only way anything leaves.
+    /// goes when there is no room.
     ///
     /// **What is remembered is the invocation, not the keystrokes**
-    /// ([`AgentCommand::normalized`]): the blank line and the trailing space a
-    /// form collects are exactly what the spawn already ignores, so dropping
-    /// them costs nothing and keeps two spellings of one command from becoming
-    /// two rows that launch the same agent.
+    /// ([`AgentCommand::remembered`]): the blank line and the trailing space a
+    /// form collects are exactly what the spawn already ignores, and the values
+    /// of its variables are kept only when the launch asked for that
+    /// ([`AgentCommand::remember_env_values`]) — the file is plaintext, and a
+    /// value is where an API key would be. Two launches of one invocation that
+    /// differ only in its variables' values are one row, the newer.
     ///
     /// Answers with whether the list reached the disk. The entry is in the list
     /// regardless — see the type's note on why.
     ///
     /// **The file is written under the list's own lock**, so two launches
     /// recorded at once cannot reach the disk in the other order from the one
-    /// they reached the list in — which would leave the file describing a
-    /// moment that never happened, and outlive the window saying it.
+    /// they reached the list in.
     pub fn record(&self, command: &AgentCommand) -> io::Result<()> {
-        let command = command.normalized();
+        let command = command.remembered();
+        let same = command.without_env_values();
         let mut held = self.lock();
 
-        held.retain(|remembered| *remembered != command);
+        held.retain(|remembered| remembered.without_env_values() != same);
         held.insert(0, command);
         held.truncate(Self::CAPACITY);
 
         self.save(&held)
     }
 
+    /// Forgets an entry — the one [`entries`](Self::entries) answered with —
+    /// and saves the list. An entry that is not there leaves the file alone.
+    pub fn remove(&self, command: &AgentCommand) -> io::Result<()> {
+        let mut held = self.lock();
+        let before = held.len();
+        held.retain(|remembered| remembered != command);
+        if held.len() == before {
+            return Ok(());
+        }
+        self.save(&held)
+    }
+
+    /// Takes the variables' values out of an entry, keeping their names, and
+    /// saves the list — for entries written before values stopped being kept
+    /// by default, and for any launch that chose to keep them.
+    pub fn forget_values(&self, command: &AgentCommand) -> io::Result<()> {
+        let mut held = self.lock();
+        let Some(entry) = held.iter_mut().find(|remembered| *remembered == command) else {
+            return Ok(());
+        };
+        *entry = entry.without_env_values();
+        self.save(&held)
+    }
+
     /// Writes the list where it lives — beside and moved into place, so a save
     /// interrupted partway (the window quit, the disk filled) leaves either the
     /// old list or the new one, never half of a file that would read as no list
-    /// at all and take the other nine entries with it. Nothing is flushed to the
-    /// platter: this is a convenience, and a list that survives a crash but not a
-    /// power cut is the trade the export makes too.
+    /// at all and take the other nine entries with it. The new file is synced
+    /// before the move (`kept::replace`), so a remove is as durable as a record.
     ///
     /// On Unix the file is the user's own to read (`0600`), for the reason the
-    /// export is: the environment field of a remembered invocation is where an
-    /// API key would be.
+    /// export is: a launch that chose to keep its variables' values keeps them
+    /// here, and a value is where an API key would be.
     fn save(&self, commands: &[AgentCommand]) -> io::Result<()> {
         let path = self
             .path
@@ -225,11 +250,12 @@ impl RecentCommands {
 /// same answer, because none of them is a reason a form should not open. An
 /// unusable file is set aside as `.bak` rather than overwritten.
 ///
-/// What comes in is held to what [`record`](RecentCommands::record) would have
-/// written: trimmed to the bound, so a hand-enlarged file does not become a list
-/// the form has to scroll, and normalized, so an entry somebody typed into the
-/// file is the same value as the one relaunching it would record — otherwise the
-/// relaunch would sit beside its own copy.
+/// What comes in is trimmed to the bound, so a hand-enlarged file does not
+/// become a list the form has to scroll, and normalized, so an entry somebody
+/// typed into the file is the same value as the one relaunching it would
+/// record. Values already in the file are kept: a file written before values
+/// stopped being kept by default still refills its forms, and dropping them is
+/// the reader's choice ([`forget_values`](RecentCommands::forget_values)).
 fn read(path: &Path) -> (Option<Vec<AgentCommand>>, Option<PathBuf>) {
     kept::load(path, parse)
 }

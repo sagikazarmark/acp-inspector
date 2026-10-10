@@ -117,6 +117,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "\n  --flag  \n\n  value\n".to_owned(),
             env: "\n ACP_LOG=debug \n".to_owned(),
             cwd: " /tmp \n".to_owned(),
+            remember_env_values: true,
             ..AgentCommand::default()
         })
         .expect("somewhere to write");
@@ -128,6 +129,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "--flag\nvalue".to_owned(),
             env: "ACP_LOG=debug".to_owned(),
             cwd: "/tmp".to_owned(),
+            remember_env_values: true,
             ..AgentCommand::default()
         }],
         "the blank lines and the padding are what the spawn already ignores"
@@ -223,6 +225,80 @@ fn an_environment_to_unset_or_clear_is_remembered_and_older_files_still_load() {
         reloaded[0].unset_names().collect::<Vec<_>>(),
         ["OPENAI_API_KEY"]
     );
+}
+
+#[test]
+fn variable_values_are_not_kept_unless_the_launch_asked() {
+    let path = scratch("names-only").join("recent.json");
+    let recent = RecentCommands::load_from(&path);
+    let secret = AgentCommand {
+        command: "agent".to_owned(),
+        env: "ANTHROPIC_API_KEY=sk-secret\nACP_LOG=debug".to_owned(),
+        ..AgentCommand::default()
+    };
+    recent.record(&secret).unwrap();
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(!written.contains("sk-secret"), "{written}");
+    let kept = RecentCommands::load_from(&path).entries();
+    assert_eq!(kept[0].env, "ANTHROPIC_API_KEY=\nACP_LOG=");
+    assert!(
+        kept[0].env_values_missing(),
+        "a refill says the values were not saved"
+    );
+
+    // A launch that asked keeps them, and replaces the names-only row of the
+    // same invocation rather than sitting beside it.
+    recent
+        .record(&AgentCommand {
+            remember_env_values: true,
+            ..secret.clone()
+        })
+        .unwrap();
+    let kept = RecentCommands::load_from(&path).entries();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].env, "ANTHROPIC_API_KEY=sk-secret\nACP_LOG=debug");
+    assert!(kept[0].remember_env_values && !kept[0].env_values_missing());
+}
+
+#[test]
+fn values_written_before_are_kept_until_the_reader_forgets_them() {
+    let path = scratch("legacy-values").join("recent.json");
+    std::fs::write(
+        &path,
+        r#"{"format":"acp-inspector-recent","version":1,"commands":[{"command":"old","args":"","env":"TOKEN=sk-old","cwd":""}]}"#,
+    )
+    .unwrap();
+    let recent = RecentCommands::load_from(&path);
+    let entry = recent.entries().remove(0);
+    assert_eq!(entry.env, "TOKEN=sk-old", "nothing is silently deleted");
+    assert!(entry.has_env_values() && !entry.env_values_missing());
+
+    recent.forget_values(&entry).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(!written.contains("sk-old"), "{written}");
+    let forgotten = RecentCommands::load_from(&path).entries().remove(0);
+    assert_eq!(forgotten.env, "TOKEN=");
+    assert!(forgotten.env_values_missing());
+}
+
+#[test]
+fn a_removed_entry_stays_removed_after_a_restart() {
+    let path = scratch("remove").join("recent.json");
+    let recent = RecentCommands::load_from(&path);
+    for name in ["first", "second", "third"] {
+        recent.record(&typed(name, "")).unwrap();
+    }
+    recent.remove(&typed("second", "")).unwrap();
+    assert_eq!(named(&recent), ["third", "first"]);
+    assert_eq!(
+        named(&RecentCommands::load_from(&path)),
+        ["third", "first"],
+        "the file says the same"
+    );
+    // Removing what is not there is no change.
+    recent.remove(&typed("missing", "")).unwrap();
+    assert_eq!(named(&RecentCommands::load_from(&path)), ["third", "first"]);
 }
 
 #[test]
