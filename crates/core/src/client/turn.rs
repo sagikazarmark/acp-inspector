@@ -1,5 +1,6 @@
-//! A prompt turn (§7.1, §7.2): sending it, cancelling it, and settling it from
-//! the frame that ends it.
+//! A prompt turn: sending it, cancelling it, and settling it from the frame
+//! that ends it. The turn state is driven by the stream, not by the call
+//! (`docs/architecture.md` §11 seam 2).
 
 use agent_client_protocol_schema::v1;
 use serde_json::Value;
@@ -14,31 +15,13 @@ use super::lifecycle::Debt;
 use super::{Client, decode, encode};
 
 impl Client {
-    /// `session/prompt`: ordered content blocks; each media kind is advertised.
+    /// `session/prompt` with ordered content blocks, each media kind checked
+    /// against what the agent advertised.
     ///
-    /// The turn is registered before the frame goes out, so the answer cannot
-    /// arrive before the reader knows what it is an answer to.
-    ///
-    /// **A turn that fails says so in the store**, whether it failed on the way
-    /// out, on the way back, or before it was a frame at all. The screen reads
-    /// the turn rather than the call (§11 seam 2), so a prompt that quietly
-    /// answered an error to whoever asked would be a composer whose button does
-    /// nothing visible.
-    ///
-    /// **But only while the turn that failed is still the one on screen.** A
-    /// prompt that was walked away from — the session switched, closed or
-    /// deleted under it (§7.5) — answers its own caller long afterwards, and a
-    /// failure written then would paint one session's turn over another's. So
-    /// the guard is the id: `awaiting` is emptied by every way of leaving a
-    /// session ([`forget`](Self::forget)), by the connection ending, and by the
-    /// answer that settled the turn, and a failure whose id is no longer the
-    /// awaited one says nothing here. The frame that carried it is in the trace
-    /// either way (§8).
-    ///
-    /// A failure that happens *before* the frame goes out is nobody else's:
-    /// nothing was registered, so nothing can have replaced it, and a composer
-    /// whose button left no trace anywhere would be the screen keeping a secret
-    /// the store is there to tell.
+    /// The turn is registered before the frame goes out, so the reader
+    /// recognizes the answer whenever it arrives. Any failure is written to the
+    /// turn store, but only while this turn is still the awaited one: a prompt
+    /// abandoned by a session switch must not mark the next turn failed.
     pub(crate) fn submit_prompt(
         &self,
         content: Vec<v1::ContentBlock>,
@@ -123,18 +106,12 @@ impl Client {
         let id = call.id();
         *locked(&self.awaiting) = Some(id);
         self.registers(id, &driven);
-        // Nothing has been asked to stop *this* turn, so nothing is watching
-        // it. A cancel still armed here belongs to a turn the user prompted
-        // over — and that turn draws no annotation, because the connection is
-        // still open and its answer may yet cross. If it does it lands as an
-        // unsolicited entry (§8), which is the visible thing to have happened
-        // and better than a claim that "never" had arrived.
+        // A cancel still armed belongs to a turn prompted over. That turn draws
+        // no annotation: its answer may yet cross, as an unsolicited entry.
         *locked(&self.cancelled) = None;
         self.stores.turn.set(TurnState::InFlight);
-        // And the span the timeline stamps its entries with. Opened here rather
-        // than where the state is read, because what belongs to a turn is
-        // everything after the prompt went out — including the traffic that
-        // arrives before this call returns.
+        // Opened here so traffic arriving before this call returns is stamped
+        // with the turn.
         self.stores.timeline.open_turn();
 
         self.rpc.enqueue(&call).inspect_err(|error| {
@@ -166,19 +143,12 @@ impl Client {
         outcome
     }
 
-    /// Says on screen that a turn failed, where the turn that failed is still
-    /// the one the screen is about.
+    /// Records a failed turn, if it is still the one the screen is about.
     ///
-    /// `registered` is the id the turn went out under, or `None` for a failure
-    /// that happened before it was a frame at all. The two are judged
-    /// differently for the reason [`prompt`](Self::prompt) states: an unregistered
-    /// failure is this call's alone, and a registered one belongs to whichever
-    /// turn the store is about now.
-    ///
-    /// Where the answer *did* cross, the reader has already settled the turn
-    /// from the frame ([`settle`](Self::settle)) and emptied `awaiting` doing
-    /// it, so this says nothing over it — which is the same conclusion by the
-    /// same rule, and why the turn state stays the stream's (§11 seam 2).
+    /// `registered` is the turn's id, or `None` for a failure before it was
+    /// sent, which is always this call's. A registered failure is dropped once
+    /// `awaiting` no longer holds its id: the reader already settled the turn
+    /// from its answer, or the session was left.
     pub(super) fn turn_failed(&self, registered: Option<i64>, error: &CallError) {
         if let Some(id) = registered {
             let mut awaiting = locked(&self.awaiting);
@@ -193,19 +163,12 @@ impl Client {
             .close_turn(TurnOutcome::Failed(error.clone()));
     }
 
-    /// `session/cancel`: a notification, then the answers it owes, and then a
-    /// wait (§7.1).
+    /// `session/cancel`, then `cancelled` for every request the turn blocked
+    /// on (§7.2).
     ///
-    /// Cancelling does not end the turn — the agent does, by resolving the
-    /// prompt with `cancelled`. What this changes is what the turn is *doing*,
-    /// which is now waiting for an agent that has been asked to stop.
-    ///
-    /// **Every request the turn was blocked on is answered `cancelled`**, which
-    /// the protocol requires of a client that cancels (§7.2) and which is also
-    /// the only way the agent gets to stop: an agent waiting on a permission it
-    /// will never be told about cannot end the turn it was asked to end. They
-    /// are answered *after* the notification, so the agent knows why they are
-    /// being cancelled by the time they are.
+    /// The turn ends when the agent resolves the prompt; until then it is
+    /// [`TurnState::Cancelling`]. The blocked requests are answered after the
+    /// notification, so the agent knows why.
     pub(crate) async fn cancel(&self) -> Result<(), CallError> {
         let session = self.session()?;
         let sent = self
@@ -216,23 +179,12 @@ impl Client {
             )
             .await?;
 
-        // The turn's own: a request-scoped elicitation is tied to a call rather
-        // than to a conversation (§7.8), so cancelling this turn is not a
-        // sentence about it and its row is still there to answer.
+        // A request-scoped elicitation belongs to its call, not the turn.
         self.answer_cancelled(Debt::TheTurns).await;
 
-        // Only if the turn is still open: an agent that answered while the
-        // cancel was on its way has already ended the turn, and this is not
-        // news that outranks it.
-        //
-        // **Arming the conformance rule is that same decision, so it is made
-        // without letting go in between.** The reader task is the other
-        // producer here (`settle`), and it takes these two in this same order,
-        // so a cancel going out as its answer arrives resolves one way or the
-        // other and never into both halves of neither: either the cancel arms
-        // before the answer is judged, or it finds a turn already ended and
-        // arms nothing. Two locks taken apart is exactly the gap
-        // `Field::update` exists to close.
+        // Only a turn still in flight moves to cancelling and arms the rule.
+        // Both locks are held together, in the order `settle` takes them, so a
+        // cancel racing the turn's answer resolves one way or the other.
         let mut cancelled = locked(&self.cancelled);
         let open = self.stores.turn.update(|state| {
             let open = *state == TurnState::InFlight;
@@ -242,15 +194,14 @@ impl Client {
             open
         });
         if open {
-            // A second cancel for a turn already cancelling leaves the first
-            // one's frame in place: that is the one the agent was answering.
+            // A second cancel keeps the first one's frame: that is the one the
+            // agent was answering.
             *cancelled = Some(sent);
         }
         Ok(())
     }
 
-    /// Settles the turn from the frame that ended it, when this answer is the
-    /// one the turn was waiting for.
+    /// Settles the turn from the answer that ended it, if this is that answer.
     pub(super) fn settle(&self, id: i64, outcome: &Result<Value, v1::Error>, frame: &Frame) {
         {
             let mut awaiting = locked(&self.awaiting);
@@ -268,10 +219,8 @@ impl Client {
             Err(error) => TurnState::Failed(CallError::Rejected(error.clone())),
         };
 
-        // Whether a cancel was watching this turn, and the end of the turn
-        // itself, under one hold and in the order `cancel` takes them: taken
-        // exactly once, so an answer arriving as a cancel goes out is judged by
-        // that cancel or by none, and never by the next turn's.
+        // Under one hold, in `cancel`'s lock order: the armed cancel is taken
+        // exactly once, so it judges this turn or none.
         let cancelled = {
             let mut cancelled = locked(&self.cancelled);
             let armed = cancelled.take();
@@ -281,24 +230,14 @@ impl Client {
         if let Some(cancel) = cancelled {
             self.judge(&resolved, cancel, Some(frame.clone()));
         }
-        // After the annotation and not before it: a conformance annotation is a
-        // finding *about* this turn, so it belongs inside the span rather than
-        // in whatever arrives next.
+        // After the annotation, so it falls inside the turn's span.
         if let Some(outcome) = TurnOutcome::of(&resolved) {
             self.stores.timeline.close_turn(outcome);
         }
 
-        // **A blocking request belongs to the turn it blocked** (§7.2): an
-        // agent that ended its turn is not waiting on anything any more,
-        // whatever it left unanswered. Given up on rather than quietly dropped,
-        // so that the panel says nobody answered it instead of going on
-        // offering buttons for a turn that is over.
-        //
-        // **Unless nothing tied it to the turn** (§7.8). An elicitation scoped
-        // to a JSON-RPC call rather than to a session is not this turn's to give
-        // up on — the agent may well still be waiting on it, its row survives
-        // the turn boundary like every row, and the connection ending is what
-        // ends it.
+        // A blocking request belongs to the turn it blocked (§7.2), so the ones
+        // left unanswered are given up on. Requests scoped to a JSON-RPC call
+        // rather than a session survive until the connection ends (§7.8).
         self.stores.permissions.abandon();
         self.stores
             .elicitations
@@ -308,8 +247,8 @@ impl Client {
             .abandon_unless(|request| request.session_id().is_none());
     }
 
-    /// Ends an open turn, and leaves a settled one alone: a turn the agent
-    /// already ended keeps the reason the agent gave it.
+    /// Ends an open turn with `ended`; a turn the agent already ended keeps its
+    /// own reason.
     pub(super) fn end_turn(&self, ended: TurnState) {
         let cancelled = {
             let mut cancelled = locked(&self.cancelled);

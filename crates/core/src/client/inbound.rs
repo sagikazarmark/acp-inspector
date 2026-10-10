@@ -19,17 +19,13 @@ use crate::turn::TurnState;
 use super::Client;
 
 impl Client {
-    /// Everything the agent says, in one place.
-    ///
-    /// The four shapes a frame can arrive in, and what this client does with
-    /// each: decode a `session/update` as v1, refuse a method it does not
-    /// service, hand an answer to whoever asked, and *show* whatever is left
-    /// (§8). No arm drops a frame.
+    /// Handles one frame from the agent: decodes `session/update` as v1,
+    /// services or refuses requests, hands answers to their callers, and shows
+    /// anything else as unrecognized (§8). No frame is dropped.
     pub(crate) async fn receive(&self, received: Received) {
         let Received { frame, captured } = received;
-        // The frame and the row it crossed as, paired for whichever store keeps
-        // it: an entry is made of frames, and where the trace put each of them
-        // is half of what makes the two screens one thing (§6.2).
+        // Entries keep the trace position of each frame, which links the
+        // timeline to the trace.
         let recorded = |frame: Frame| Recorded { frame, captured };
         if let Some(omission) = frame.omission() {
             self.omitted(&frame, omission);
@@ -49,8 +45,8 @@ impl Client {
                         .get("sessionId")
                         .and_then(Value::as_str)
                         .map(v1::SessionId::new);
-                    // Another session's update changes nothing here: shown, and
-                    // marked as not the live session's.
+                    // Another session's update is shown, marked foreign, and
+                    // changes nothing.
                     if let Some(session) = session.filter(|session| self.foreign(session)) {
                         self.stores.timeline.unrecognized(
                             Unrecognized::ForeignSession { session },
@@ -58,24 +54,19 @@ impl Client {
                         );
                         return;
                     }
-                    // Before the decoding, and off the envelope rather than out
-                    // of it: an update variant v1 has no name for is still the
-                    // agent talking in that session, and the load rule is about
-                    // what crossed rather than about what this client could read
-                    // (§8).
+                    // Before decoding: an update v1 cannot name is still the
+                    // agent talking in that session, which the replay rule
+                    // counts.
                     self.heard(&params, &frame);
                     match crate::decode::from_value::<v1::SessionNotification>(params) {
                         Ok(notification) => {
-                            // The settings before the timeline, for the reason
-                            // the pending list goes before it: a screen woken
-                            // by the timeline moving reads a surface that
-                            // already accounts for what woke it.
+                            // Settings before the timeline, so a screen woken by
+                            // the timeline reads settings that include it.
                             self.reconfigured(&notification);
                             self.stores.timeline.update(notification, recorded(frame));
                         }
-                        // An update variant v1 has no name for: an unstable-v1
-                        // one, an extension, or v2 arriving early. It is shown,
-                        // and the decoder's complaint is shown with it.
+                        // An unstable, extension or v2 variant: shown with the
+                        // decoder's complaint.
                         Err(problem) => self.stores.timeline.unrecognized(
                             Unrecognized::Undecodable {
                                 method: Some(method),
@@ -85,12 +76,9 @@ impl Client {
                         ),
                     }
                 } else if method == v1::CLIENT_METHOD_NAMES.elicitation_complete {
-                    // The one notification that names something rather than
-                    // reporting it (§7.8): a URL elicitation's out-of-band half
-                    // finished, and the entry it names says so. A completion for
-                    // an id nobody is holding is *ignored*, which the
-                    // specification asks for and this tool spells as unsolicited
-                    // traffic — shown, and acted on by nothing.
+                    // A URL elicitation finished out of band (§7.8). A
+                    // completion for an unknown id is ignored, as the
+                    // specification asks, and shown as unsolicited.
                     match crate::decode::from_value::<v1::CompleteElicitationNotification>(params) {
                         Ok(notification) => {
                             let completed = self
@@ -149,25 +137,19 @@ impl Client {
                     .await;
             }
 
-            // Everything else the agent asks of this client: answered by a
-            // rules file where one matches, by the reader where the service
-            // was claimed or the reader opted in, and method-not-found
-            // otherwise (F3, `docs/client-services.md`).
+            // Client services and anything else (`docs/client-services.md`).
             Incoming::Request { id, method, params } => {
                 self.service(id, method, params, recorded(frame)).await;
             }
 
-            // Whether the id could be one of ours is the envelope's question,
-            // asked once (`rpc::ours`) and answered for both of the things that
-            // happen to an answer.
             Incoming::Answer { id, outcome } => match ours(&id) {
-                // An answer to a request a person sent by hand (F2) is theirs
-                // to read off the trace: it drives no store and arms no rule.
+                // An answer to a hand-sent request drives no store and arms no
+                // rule; it is read off the trace.
                 Some(id) if self.rpc.is_hand_sent(id) => {
                     self.rpc.answer(id, outcome);
                 }
-                // The stores first, the caller second: what the screen shows
-                // must not depend on anyone being awake to await the call.
+                // The stores first, the caller second, so the screen does not
+                // depend on anyone awaiting the call.
                 Some(id) => {
                     self.note_login(&outcome);
                     self.drove(id, &outcome);
@@ -212,25 +194,15 @@ impl Client {
         }
     }
 
-    /// The connection is gone: nothing more will be answered, and a turn that
-    /// was open is over however it looked a moment ago.
-    ///
-    /// Without this, an agent that dies mid-turn leaves a prompt awaiting an
-    /// answer from a process that no longer exists, and a screen that still
-    /// says the turn is running (§6.1: a transport that cannot deliver is
-    /// evidence, never a hang).
+    /// The connection is gone: fails every pending call, refuses every set and
+    /// driven advertisement still in flight, abandons every blocking request,
+    /// and ends an open turn (§6.1).
     pub(crate) fn disconnected(&self) {
         self.rpc.close();
         *locked(&self.awaiting) = None;
-        // A load that will never be answered decides nothing: the rule is about
-        // what a load that *answers* did first, and this one did not answer.
+        // A load or open that will never be answered decides nothing.
         *locked(&self.loading) = None;
-        // And a session that will never be opened publishes nothing.
         *locked(&self.opening) = None;
-        // A set that will never be answered is refused by the teardown instead,
-        // the way the turn below is ended by it: an answer nobody will ever
-        // give is news, and a control left waiting on one would be the window
-        // showing a question that has stopped being one.
         if let Some(changing) = locked(&self.changing_mode).take() {
             self.stores
                 .settings
@@ -241,16 +213,8 @@ impl Client {
                 settings.option_refused(setting.option, setting.value, CallError::Disconnected)
             });
         }
-        // And every advertisement still being driven is refused by the teardown
-        // too (§7.7), for the reason the two setters above are: a connection
-        // that died under a call in flight is where `AuthState` and both setters
-        // already put a refusal, and a row left reading *not driven* about a
-        // capability somebody drove would be the panel keeping a secret this
-        // record exists to tell.
-        //
-        // **Emptying it is what closes the late-answer race**, which is why the
-        // whole map goes rather than the ones a caller happens to be awaiting:
-        // an answer that arrives after this has no registration to land in.
+        // Taking the whole map also means an answer arriving after this has no
+        // registration to land in.
         for capability in std::mem::take(&mut *locked(&self.driving))
             .into_values()
             .flatten()
@@ -259,18 +223,13 @@ impl Client {
                 .driven
                 .update(|record| record.refused(capability, CallError::Disconnected));
         }
-        // Every request the agent left blocking is given up on: there is
-        // nobody to answer to any more, and a panel that went on offering
-        // buttons would be offering to send a frame into a closed pipe. Every
-        // elicitation with it, whatever it was scoped to — a request-scoped one
-        // outlives its turn and nothing outlives the connection it was asked on
-        // (§7.8), which is the same sentence the outstanding ids answer to.
+        // Nobody is left to answer: every blocking request, whatever its scope,
+        // and every outstanding elicitation id ends with the connection.
         self.stores.permissions.abandon();
         self.stores.elicitations.abandon();
         self.stores.services.abandon();
         self.stores.outstanding.clear();
-        // The policy ends with the connection, unless a newer connection has
-        // already started and owns it.
+        // Unless a newer connection already owns the policy.
         if self.stores.generation.load(Ordering::SeqCst) == self.generation {
             self.stores.policy.set(PermissionPolicy::Ask);
         }
@@ -278,7 +237,7 @@ impl Client {
     }
 
     /// The sessions an update may be about: the live one, the one the reader
-    /// last saw opened, and the one an open on the wire is asking for.
+    /// last saw opened, and the one an open in flight is asking for.
     pub(super) fn known_sessions(&self) -> Vec<v1::SessionId> {
         let opening = locked(&self.opening)
             .as_ref()
@@ -293,17 +252,16 @@ impl Client {
         .collect()
     }
 
-    /// Whether an update names a session other than the ones this client
-    /// knows of. With none known yet — a `session/new` still unanswered —
-    /// nothing is foreign, because nothing can be shown to be.
+    /// Whether an update names a session other than the known ones. With none
+    /// known yet (a `session/new` unanswered), nothing is foreign.
     pub(super) fn foreign(&self, session: &v1::SessionId) -> bool {
         let known = self.known_sessions();
         !known.is_empty() && !known.contains(session)
     }
 
-    /// The transport dropped a frame for its length. Where the placeholder
-    /// shows it was an answer to a call of this client's, everything waiting
-    /// on that answer is told it will not come.
+    /// The transport dropped a frame for its length. If it was the answer to
+    /// one of this client's calls, everything waiting on that answer is told it
+    /// will not come.
     pub(super) fn omitted(&self, frame: &Frame, omission: Omission) {
         let Some(id) = answer_id(frame.as_str()) else {
             return;

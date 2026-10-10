@@ -1,5 +1,5 @@
-//! The requests the agent blocks on: permission, elicitation and client
-//! services, and the agent withdrawing one of them.
+//! The requests the agent blocks on: permission (§7.2), elicitation (§7.8) and
+//! client services (`docs/client-services.md`), and the agent withdrawing one.
 
 use agent_client_protocol_schema::v1;
 use serde_json::Value;
@@ -14,17 +14,12 @@ use crate::timeline::{EntryId, Recorded, Unrecognized};
 
 use super::{Client, encode};
 
-/// How many blocking requests (permission, elicitation and client service)
-/// may wait on the reader at once. Past it a request is refused with an error and recorded, so an agent
-/// cannot pin unbounded entries in the timeline.
+/// How many blocking requests may wait on the reader at once. Past it a
+/// request is recorded and refused, so an agent cannot pin unbounded entries.
 pub(super) const PENDING_CAPACITY: usize = 100;
 
-/// Whether this client advertised the mode an elicitation asks in (§7.8).
-///
-/// The two [`client_capabilities`] claims, and the escape hatch the schema keeps
-/// for modes it has no name for is deliberately not one of them: an extension
-/// mode is a shape nobody here claimed, and the specification's own answer to a
-/// mode the client did not advertise is an error rather than a rendering.
+/// Whether this client advertised the mode an elicitation asks in: form or
+/// URL. An extension mode was never claimed, so it is refused.
 fn advertised(mode: &v1::ElicitationMode) -> bool {
     matches!(
         mode,
@@ -32,12 +27,8 @@ fn advertised(mode: &v1::ElicitationMode) -> bool {
     )
 }
 
-/// A mode as the agent spelled it on the wire.
-///
-/// Read back out of the serialization rather than matched arm by arm, for the
-/// reason a stop reason is (`conformance::spelt`) and one more: the only mode
-/// this is ever asked about is one this client has no name for, so a name of its
-/// own invention is the one thing it must not print.
+/// A mode as the agent spelled it on the wire, read back from the
+/// serialization: it is only asked about modes this client has no name for.
 fn spelt_mode(mode: &v1::ElicitationMode) -> String {
     serde_json::to_value(mode)
         .ok()
@@ -68,15 +59,8 @@ impl Client {
         let _ = self.rpc.respond(&id, Err(refusal)).await;
     }
 
-    /// Two requests are serviced, and the first is the one an ACP turn is
-    /// made of (§7.2): `session/request_permission` becomes a pending
-    /// request where the turn stopped for it, and stays pending until
-    /// somebody answers it. Nothing is answered here — that is the point
-    /// of it.
-    ///
-    /// `fs/*` and `terminal/*` are declined, which is the capability
-    /// story exactly (§7.3): never advertised, so an agent calling one is
-    /// behaving badly at a client that says so out loud.
+    /// `session/request_permission`: becomes a pending request on the timeline
+    /// until somebody answers it, unless the session's policy answers first.
     pub(super) async fn permission_requested(
         &self,
         id: Value,
@@ -91,39 +75,28 @@ impl Client {
                     request,
                     Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
                 );
-                // A session's policy answers before anybody is asked
-                // (F11), and only with a `*_once` option: the entry is
-                // made first so the answer lands on a card that says
-                // the policy chose it.
+                // The policy answers only with a `*_once` option. The entry is
+                // made first so the answer lands on a card that says so.
                 let policy = self.stores.policy.get();
                 if policy.pick(request.options()).is_some() {
                     self.stores.timeline.blocked(request.clone(), frame);
                     request.answer_by_policy(policy).await;
                     return;
                 }
-                // The list before the timeline: a screen woken by the
-                // timeline moving reads a pending list that already
-                // accounts for what woke it.
+                // The list before the timeline, so a screen woken by the
+                // timeline reads a pending list that includes it.
                 self.stores.permissions.arrived(request.clone());
                 self.stores.timeline.blocked(request, frame);
             }
-            // A request for a method this client *does* service,
-            // carrying something v1 cannot read. It is shown like any
-            // other unrecognized frame (§8) — and refused as invalid
-            // params rather than method-not-found, because the method
-            // exists here and saying otherwise would be a lie about
-            // this client rather than a finding about the agent.
+            // Invalid params rather than method-not-found: the method is
+            // serviced here.
             Err(problem) => self.invalid_params(id, method, problem, frame).await,
         }
     }
 
-    /// And the second is the one this ring made serviced (§7.8): an
-    /// elicitation becomes a pending request where the agent asked it,
-    /// in whichever of the two modes this client advertised. A mode it
-    /// did not advertise is refused with the error the specification
-    /// names for exactly that — and refused rather than *declined*,
-    /// because decline and cancel are answers about a reader and nothing
-    /// drew this one for one.
+    /// `elicitation/create`: becomes a pending request on the timeline. A mode
+    /// this client did not advertise is refused with invalid params, as the
+    /// specification says, rather than declined on the reader's behalf.
     pub(super) async fn elicitation_requested(
         &self,
         id: Value,
@@ -133,17 +106,9 @@ impl Client {
     ) {
         let request = match crate::decode::from_value::<v1::CreateElicitationRequest>(params) {
             Ok(request) => request,
-            // Params v1 cannot read at all: shown, and refused as
-            // invalid params for the reason the permission request is —
-            // the method exists here.
             Err(problem) => return self.invalid_params(id, method, problem, recorded).await,
         };
         if !advertised(&request.mode) {
-            // A mode outside the two this client claims. It
-            // decoded — the schema keeps an escape hatch for
-            // modes it has no name for — so this is a decision
-            // rather than a decode failure, and the frame is
-            // evidence like every refusal §7.3 already makes.
             self.stores.timeline.unrecognized(
                 Unrecognized::Unadvertised {
                     method,
@@ -165,20 +130,15 @@ impl Client {
             &frame,
             Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
         );
-        // A URL elicitation's id is registered before the
-        // entry is made, so that the annotation the reuse
-        // draws is read *below* the traffic it is about
-        // rather than above it.
+        // The id is registered before the entry is made, so a reuse
+        // annotation lands below the traffic it is about.
         let reused = request.elicitation_id().cloned().and_then(|elicited| {
             self.stores
                 .outstanding
                 .arrived(elicited.clone(), request.clone(), frame.clone())
                 .map(|first| (elicited, first))
         });
-        // The list before the timeline, for the permission
-        // request's reason: a screen woken by the timeline
-        // moving reads a pending list that already accounts
-        // for what woke it.
+        // The list before the timeline, as for permissions.
         self.stores.elicitations.arrived(request.clone());
         self.stores.timeline.elicited(request, recorded);
         if let Some((elicited, first)) = reused {
@@ -211,15 +171,13 @@ impl Client {
             .await;
     }
 
-    /// A request for a client service, or for anything else this client does
-    /// not service itself (F3).
+    /// Any other request: a client service, or a method this client does not
+    /// service itself.
     ///
-    /// **A rule first**: the first rule in the launch's rules file that
-    /// matches answers it, and the entry says which. **Then the reader**, where
-    /// the service was claimed or the reader asked to answer unserviced
-    /// requests by hand — unless the rules file says unmatched requests are
-    /// method-not-found. **Otherwise method-not-found**, which is what this
-    /// client always said to a service it never claimed (§7.3).
+    /// The first matching rule in the launch's rules file answers it. Otherwise
+    /// the reader answers it if the service was claimed or the launch opted in
+    /// to answering unserviced requests, unless the rules file says unmatched
+    /// requests are method-not-found. Everything else is method-not-found.
     pub(super) async fn service(&self, id: Value, method: String, params: Value, frame: Recorded) {
         let claimed = self.services.claims(&method);
         let script = self.services.script.as_ref();
@@ -252,7 +210,6 @@ impl Client {
                 .await;
             return;
         }
-        // Past the cap, refused rather than pinned, like the other two.
         if self.saturated() {
             return self.over_capacity(id, method, frame).await;
         }
@@ -263,7 +220,6 @@ impl Client {
             claimed,
             Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
         );
-        // The list before the timeline, for the permission request's reason.
         self.stores.services.arrived(request.clone());
         self.stores.timeline.serviced(request, frame);
     }
@@ -276,9 +232,9 @@ impl Client {
             >= PENDING_CAPACITY
     }
 
-    /// The agent withdrew a request of its own with `$/cancel_request`: a
-    /// pending permission or elicitation is answered with the cancellation
-    /// error and marked as cancelled by the agent.
+    /// The agent withdrew one of its requests with `$/cancel_request`: the
+    /// pending request is answered with the cancellation error and marked as
+    /// withdrawn by the agent.
     pub(super) async fn withdrawn(&self, method: String, params: Value, frame: Recorded) {
         let notification = match crate::decode::from_value::<v1::CancelRequestNotification>(params)
         {
