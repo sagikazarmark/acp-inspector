@@ -117,6 +117,10 @@ pub fn Timeline(
     /// for want of a login leaves this screen with nothing else to say.
     #[props(default)]
     login: Option<Element>,
+    /// Recent invocations, each a way to launch again, for the first-run
+    /// card (D10). The launcher owns the list; `None` draws the card without.
+    #[props(default)]
+    recent: Option<Element>,
 ) -> Element {
     let blocks = blocks(entries());
     let count = blocks.len();
@@ -242,7 +246,7 @@ pub fn Timeline(
                         h3 { "Session open" }
                         p { "Send a prompt below. Agent updates appear here." }
                     } else {
-                        {onboarding()}
+                        {onboarding(recent)}
                     }
                 }
             } else {
@@ -365,7 +369,10 @@ fn over(turn: &Turn) -> &'static str {
 /// The button opens the launch fields rather than filling them: nothing is
 /// typed for the reader and nothing is spawned. It says `Connect…`, the bar's
 /// word for the same dialog, so the two offers read as one.
-fn onboarding() -> Element {
+///
+/// `recent` is the launcher's list of recent invocations, drawn under the
+/// actions where the window has one to pass (`main.rs` owns that list).
+fn onboarding(recent: Option<Element>) -> Element {
     let palette = if cfg!(target_os = "macos") {
         "⌘K"
     } else {
@@ -389,6 +396,12 @@ fn onboarding() -> Element {
                     "or press "
                     kbd { "{palette}" }
                     " for every command"
+                }
+            }
+            if let Some(recent) = recent {
+                div { class: "onboarding-recent", "data-slot": "onboarding-recent",
+                    h4 { "Recent" }
+                    {recent}
                 }
             }
         }
