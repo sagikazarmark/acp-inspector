@@ -2435,7 +2435,7 @@ mod tests {
             html.contains(r#"data-slot="appearance""#)
                 && html.contains(r#"aria-label="System appearance""#)
                 && html.contains(r#"data-slot="indentation""#)
-                && html.contains(r#"aria-label="wire payloads""#),
+                && html.contains(">Pretty JSON<"),
             "appearance and indentation are named segmented groups: {html}"
         );
 
