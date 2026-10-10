@@ -254,7 +254,7 @@ p.unnamed { color: var(--txt); }
    transport, the build's version. Neutral is a hairline; a toned tag is the
    tone's word on a wash of the same tone, so the hue is never the only thing
    saying it. */
-:is(.tag, .version, .evidence-kind, .recent-kind, .frame-kind) {
+:is(.tag, .version, .evidence-kind, .frame-kind) {
   --tone: var(--dim);
   display: inline-flex;
   align-items: center;

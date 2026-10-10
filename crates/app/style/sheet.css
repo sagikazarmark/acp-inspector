@@ -2048,6 +2048,23 @@
       border-color: #0000;
       box-shadow: none;
     }
+    .textarea-ghost {
+      background-color: transparent;
+      box-shadow: none;
+      border-color: #0000;
+    }
+    .textarea-ghost:focus {
+      background-color: var(--color-base-100);
+      color: var(--color-base-content);
+      border-color: #0000;
+      box-shadow: none;
+    }
+    .textarea-ghost:focus-within {
+      background-color: var(--color-base-100);
+      color: var(--color-base-content);
+      border-color: #0000;
+      box-shadow: none;
+    }
   }
   .border-base-300 {
     border-color: var(--color-base-300);
@@ -2582,6 +2599,113 @@
     .input-warning:focus-within {
       --input-color: var(--color-warning);
     }
+    :is(.textarea-accent) {
+      --input-color: var(--color-accent);
+    }
+    .textarea-accent:focus {
+      --input-color: var(--color-accent);
+    }
+    .textarea-accent:focus-within {
+      --input-color: var(--color-accent);
+    }
+    :is(.textarea-error) {
+      --input-color: var(--color-error);
+    }
+    .textarea-error:focus {
+      --input-color: var(--color-error);
+    }
+    .textarea-error:focus-within {
+      --input-color: var(--color-error);
+    }
+    :is(.textarea-info) {
+      --input-color: var(--color-info);
+    }
+    .textarea-info:focus {
+      --input-color: var(--color-info);
+    }
+    .textarea-info:focus-within {
+      --input-color: var(--color-info);
+    }
+    .textarea-lg {
+      --font-size-min: 1.125rem;
+    }
+    .floating-label:has(.textarea-lg) {
+      --top-mul: 6;
+      --font-size: 1.125rem;
+    }
+    .textarea-md {
+      --font-size-min: 0.875rem;
+    }
+    .floating-label:has(.textarea-md) {
+      --top-mul: 5;
+      --font-size: 0.875rem;
+    }
+    :is(.textarea-neutral) {
+      --input-color: var(--color-neutral);
+    }
+    .textarea-neutral:focus {
+      --input-color: var(--color-neutral);
+    }
+    .textarea-neutral:focus-within {
+      --input-color: var(--color-neutral);
+    }
+    :is(.textarea-primary) {
+      --input-color: var(--color-primary);
+    }
+    .textarea-primary:focus {
+      --input-color: var(--color-primary);
+    }
+    .textarea-primary:focus-within {
+      --input-color: var(--color-primary);
+    }
+    :is(.textarea-secondary) {
+      --input-color: var(--color-secondary);
+    }
+    .textarea-secondary:focus {
+      --input-color: var(--color-secondary);
+    }
+    .textarea-secondary:focus-within {
+      --input-color: var(--color-secondary);
+    }
+    .textarea-sm {
+      --font-size-min: 0.75rem;
+    }
+    .floating-label:has(.textarea-sm) {
+      --top-mul: 4;
+      --font-size: 0.75rem;
+    }
+    :is(.textarea-success) {
+      --input-color: var(--color-success);
+    }
+    .textarea-success:focus {
+      --input-color: var(--color-success);
+    }
+    .textarea-success:focus-within {
+      --input-color: var(--color-success);
+    }
+    :is(.textarea-warning) {
+      --input-color: var(--color-warning);
+    }
+    .textarea-warning:focus {
+      --input-color: var(--color-warning);
+    }
+    .textarea-warning:focus-within {
+      --input-color: var(--color-warning);
+    }
+    .textarea-xl {
+      --font-size-min: 1.375rem;
+    }
+    .floating-label:has(.textarea-xl) {
+      --top-mul: 7;
+      --font-size: 1.375rem;
+    }
+    .textarea-xs {
+      --font-size-min: 0.6875rem;
+    }
+    .floating-label:has(.textarea-xs) {
+      --top-mul: 3;
+      --font-size: 0.6875rem;
+    }
     .badge-error {
       --badge-color: var(--color-error);
       --badge-fg: var(--color-error-content);
@@ -2594,10 +2718,6 @@
       --badge-color: var(--color-warning);
       --badge-fg: var(--color-warning-content);
     }
-  }
-  .select-all {
-    -webkit-user-select: all;
-    user-select: all;
   }
   .empty\:hidden:empty {
     display: none;
@@ -2828,7 +2948,7 @@ p.unnamed {
   color: var(--dim2);
   font-style: italic;
 }
-:is(.tag, .version, .evidence-kind, .recent-kind, .frame-kind) {
+:is(.tag, .version, .evidence-kind, .frame-kind) {
   --tone: var(--dim);
   display: inline-flex;
   align-items: center;

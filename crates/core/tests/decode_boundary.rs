@@ -87,6 +87,8 @@ fn protocol_types_are_decoded_only_at_the_canonicalizing_seam() {
             "crates/app/src/style.rs",
             "u8::from_str_radix(&hex[at..at + 2], 16).expect(\"a hex pair\") as f64 / 255.0;",
         ),
+        // The embedded fonts' base64 encoder, not a reader of anything.
+        ("crates/app/src/style.rs", "into.copy_from_slice(part);"),
     ]
     .into_iter()
     .map(|(path, line)| (path.to_owned(), line.to_owned()))

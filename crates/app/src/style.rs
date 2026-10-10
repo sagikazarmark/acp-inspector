@@ -1584,7 +1584,7 @@ mod tests {
             );
         }
         // And one tag, whose tone is a variable rather than a rule per tone.
-        let tag = ":is(.tag, .version, .evidence-kind, .recent-kind, .frame-kind)";
+        let tag = ":is(.tag, .version, .evidence-kind, .frame-kind)";
         assert_eq!(declared(tag, "--tone").as_deref(), Some("var(--dim)"));
         assert_eq!(declared(tag, "color").as_deref(), Some("var(--tone)"));
     }
