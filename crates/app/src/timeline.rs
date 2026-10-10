@@ -417,7 +417,7 @@ fn onboarding(recent: Option<Element>) -> Element {
             }
             if let Some(recent) = recent {
                 div { class: "onboarding-recent", "data-slot": "onboarding-recent",
-                    h4 { "Recent" }
+                    h4 { id: "onboarding-recent-label", "Recent" }
                     {recent}
                 }
             }

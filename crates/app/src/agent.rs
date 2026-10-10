@@ -1629,7 +1629,6 @@ fn method_rows(
 /// for a login (X5). The Timeline's empty state is the caller: a session/new
 /// refused for want of a login leaves it with nothing else to say. `main.rs`
 /// passes it as the Timeline's `login`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn login_guidance(
     methods: &[v1::AuthMethod],
     auth: &AuthState,

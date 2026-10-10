@@ -1575,6 +1575,7 @@ fn App() -> Element {
                 recent: (!remembered.read().is_empty()).then(|| rsx! {
                     spawn::RecentList {
                         entries: remembered(),
+                        labelled_by: "onboarding-recent-label".to_owned(),
                         launching: launching(),
                         on_launch: move |entry: AgentCommand| {
                             if mcp::attempt_launch() {
