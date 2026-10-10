@@ -107,14 +107,14 @@ impl Spine {
     fn label(self) -> &'static str {
         match self {
             Self::Split => "Split",
-            Self::Wire => "JSON-RPC full",
+            Self::Wire => "Trace only",
         }
     }
 
     fn says(self) -> &'static str {
         match self {
-            Self::Split => "Show the timeline and the wire side by side",
-            Self::Wire => "Give the wire the whole width",
+            Self::Split => "Show the timeline and the trace side by side",
+            Self::Wire => "Give the trace the whole width",
         }
     }
 
@@ -159,8 +159,8 @@ impl Focus {
     fn label(self) -> &'static str {
         match self {
             Self::Rail => "Details",
-            Self::Turn => "Session",
-            Self::Wire => "Messages",
+            Self::Turn => "Timeline",
+            Self::Wire => "Trace",
         }
     }
 
@@ -255,6 +255,7 @@ impl SessionSettingsWork {
 use toast::Toast;
 
 fn main() {
+    install_crash_log();
     // Which window draws the screens is the build's to say, not this file's:
     // the desktop shell is a frame, a title bar, a menu and an icon around them
     // (`shell.rs`), and any other renderer gets the screens and nothing around.
@@ -262,6 +263,104 @@ fn main() {
     shell::launch(App);
     #[cfg(not(feature = "desktop"))]
     dioxus::launch(App);
+}
+
+/// Where a panic is written down (C8): the directory core keeps its state in
+/// (`dirs::state_dir()`, else the data directory — `kept.rs`), under the
+/// inspector's own folder. Resolved from the environment here because the app
+/// crate does not depend on `dirs`; the rules are the same.
+fn crash_log() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let base = if cfg!(target_os = "macos") {
+        home?.join("Library/Application Support")
+    } else if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var_os("APPDATA")?)
+    } else {
+        std::env::var_os("XDG_STATE_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| home.map(|home| home.join(".local/state")))?
+    };
+    Some(base.join("acp-inspector").join("crash.log"))
+}
+
+/// One crash, as the log records it: when, where, what, and the stack.
+fn crash_entry(at: jiff::Timestamp, info: &std::panic::PanicHookInfo<'_>) -> String {
+    let what = info
+        .payload()
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_owned())
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned());
+    let place = info
+        .location()
+        .map(|place| format!("{}:{}:{}", place.file(), place.line(), place.column()))
+        .unwrap_or_else(|| "an unknown place".to_owned());
+    let thread = std::thread::current();
+    crash_text(
+        at,
+        thread.name().unwrap_or("unnamed"),
+        &place,
+        &what,
+        &std::backtrace::Backtrace::force_capture().to_string(),
+    )
+}
+
+fn crash_text(at: jiff::Timestamp, thread: &str, place: &str, what: &str, stack: &str) -> String {
+    format!(
+        "--- {at} · acp-inspector {} · thread {thread}\npanicked at {place}: {what}\n{stack}\n",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// Adds a crash log to whatever the default panic hook does, which still runs.
+fn install_crash_log() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = crash_log() {
+            let entry = crash_entry(jiff::Timestamp::now(), info);
+            let _ = path
+                .parent()
+                .map(std::fs::create_dir_all)
+                .transpose()
+                .and_then(|_| {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)?
+                        .write_all(entry.as_bytes())
+                });
+        }
+        default(info);
+    }));
+}
+
+/// What the window draws when a screen fails to render: the error, where the
+/// crash log is, and a way to draw the screens again. The connection and the
+/// stores are above the boundary and survive it.
+fn recovery(errors: ErrorContext) -> Element {
+    let said = errors
+        .error()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "An unknown error.".to_owned());
+    let log = crash_log().map(|path| path.display().to_string());
+    rsx! {
+        main { class: "recovery", "data-slot": "recovery", role: "alert",
+            h1 { "Something went wrong" }
+            p { "A screen failed to draw. The connection and the trace are kept; reloading draws the screens again." }
+            pre { class: "mono", "{said}" }
+            if let Some(log) = log {
+                p { class: "hint", "Panics are logged to " code { class: "mono", "{log}" } "." }
+            }
+            button {
+                class: "btn btn-md btn-filled",
+                r#type: "button",
+                onclick: move |_| errors.clear_errors(),
+                "Reload"
+            }
+        }
+    }
 }
 
 /// Whether the agent is waiting on the reader for anything (§7.2, §7.8).
@@ -287,43 +386,42 @@ fn App() -> Element {
         move || inspector.disconnect()
     });
     #[cfg(feature = "desktop")]
-    shell::use_shutdown(inspector.clone());
-    #[cfg(feature = "desktop")]
     use_context_provider(shell::export_retrieval);
     mcp::provide(inspector.clone());
 
-    // What the spawn form remembers (§9). Read once, at the window's start,
-    // because that is what "across restarts" means: nothing else writes the
-    // file, so the list only ever changes here — after a launch that worked.
-    let recent = use_hook(RecentCommands::load);
-    let mut remembered = use_signal({
-        let recent = recent.clone();
-        move || recent.entries()
-    });
+    // What the spawn form remembers (§9) and how the window should look. Both
+    // files are read once, at the window's start, and **off the UI thread**
+    // (L6): until they arrive the window is the defaults, which is what a first
+    // run looks like anyway. Every write goes back through `persist`, which is
+    // off the UI thread too.
+    let mut recent = use_signal(|| None::<RecentCommands>);
+    let mut settings = use_signal(|| None::<Settings>);
+    let mut remembered = use_signal(Vec::<AgentCommand>::new);
     // Why the list will not survive this window, if it will not. Empty on every
     // machine with a home directory, which is why it is a note under the form
     // rather than a screen.
     let mut unsaved = use_signal(|| None::<String>);
-
-    // How the window should look (§9). Read once at the start, for the reason
-    // the recent commands are: nothing else writes the file, so the preference
-    // only ever changes here — when somebody picks from the control in the bar.
-    let settings = use_hook(Settings::load);
-    let mut appearance = use_signal({
-        let settings = settings.clone();
-        move || settings.appearance()
-    });
-    // Painting is an effect rather than something the click does, so the stored
-    // choice and a chosen one take exactly the same path: the window is painted
-    // once at the start from whatever the file said, and again whenever the
-    // signal moves. Saving is the click's, because the first paint is the file
-    // being honoured and not a change to write back.
-    let initial_appearance = appearance();
-    use_effect(move || appearance::paint(initial_appearance));
+    let mut appearance = use_signal(Appearance::default);
     // And how a payload is drawn (§8). Put where every surface that draws bytes
-    // can find it rather than threaded to each of them, which is the rule the
-    // copy control already follows for the same three surfaces (`indent.rs`).
-    let mut indentation = indent::provide(settings.indentation());
+    // can find it rather than threaded to each of them (`indent.rs`).
+    let mut indentation = indent::provide(Indentation::default());
+    use_future(move || async move {
+        let Ok((stored, remembered_list)) =
+            tokio::task::spawn_blocking(|| (Settings::load(), RecentCommands::load())).await
+        else {
+            return;
+        };
+        // The stored choice takes the same path a chosen one does.
+        let chosen = stored.appearance();
+        if chosen != Appearance::default() {
+            appearance::paint(chosen);
+        }
+        appearance.set(chosen);
+        indentation.set(stored.indentation());
+        remembered.set(remembered_list.entries());
+        settings.set(Some(stored));
+        recent.set(Some(remembered_list));
+    });
     // One listener for every tailing list in the window, installed once. Which
     // lists exist changes as tabs are selected and surfaces empty, so it
     // captures rather than being attached per element (`tail.rs`).
@@ -335,9 +433,6 @@ fn App() -> Element {
     use_effect(|| {
         document::eval(&palette::watch());
     });
-    let choosing = settings.clone();
-    let switching = settings.clone();
-
     let mut status = use_signal(|| ConnectionStatus::Disconnected);
     let mut frames = use_signal(Vec::<TracedFrame>::new);
     // What the trace no longer holds, and where the last export went. Both are
@@ -414,6 +509,9 @@ fn App() -> Element {
     // session/new may still be in flight. Keep that interval explicit in the
     // launch control rather than calling it Running before the launch returns.
     let mut launching = use_signal(|| false);
+    // Where the diagnostics stood when the last launch began, so a failed
+    // launch is told from what that launch wrote and nothing older (X1).
+    let mut launch_mark = use_signal(|| 0usize);
     // And the invocation the form folds *around*: the launched command, once
     // the agent it started has described itself. Not `Connected` on its own —
     // that status is set optimistically, before the child is known to exist, so
@@ -724,15 +822,11 @@ fn App() -> Element {
     let advertising_logout = inspector.clone();
     let logs_out = use_memo(move || described.read().is_some() && advertising_logout.logs_out());
 
-    let starting = inspector.clone();
-    let recording = recent.clone();
-    let stopping_rail = inspector.clone();
-    let stopping_palette = inspector.clone();
+    let stopping = inspector.clone();
     let clearing_palette = inspector.clone();
-    let choosing_palette = settings.clone();
-    let switching_palette = settings.clone();
     let prompting = inspector.clone();
     let cancelling = inspector.clone();
+    let cancelling_turn = inspector.clone();
     let configuring = inspector.clone();
     let cycling = inspector.clone();
     let selecting = inspector.clone();
@@ -747,8 +841,9 @@ fn App() -> Element {
     let exporting = inspector.clone();
     let on_export = EventHandler::new(move |()| {
         navigation.console(Tab::Trace);
-        // The activation owns this snapshot, even if Clear or reconnect follows.
-        let Some(snapshot) = export_work.write().begin(exporting.trace()) else {
+        // The activation owns this snapshot, even if Clear or a restart follows.
+        let recorded = *dropped.peek() + frames.peek().len();
+        let Some(snapshot) = export_work.write().begin(exporting.trace(), recorded) else {
             return;
         };
         spawn(async move {
@@ -758,24 +853,131 @@ fn App() -> Element {
     });
     let clearing = inspector.clone();
 
-    // The menu bar, answered. Every item is a control that is also on screen —
-    // the strip is a second way to the window's affordances and never the only
-    // one — so each arm here does exactly what the control does and decides
-    // nothing of its own. The two that need an agent check for one, because a
-    // menu item cannot be drawn behind an advertisement the way a button can.
-    // A block rather than a hook of its own, so the four clones it needs go
-    // with it where there is no menu bar to answer.
+    // Ending the connection, from wherever it is asked for. Focus goes to the
+    // way back, Restart, rather than to the document (X6).
+    let on_disconnect = EventHandler::new(move |()| {
+        stopping.disconnect();
+        navigation::Destination::Control { id: rail::RESTART }.focus();
+    });
+
+    // The one way an agent is launched: the dialog's Launch, a recent row's
+    // play button, Restart and "Restart with these settings" all come here
+    // (X1, X4). Spawn, `initialize`, `session/new` — one call, because the
+    // order of the three is core's business and not a window's (§5). Starting
+    // over a live agent replaces it; the trace is kept.
+    let starting = inspector.clone();
+    let launch = use_callback(move |agent: AgentCommand| {
+        if *launching.peek() || !mcp::valid() {
+            return;
+        }
+        let inspector = starting.clone();
+        launching.set(true);
+        problem.set(None);
+        unsaved.set(None);
+        failed.set(None);
+        listing_work.with_mut(|(connection, pending)| {
+            *connection += 1;
+            *pending = 0;
+        });
+        auth_work.with_mut(AuthenticationWork::reset);
+        launch_mark.set(*dropped_lines.peek() + lines.peek().len());
+        launched.set(Some(agent.clone()));
+        spawn(async move {
+            let spawned = with_login_path(agent.clone()).await;
+            let failure = inspector.start(&spawned).await.err();
+            launching.set(false);
+            // Remembered because an agent answered for itself — the command
+            // exists, it ran, and it speaks ACP — even if the handshake failed
+            // after that: an agent that will not open a session until somebody
+            // logs in (§7.1) is exactly the case. A command that never started
+            // never said anything; that is a typo, and it is still in the
+            // fields, with the reason above them.
+            if inspector.agent().is_some() {
+                let remembering = recent.peek().clone();
+                if let Some(remembering) = remembering {
+                    let invocation = agent.clone();
+                    if let Ok((error, entries)) = tokio::task::spawn_blocking(move || {
+                        let error = remembering
+                            .record(&invocation)
+                            .err()
+                            .map(|error| error.to_string());
+                        (error, remembering.entries())
+                    })
+                    .await
+                    {
+                        unsaved.set(error);
+                        remembered.set(entries);
+                    }
+                }
+                // The one thing that shuts the dialog which is not the reader:
+                // an agent answered, so the task it was open for is done.
+                connect::close();
+                if matches!(failure, Some(CallError::InvalidMcp(_))) {
+                    mcp::correct_in_sessions();
+                } else {
+                    // And the keyboard goes where the next thing is typed (X6).
+                    navigation::Destination::Prompt.focus();
+                }
+            } else {
+                connect::show_failure();
+            }
+            problem.set(failure);
+        });
+    });
+    let on_restart = EventHandler::new(move |()| {
+        if let Some(command) = launched.peek().clone() {
+            launch.call(command);
+        }
+    });
+    let on_cancel_turn = EventHandler::new(move |()| {
+        if turn.peek().is_running() {
+            let inspector = cancelling_turn.clone();
+            spawn(async move {
+                let _ = inspector.cancel().await;
+            });
+        }
+    });
+
+    // What a reader would lose by quitting now: frames recorded since the last
+    // export finished, that are still in the trace (F9).
+    #[cfg(feature = "desktop")]
+    let unexported = use_memo(move || {
+        !frames.read().is_empty()
+            && export_work
+                .read()
+                .unexported(dropped() + frames.read().len())
+    });
+    #[cfg(feature = "desktop")]
+    let on_quit = EventHandler::new(move |()| {
+        if unexported() {
+            quit_dialog::open();
+        } else {
+            shell::quit();
+        }
+    });
+    #[cfg(feature = "desktop")]
+    shell::use_shutdown(
+        inspector.clone(),
+        unexported.into(),
+        EventHandler::new(move |()| quit_dialog::open()),
+    );
+
+    // The menu bar, answered. Every item is a control that is also on screen,
+    // so each arm here does exactly what the control does and decides nothing
+    // of its own. Items that cannot do anything now are disabled below.
     #[cfg(feature = "desktop")]
     {
         let menu_clear = inspector.clone();
-        let menu_stop = inspector.clone();
         let menu_open = inspector.clone();
         shell::use_menu(move |command| match command {
             shell::command::EXPORT_TRACE => {
                 on_export.call(());
             }
             shell::command::CLEAR_TRACE => menu_clear.trace().clear(),
-            shell::command::STOP_AGENT => menu_stop.disconnect(),
+            shell::command::DISCONNECT => on_disconnect.call(()),
+            shell::command::RESTART => on_restart.call(()),
+            shell::command::CANCEL_TURN => on_cancel_turn.call(()),
+            shell::command::QUIT => on_quit.call(()),
             shell::command::NEW_SESSION => {
                 if !mcp::ready_to_open() {
                     return;
@@ -808,7 +1010,38 @@ fn App() -> Element {
             shell::command::TOGGLE_CONSOLE => navigation.layout(spine().other()),
             _ => {}
         });
+        // A menu item that would do nothing is drawn disabled rather than
+        // left to do nothing silently (X13).
+        use_effect(move || {
+            let connected = status() == ConnectionStatus::Connected;
+            shell::set_enabled(
+                shell::command::NEW_SESSION,
+                connected && described.read().is_some(),
+            );
+            shell::set_enabled(shell::command::CANCEL_TURN, turn.read().is_running());
+            shell::set_enabled(
+                shell::command::RESTART,
+                launched.read().is_some() && !launching(),
+            );
+            shell::set_enabled(shell::command::DISCONNECT, connected);
+            shell::set_enabled(shell::command::CLEAR_TRACE, !frames.read().is_empty());
+        });
     }
+
+    // The newest request the agent is waiting on the reader for, by the frame
+    // that asked it — what "Go to waiting request" goes to.
+    let waiting_request = use_memo(move || {
+        blocked()
+            .then(|| {
+                entries
+                    .read()
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.is_waiting())
+                    .and_then(|entry| entry.frames.iter().find_map(|recorded| recorded.captured))
+            })
+            .flatten()
+    });
 
     // Everything about the agent that two surfaces draw: the Agent screen,
     // which says what it claimed, and the Sessions dialog, which acts on what
@@ -973,8 +1206,28 @@ fn App() -> Element {
         }),
     };
 
+    // Why the last launch did not reach an agent, from what that launch wrote
+    // (X1). Said inside the Connect dialog, which stays open for it.
+    let failure = {
+        let held = lines.read();
+        let since = launch_mark().saturating_sub(dropped_lines());
+        spawn::launch_failure(
+            status(),
+            problem.read().as_ref(),
+            described.read().is_some(),
+            held.get(since..).unwrap_or(&[]),
+            effective_path(launched.read().as_ref()).as_deref(),
+        )
+    };
+    let copying_session = announcer;
+
     rsx! {
         style { {style::SHEET} }
+
+        // A screen that fails to draw is caught here rather than leaving a blank
+        // window; the stores and the connection are above it and survive (C8).
+        ErrorBoundary {
+            handle_error: recovery,
 
         TopBar {
             status: status(),
@@ -984,21 +1237,19 @@ fn App() -> Element {
             protocol: described.read().as_ref().map(|agent| agent.protocol_version.to_string()),
             session: session(),
             spine: spine(),
+            waiting: blocked(),
             on_spine: move |chosen| navigation.layout(chosen),
-            // The choice applies now and is written now. A write that fails
-            // is not reported: an appearance is one click to redo, and the
-            // window is already in it either way.
+            // The choice applies now and is written off the UI thread. A write
+            // that fails is not reported: an appearance is one click to redo,
+            // and the window is already in it either way.
             on_choose: move |chosen: Appearance| {
                 appearance::paint(chosen);
                 appearance.set(chosen);
-                let _ = choosing.set_appearance(chosen);
+                persist(settings.peek().clone(), move |stored| stored.set_appearance(chosen));
             },
-            // The same shape, and silent about a failed write for the same
-            // reason: the screens redraw from the signal, and the file is
-            // where the next launch reads it from.
             on_indent: move |chosen: Indentation| {
                 indentation.set(chosen);
-                let _ = switching.set_indentation(chosen);
+                persist(settings.peek().clone(), move |stored| stored.set_indentation(chosen));
             },
         }
 
@@ -1008,65 +1259,24 @@ fn App() -> Element {
 
         // Where an agent is started, over the window rather than beside it: a
         // task done once per connection does not earn a column of every screen
-        // (`connect.rs`).
+        // (`connect.rs`). A launch that fails is said in it, and it stays open.
         connect::Connect {
             running: status() == ConnectionStatus::Connected,
             launching: launching(),
             recent: remembered(),
             unsaved: unsaved(),
-                    // Spawn, `initialize`, `session/new` — one call, because the
-                    // order of the three is core's business and not a window's
-                    // (§5). What comes back is the first thing that went wrong, if
-                    // anything did; everything else is already in a store.
-                    on_launch: move |agent: AgentCommand| {
-                         if !mcp::valid() { return; }
-                        let inspector = starting.clone();
-                        let recent = recording.clone();
-                        launching.set(true);
-                        problem.set(None);
-                        unsaved.set(None);
-                        failed.set(None);
-                        listing_work.with_mut(|(connection, pending)| {
-                            *connection += 1;
-                            *pending = 0;
-                        });
-                        auth_work.with_mut(AuthenticationWork::reset);
-                        launched.set(Some(agent.clone()));
-                        spawn(async move {
-                            let failure = inspector.start(&agent).await.err();
-                            launching.set(false);
-                            // Remembered because an agent answered for itself —
-                            // the command exists, it ran, and it speaks ACP.
-                            // Read from the store rather than from the call
-                            // succeeding, because the handshake can fail after
-                            // that and still leave an invocation worth having
-                            // back: an agent that will not open a session until
-                            // somebody logs in (§7.1) is exactly the case, since
-                            // the login happens in another terminal and coming
-                            // back to four fields typed again is what this is
-                            // here to stop. A command that never started never
-                            // said anything — that is a typo, and it is still in
-                            // the fields.
-                            if inspector.agent().is_some() {
-                                unsaved.set(recent.record(&agent).err().map(|error| error.to_string()));
-                                remembered.set(recent.entries());
-                                // The one thing that shuts the dialog which is
-                                // not the reader: an agent answered, so the
-                                // task it was open for is done.
-                                 if matches!(failure, Some(CallError::InvalidMcp(_))) {
-                                     connect::close();
-                                     mcp::correct_in_sessions();
-                                 } else { connect::close(); }
-                            }
-                            problem.set(failure);
-                        });
-            },
+            failure,
+            launched: launched(),
+            on_launch: move |agent: AgentCommand| launch.call(agent),
         }
+
+        // Quitting with frames nobody exported asks first (F9).
+        QuitDialog { on_export }
 
         // Everything a command in the palette can ask for is a control that is
         // also on screen (`palette.rs`), and every one of them is built from a
         // handler this window already has.
-        palette::Palette { commands: commands(PaletteWiring {
+        palette::Palette { commands: commands_with(PaletteWiring {
             connected: status() == ConnectionStatus::Connected,
             described: described.read().is_some(),
             traced: !frames().is_empty(),
@@ -1075,18 +1285,54 @@ fn App() -> Element {
             on_tab: EventHandler::new(move |chosen| navigation.console(chosen)),
             on_rail: EventHandler::new(move |chosen| navigation.rail(chosen)),
             on_new_session: claims.on_new_session,
-            on_stop: EventHandler::new(move |()| stopping_palette.disconnect()),
+            on_stop: on_disconnect,
             on_export,
             on_clear: EventHandler::new(move |()| clearing_palette.trace().clear()),
             on_indent: EventHandler::new(move |()| {
                 let chosen = Indentation::of(!indentation().indented());
                 indentation.set(chosen);
-                let _ = switching_palette.set_indentation(chosen);
+                persist(settings.peek().clone(), move |stored| stored.set_indentation(chosen));
             }),
             on_appearance: EventHandler::new(move |chosen: Appearance| {
                 appearance::paint(chosen);
                 appearance.set(chosen);
-                let _ = choosing_palette.set_appearance(chosen);
+                persist(settings.peek().clone(), move |stored| stored.set_appearance(chosen));
+            }),
+        }, PaletteExtras {
+            launched: launched.read().is_some() && !launching(),
+            turn_running: turn().is_running(),
+            session: session(),
+            lists_sessions: lists_sessions(),
+            auth_methods: described
+                .read()
+                .as_ref()
+                .filter(|_| status() == ConnectionStatus::Connected)
+                .map(|agent| {
+                    agent
+                        .auth_methods
+                        .iter()
+                        .map(|method| (method.id().clone(), method.name().to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            waiting: waiting_request(),
+            indented: indentation().indented(),
+            appearance: appearance(),
+            on_region: EventHandler::new(move |chosen| navigation.region(chosen)),
+            on_restart,
+            on_cancel_turn,
+            on_list: claims.on_list,
+            on_authenticate: claims.on_authenticate,
+            on_waiting: EventHandler::new(move |ordinal| navigation.waiting(ordinal)),
+            on_prompt: EventHandler::new(move |()| navigation.prompt()),
+            on_copy_session: EventHandler::new(move |()| {
+                if let Some(id) = session.peek().clone() {
+                    spawn(async move {
+                        if copy::copied(id.to_string()).await {
+                            copying_session.say("Copied session ID".to_owned());
+                        }
+                    });
+                }
             }),
         }) }
 
@@ -1103,7 +1349,9 @@ fn App() -> Element {
                 commands: timeline::commands(&entries()).len(),
                 tab: rail_tab(),
                 on_tab: move |chosen| navigation.rail(chosen),
-                on_stop: move |()| stopping_rail.disconnect(),
+                on_stop: on_disconnect,
+                launching: launching(),
+                on_restart,
                 // Nothing is waited for here: what the Agent answered — an
                 // acknowledgement it never restated, or a refusal — is written
                 // into the Session Settings store by the task reading the
@@ -1256,33 +1504,187 @@ fn App() -> Element {
 
         // The way between the three regions on a window too narrow for them,
         // drawn by the stylesheet only below the width where they stop fitting.
-        RegionBar { selected: focus(), on_select: move |chosen| navigation.region(chosen) }
+        RegionBar { selected: focus(), waiting: blocked(), on_select: move |chosen| navigation.region(chosen) }
 
         ConsoleAnnouncement { status: status() }
 
         // Feedback belongs to the window rather than any one region.
         Toast { said: announcer.said() }
+        }
     }
 }
 
 #[component]
-fn RegionBar(selected: Focus, on_select: EventHandler<Focus>) -> Element {
+fn RegionBar(
+    selected: Focus,
+    /// Whether the agent is waiting on the reader. The timeline is where the
+    /// request is, so while another region is showing, its item says so (X7).
+    #[props(default)]
+    waiting: bool,
+    on_select: EventHandler<Focus>,
+) -> Element {
     rsx! {
         div { class: "mobile-bar seg", role: "group", aria_label: "Which region is shown",
             for chosen in Focus::ALL {
-                button {
-                    key: "{chosen.label()}",
-                    class: "seg-item",
-                    "data-slot": "focus",
-                    r#type: "button",
-                    aria_pressed: chosen == selected,
-                    aria_label: chosen.label(),
-                    onclick: move |_| on_select.call(chosen),
-                    "{chosen.label()}"
+                {
+                    let flagged = waiting && chosen == Focus::Turn && selected != Focus::Turn;
+                    rsx! {
+                        button {
+                            key: "{chosen.label()}",
+                            class: "seg-item",
+                            "data-slot": "focus",
+                            "data-waiting": flagged.then_some("true"),
+                            r#type: "button",
+                            aria_pressed: chosen == selected,
+                            aria_label: if flagged { format!("{}, waiting on you", chosen.label()) } else { chosen.label().to_owned() },
+                            onclick: move |_| on_select.call(chosen),
+                            "{chosen.label()}"
+                            if flagged {
+                                span { class: "region-badge", "data-slot": "waiting-badge", aria_hidden: "true", "waiting on you" }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/// The question a close or a quit asks while the trace holds frames nobody has
+/// exported (F9). Opened by `quit_dialog::open`; answered by exporting,
+/// quitting anyway, or staying.
+#[component]
+fn QuitDialog(on_export: EventHandler<()>) -> Element {
+    rsx! {
+        dialog {
+            id: quit_dialog::DIALOG,
+            class: "modal quit-dialog",
+            "data-slot": "quit",
+            aria_labelledby: "quit-title",
+            aria_describedby: "quit-body",
+            div { class: "modal-box dialog-box quit-box",
+                header { class: "dialog-head",
+                    h2 { id: "quit-title", "Quit without exporting?" }
+                }
+                div { class: "dialog-body",
+                    p { id: "quit-body",
+                        "The trace holds frames that haven't been exported. They are lost when the window closes."
+                    }
+                }
+                div { class: "dialog-foot",
+                    span { class: "grow" }
+                    button {
+                        class: "btn btn-md btn-quiet",
+                        r#type: "button",
+                        "autofocus": true,
+                        onclick: move |_| quit_dialog::close(),
+                        "Cancel"
+                    }
+                    button {
+                        class: "btn btn-md btn-quiet",
+                        r#type: "button",
+                        onclick: move |_| {
+                            quit_dialog::close();
+                            on_export.call(());
+                        },
+                        "Export trace"
+                    }
+                    button {
+                        class: "btn btn-md btn-filled btn-bad",
+                        "data-slot": "quit-anyway",
+                        r#type: "button",
+                        onclick: move |_| quit_dialog::quit(),
+                        "Quit anyway"
+                    }
+                }
+            }
+            form { method: "dialog", class: "modal-backdrop",
+                button { "data-slot": "dismiss", tabindex: "-1", "close" }
+            }
+        }
+    }
+}
+
+/// The quit question's two scripts, and the quit it guards.
+mod quit_dialog {
+    use dioxus::prelude::*;
+
+    pub const DIALOG: &str = "quit-dialog";
+
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn open() {
+        document::eval(&format!(
+            "const dialog = document.getElementById({DIALOG:?}); if (dialog && !dialog.open) dialog.showModal();"
+        ));
+    }
+
+    pub fn close() {
+        document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
+    }
+
+    /// Quit regardless of what the trace holds.
+    pub fn quit() {
+        close();
+        #[cfg(feature = "desktop")]
+        crate::shell::quit();
+    }
+}
+
+/// Writes a preference off the UI thread (L6). Nothing is said about a write
+/// that fails: the window is already in the chosen state, and the choice is one
+/// click to redo.
+fn persist(
+    settings: Option<Settings>,
+    write: impl FnOnce(&Settings) -> std::io::Result<()> + Send + 'static,
+) {
+    if let Some(settings) = settings {
+        spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || write(&settings)).await;
+        });
+    }
+}
+
+/// The invocation as it is spawned: with the login shell's `PATH` where the
+/// app's own is the minimal one a Finder launch gets and the reader did not
+/// set one (X2). What is remembered and shown is the invocation as typed.
+async fn with_login_path(agent: AgentCommand) -> AgentCommand {
+    #[cfg(feature = "desktop")]
+    {
+        let mut agent = agent;
+        if agent.variables().all(|(name, _)| name != "PATH")
+            && let Some(path) = shell::login_path().await
+        {
+            if !agent.env.trim().is_empty() {
+                agent.env.push('\n');
+            }
+            agent.env.push_str(&format!("PATH={path}"));
+        }
+        agent
+    }
+    #[cfg(not(feature = "desktop"))]
+    agent
+}
+
+/// The `PATH` a bare command name is looked up in, for the launch failure
+/// alert: the invocation's own, else the login shell's, else this process's.
+fn effective_path(agent: Option<&AgentCommand>) -> Option<String> {
+    agent
+        .and_then(|agent| {
+            agent
+                .variables()
+                .find(|(name, _)| *name == "PATH")
+                .map(|(_, value)| value.to_owned())
+        })
+        .or_else(|| {
+            #[cfg(feature = "desktop")]
+            {
+                shell::effective_path()
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                std::env::var("PATH").ok()
+            }
+        })
 }
 
 /// The two live screens and the layout that chooses which is visible.
@@ -1307,9 +1709,9 @@ mod navigation_tests;
 /// What the palette needs of the window: the state that decides which commands
 /// there are, and the handlers they call.
 ///
-/// One value rather than eleven arguments, and it is a *wiring* rather than a
-/// state: nothing here is stored, and every field is either something the window
-/// already renders from or a handler a control already calls.
+/// A *wiring* rather than a state: nothing here is stored, and every field is
+/// either something the window already renders from or a handler a control
+/// already calls.
 struct PaletteWiring {
     connected: bool,
     described: bool,
@@ -1326,16 +1728,74 @@ struct PaletteWiring {
     on_appearance: EventHandler<Appearance>,
 }
 
+/// The rest of what the palette offers (X9): the commands that came after the
+/// first wiring, kept apart so a fixture that draws the palette without them
+/// still builds the same list (`mock.rs`).
+struct PaletteExtras {
+    /// Whether there is an invocation to run again, and no launch in flight.
+    launched: bool,
+    turn_running: bool,
+    session: Option<v1::SessionId>,
+    lists_sessions: bool,
+    /// The agent's advertised authentication methods, by id and name, while it
+    /// is connected.
+    auth_methods: Vec<(v1::AuthMethodId, String)>,
+    /// The frame of the newest request waiting on the reader.
+    waiting: Option<u64>,
+    indented: bool,
+    appearance: Appearance,
+    on_region: EventHandler<Focus>,
+    on_restart: EventHandler<()>,
+    on_cancel_turn: EventHandler<()>,
+    on_list: EventHandler<Option<Cursor>>,
+    on_authenticate: EventHandler<v1::AuthMethodId>,
+    on_waiting: EventHandler<u64>,
+    on_prompt: EventHandler<()>,
+    on_copy_session: EventHandler<()>,
+}
+
+impl PaletteExtras {
+    /// A window with nothing launched, nothing running and nothing waiting.
+    #[cfg(test)]
+    fn idle() -> Self {
+        Self {
+            launched: false,
+            turn_running: false,
+            session: None,
+            lists_sessions: false,
+            auth_methods: Vec::new(),
+            waiting: None,
+            indented: false,
+            appearance: Appearance::default(),
+            on_region: EventHandler::new(|_| {}),
+            on_restart: EventHandler::new(|()| {}),
+            on_cancel_turn: EventHandler::new(|()| {}),
+            on_list: EventHandler::new(|_| {}),
+            on_authenticate: EventHandler::new(|_| {}),
+            on_waiting: EventHandler::new(|_| {}),
+            on_prompt: EventHandler::new(|()| {}),
+            on_copy_session: EventHandler::new(|()| {}),
+        }
+    }
+}
+
+/// The palette's commands for a window with nothing beyond the first wiring.
+#[cfg(test)]
+fn commands(wiring: PaletteWiring) -> Vec<palette::Command> {
+    commands_with(wiring, PaletteExtras::idle())
+}
+
 /// Every command the palette offers (`palette.rs`).
 ///
 /// **Gated exactly as the controls are.** A command that needs an agent is not
 /// offered without one, for the reason a button that cannot be pressed is not
-/// drawn: a list of eighteen verbs, four of which do nothing tonight, is a list
-/// that has to be learnt rather than read. What is *never* gated on state the
-/// protocol leaves to the agent — a session that cannot be opened, a setting
-/// that will be refused — stays exactly where §7.3's rule puts it: on the
-/// affordance, offered, and answered by the agent.
-fn commands(wiring: PaletteWiring) -> Vec<palette::Command> {
+/// drawn. What is *never* gated on state the protocol leaves to the agent — a
+/// session that cannot be opened, a setting that will be refused — stays
+/// exactly where §7.3's rule puts it: on the affordance, offered, and answered
+/// by the agent.
+fn commands_with(wiring: PaletteWiring, extras: PaletteExtras) -> Vec<palette::Command> {
+    use palette::{Command, shortcut};
+
     let PaletteWiring {
         connected,
         described,
@@ -1351,15 +1811,48 @@ fn commands(wiring: PaletteWiring) -> Vec<palette::Command> {
         on_indent,
         on_appearance,
     } = wiring;
-    let mut commands = vec![palette::Command::new(
+    let PaletteExtras {
+        launched,
+        turn_running,
+        session,
+        lists_sessions,
+        auth_methods,
+        waiting,
+        indented,
+        appearance,
+        on_region,
+        on_restart,
+        on_cancel_turn,
+        on_list,
+        on_authenticate,
+        on_waiting,
+        on_prompt,
+        on_copy_session,
+    } = extras;
+    let mut commands = vec![Command::new(
         "Connection",
-        "Connect…",
-        "Start an agent, or run one you have run before",
+        rail::connect_label(launched || connected),
+        if launched || connected {
+            "Change the command, or run one you have run before"
+        } else {
+            "Start an agent, or run one you have run before"
+        },
         EventHandler::new(move |()| connect::open()),
     )];
 
+    if launched {
+        commands.push(
+            Command::new(
+                "Connection",
+                "Restart",
+                "Run the same command again. The trace is kept",
+                on_restart,
+            )
+            .shortcut(shortcut::RESTART),
+        );
+    }
     if connected {
-        commands.push(palette::Command::new(
+        commands.push(Command::new(
             "Connection",
             "Disconnect",
             "End the connection and stop the agent",
@@ -1367,96 +1860,201 @@ fn commands(wiring: PaletteWiring) -> Vec<palette::Command> {
         ));
     }
 
-    if described {
-        commands.push(palette::Command::new(
+    if turn_running {
+        commands.push(
+            Command::new(
+                "Session",
+                "Cancel turn",
+                "Ask the agent to stop the running prompt (session/cancel)",
+                on_cancel_turn,
+            )
+            .shortcut(shortcut::CANCEL_TURN),
+        );
+    }
+    if let Some(ordinal) = waiting {
+        commands.push(Command::new(
             "Session",
-            v1::AGENT_METHOD_NAMES.session_new,
-            agent::SESSION_NEW_COSTS,
-            EventHandler::new(move |()| on_new_session.call(None)),
+            "Go to waiting request",
+            "The request the agent is waiting on you to answer",
+            EventHandler::new(move |()| on_waiting.call(ordinal)),
         ));
-        commands.push(palette::Command::new(
+    }
+    if session.is_some() {
+        commands.push(Command::new(
             "Session",
-            "Sessions…",
+            "Focus prompt",
+            "Put the keyboard in the prompt",
+            on_prompt,
+        ));
+    }
+    if described {
+        commands.push(
+            Command::new(
+                "Session",
+                "New session",
+                &format!(
+                    "{} ({})",
+                    agent::SESSION_NEW_COSTS,
+                    v1::AGENT_METHOD_NAMES.session_new
+                ),
+                EventHandler::new(move |()| on_new_session.call(None)),
+            )
+            .shortcut(shortcut::NEW_SESSION),
+        );
+        commands.push(Command::new(
+            "Session",
+            "Manage sessions…",
             "Open, switch or end a session",
             EventHandler::new(move |()| session::open()),
         ));
-    }
-
-    commands.push(palette::Command::new(
-        "Trace",
-        "Export…",
-        "Write every frame to a JSONL file, nothing redacted",
-        on_export,
-    ));
-    if traced {
-        commands.push(palette::Command::new(
-            "Trace",
-            "Clear",
-            "Drop the frames captured so far; exports already written are untouched",
-            on_clear,
-        ));
-    }
-
-    for (chosen, says) in [
-        (Tab::Trace, "Show every frame that crossed the wire"),
-        (
-            Tab::Diagnostics,
-            "Show everything the transport said that was not a frame",
-        ),
-    ] {
-        commands.push(palette::Command::new(
-            "View",
-            match chosen {
-                Tab::Trace => "Trace",
-                Tab::Diagnostics => "Diagnostics",
-            },
-            says,
-            EventHandler::new(move |()| on_tab.call(chosen)),
-        ));
-    }
-    for chosen in Spine::ALL {
-        if chosen != spine {
-            commands.push(palette::Command::new(
-                "View",
-                chosen.label(),
-                chosen.says(),
-                EventHandler::new(move |()| on_spine.call(chosen)),
+        if lists_sessions && connected {
+            commands.push(Command::new(
+                "Session",
+                "List sessions",
+                "Ask the agent which sessions it has (session/list)",
+                EventHandler::new(move |()| {
+                    session::open();
+                    on_list.call(None);
+                }),
             ));
         }
     }
-    for (chosen, label, says) in [
-        (
-            rail::Tab::Session,
-            "Session settings",
-            "What the live session is configured as",
-        ),
-        (
-            rail::Tab::Capabilities,
-            "Capabilities",
-            "What the agent claimed, and what this client claimed",
-        ),
-    ] {
-        commands.push(palette::Command::new(
-            "View",
-            label,
-            says,
-            EventHandler::new(move |()| on_rail.call(chosen)),
+    if session.is_some() {
+        commands.push(Command::new(
+            "Session",
+            "Copy session ID",
+            "Put the live session's id on the clipboard",
+            on_copy_session,
+        ));
+    }
+    for (method, name) in auth_methods {
+        commands.push(Command::new(
+            "Session",
+            &format!("Authenticate with {name}"),
+            &format!("Send authenticate with the method {method}"),
+            EventHandler::new(move |()| on_authenticate.call(method.clone())),
         ));
     }
 
-    commands.push(palette::Command::new(
-        "Window",
-        "Indent JSON",
-        "Draw payloads indented. What crossed the wire is unchanged",
-        on_indent,
-    ));
-    for chosen in Appearance::ALL {
-        commands.push(palette::Command::new(
-            "Window",
-            chosen.label(),
-            "How this window is painted",
-            EventHandler::new(move |()| on_appearance.call(chosen)),
+    commands.push(
+        Command::new(
+            "Trace",
+            "Export…",
+            "Write every frame to a JSONL file, nothing redacted",
+            on_export,
+        )
+        .shortcut(shortcut::EXPORT),
+    );
+    if traced {
+        commands.push(
+            Command::new(
+                "Trace",
+                "Clear",
+                "Drop the frames captured so far; exports already written are untouched",
+                on_clear,
+            )
+            .shortcut(shortcut::CLEAR),
+        );
+    }
+
+    for (chosen, label, says) in [
+        (
+            Focus::Turn,
+            "Show timeline",
+            "Show the conversation and the prompt",
+        ),
+        (
+            Focus::Rail,
+            "Show details",
+            "Show the connection, session and capabilities",
+        ),
+    ] {
+        commands.push(Command::new(
+            "View",
+            label,
+            says,
+            EventHandler::new(move |()| on_region.call(chosen)),
         ));
+    }
+    for (chosen, says, chord) in [
+        (
+            Tab::Trace,
+            "Show every frame that crossed the wire",
+            shortcut::SHOW_TRACE,
+        ),
+        (
+            Tab::Diagnostics,
+            "Show everything the transport said that was not a frame",
+            shortcut::SHOW_DIAGNOSTICS,
+        ),
+    ] {
+        commands.push(
+            Command::new(
+                "View",
+                match chosen {
+                    Tab::Trace => "Trace",
+                    Tab::Diagnostics => "Diagnostics",
+                },
+                says,
+                EventHandler::new(move |()| on_tab.call(chosen)),
+            )
+            .shortcut(chord),
+        );
+    }
+    for chosen in Spine::ALL {
+        if chosen != spine {
+            commands.push(
+                Command::new(
+                    "View",
+                    chosen.label(),
+                    chosen.says(),
+                    EventHandler::new(move |()| on_spine.call(chosen)),
+                )
+                .shortcut(shortcut::TRACE_ONLY),
+            );
+        }
+    }
+    if connected || described || session.is_some() {
+        for (chosen, label, says) in [
+            (
+                rail::Tab::Session,
+                "Session settings",
+                "What the live session is configured as",
+            ),
+            (
+                rail::Tab::Capabilities,
+                "Capabilities",
+                "What the agent claimed, and what this client claimed",
+            ),
+        ] {
+            commands.push(Command::new(
+                "View",
+                label,
+                says,
+                EventHandler::new(move |()| on_rail.call(chosen)),
+            ));
+        }
+    }
+
+    commands.push(
+        Command::new(
+            "Window",
+            "Pretty JSON",
+            "Draw payloads indented. What crossed the wire is unchanged",
+            on_indent,
+        )
+        .state(indented),
+    );
+    for chosen in Appearance::ALL {
+        commands.push(
+            Command::new(
+                "Window",
+                &format!("{} appearance", chosen.label()),
+                "How this window is painted",
+                EventHandler::new(move |()| on_appearance.call(chosen)),
+            )
+            .state(chosen == appearance),
+        );
     }
 
     commands
@@ -1543,6 +2141,10 @@ fn TopBar(
     /// The live Session, named where the window's other fact is.
     session: Option<v1::SessionId>,
     spine: Spine,
+    /// Whether the agent is waiting on the reader, which the Split choice
+    /// carries while Trace only hides the timeline the request is on.
+    #[props(default)]
+    waiting: bool,
     on_spine: EventHandler<Spine>,
     on_choose: EventHandler<Appearance>,
     on_indent: EventHandler<Indentation>,
@@ -1583,17 +2185,28 @@ fn TopBar(
                 }
             }
 
-            div { class: "seg", role: "group", aria_label: "Which screens are shown",
+            // Hidden below the width where one region shows at a time, where
+            // it would choose between layouts nobody can see (X7).
+            div { class: "seg bar-layout", "data-slot": "layout-toggle", role: "group", aria_label: "Which screens are shown",
                 for chosen in Spine::ALL {
-                    button {
-                        key: "{chosen.label()}",
-                        class: "seg-item",
-                        "data-slot": "spine",
-                        r#type: "button",
-                        aria_pressed: chosen == spine,
-                        title: chosen.says(),
-                        onclick: move |_| on_spine.call(chosen),
-                        "{chosen.label()}"
+                    {
+                        let flagged = waiting && chosen == Spine::Split && spine == Spine::Wire;
+                        rsx! {
+                            button {
+                                key: "{chosen.label()}",
+                                class: "seg-item",
+                                "data-slot": "spine",
+                                "data-waiting": flagged.then_some("true"),
+                                r#type: "button",
+                                aria_pressed: chosen == spine,
+                                title: chosen.says(),
+                                onclick: move |_| on_spine.call(chosen),
+                                "{chosen.label()}"
+                                if flagged {
+                                    span { class: "region-badge", "data-slot": "waiting-badge", "waiting on you" }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1810,7 +2423,8 @@ mod tests {
         assert!(
             html.contains(r#"data-slot="spine""#)
                 && html.contains(">Split</button>")
-                && html.contains(">JSON-RPC full</button>")
+                && html.contains(">Trace only</button>")
+                && html.contains(r#"class="seg bar-layout" data-slot="layout-toggle""#)
                 && html.contains(r#"aria-pressed=true"#),
             "the spine says which screens the window is spending its width on: {html}"
         );
@@ -1831,5 +2445,210 @@ mod tests {
             !html.contains("Connect…") && !html.contains("Disconnect"),
             "the bar names the connection and does not act on it: {html}"
         );
+    }
+
+    #[test]
+    fn the_narrow_bar_names_the_regions_and_flags_a_hidden_request() {
+        fn bar(selected: Focus, waiting: bool) -> String {
+            #[component]
+            fn Host(selected: Focus, waiting: bool) -> Element {
+                rsx! { RegionBar { selected, waiting, on_select: move |_| {} } }
+            }
+            let mut dom = VirtualDom::new_with_props(Host, HostProps { selected, waiting });
+            dom.rebuild_in_place();
+            dioxus_ssr::render(&dom)
+        }
+
+        let html = bar(Focus::Turn, false);
+        for label in ["Details", "Timeline", "Trace"] {
+            assert!(html.contains(&format!(">{label}</button>")), "{html}");
+        }
+        assert!(
+            !html.contains("Messages") && !html.contains(">Session<"),
+            "{html}"
+        );
+
+        // Waiting, while the timeline is the region on screen: it is in view.
+        assert!(!bar(Focus::Turn, true).contains("waiting-badge"));
+        // Waiting, while another region is: the timeline's item says so.
+        let hidden = bar(Focus::Wire, true);
+        assert!(
+            hidden.contains(r#"data-slot="waiting-badge""#)
+                && hidden.contains(r#"aria-label="Timeline, waiting on you""#),
+            "{hidden}"
+        );
+    }
+
+    #[test]
+    fn the_palette_offers_every_command_the_window_has_now() {
+        #[component]
+        fn Host(connected: bool) -> Element {
+            let extras = PaletteExtras {
+                launched: connected,
+                turn_running: connected,
+                session: connected.then(|| v1::SessionId::new("sess-1")),
+                lists_sessions: connected,
+                auth_methods: if connected {
+                    vec![(v1::AuthMethodId::new("login"), "Agent login".to_owned())]
+                } else {
+                    Vec::new()
+                },
+                waiting: connected.then_some(7),
+                indented: true,
+                ..PaletteExtras::idle()
+            };
+            let commands = commands_with(
+                PaletteWiring {
+                    connected,
+                    described: connected,
+                    traced: connected,
+                    spine: Spine::Split,
+                    on_spine: EventHandler::new(|_| {}),
+                    on_tab: EventHandler::new(|_| {}),
+                    on_rail: EventHandler::new(|_| {}),
+                    on_new_session: EventHandler::new(|_| {}),
+                    on_stop: EventHandler::new(|()| {}),
+                    on_export: EventHandler::new(|()| {}),
+                    on_clear: EventHandler::new(|()| {}),
+                    on_indent: EventHandler::new(|()| {}),
+                    on_appearance: EventHandler::new(|_| {}),
+                },
+                extras,
+            );
+            rsx! {
+                for command in commands {
+                    p { "{command.label}|{command.shortcut.clone().unwrap_or_default()}|{command.state.map(|on| on.to_string()).unwrap_or_default()}" }
+                }
+            }
+        }
+        fn rows(connected: bool) -> String {
+            let mut dom = VirtualDom::new_with_props(Host, HostProps { connected });
+            dom.rebuild_in_place();
+            dioxus_ssr::render(&dom)
+        }
+
+        let live = rows(true);
+        for (label, shortcut) in [
+            ("Edit command…", None),
+            ("Restart", Some(palette::shortcut::RESTART)),
+            ("Disconnect", None),
+            ("Cancel turn", Some(palette::shortcut::CANCEL_TURN)),
+            ("Go to waiting request", None),
+            ("Focus prompt", None),
+            ("New session", Some(palette::shortcut::NEW_SESSION)),
+            ("Manage sessions…", None),
+            ("List sessions", None),
+            ("Copy session ID", None),
+            ("Authenticate with Agent login", None),
+            ("Export…", Some(palette::shortcut::EXPORT)),
+            ("Clear", Some(palette::shortcut::CLEAR)),
+            ("Show timeline", None),
+            ("Show details", None),
+            ("Trace only", Some(palette::shortcut::TRACE_ONLY)),
+            ("Capabilities", None),
+        ] {
+            let shortcut = shortcut.map(|chord| chord.here()).unwrap_or_default();
+            assert!(
+                live.contains(&format!("<p>{label}|{shortcut}|")),
+                "{label} is offered with its shortcut: {live}"
+            );
+        }
+        assert!(live.contains("<p>Pretty JSON||true</p>"), "{live}");
+        assert!(live.contains("<p>System appearance||true</p>"), "{live}");
+
+        let idle = rows(false);
+        assert!(idle.contains("<p>Connect…||</p>"), "{idle}");
+        for absent in [
+            "Restart",
+            "Disconnect",
+            "Cancel turn",
+            "New session",
+            "Copy session ID",
+            "Capabilities",
+            "Clear",
+        ] {
+            assert!(
+                !idle.contains(&format!("<p>{absent}|")),
+                "{absent} needs an agent: {idle}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crash_is_logged_with_when_where_and_what() {
+        assert!(
+            crash_log().is_none_or(|path| path.ends_with("acp-inspector/crash.log")),
+            "the log is under the inspector's own state folder"
+        );
+        // The hook itself is process-wide and is not swapped in a test that
+        // runs beside others; what it writes is.
+        let entry = crash_text(
+            jiff::Timestamp::UNIX_EPOCH,
+            "main",
+            "src/client.rs:12:5",
+            "the probe panicked",
+            "0: frame",
+        );
+        assert_eq!(
+            entry,
+            format!(
+                "--- 1970-01-01T00:00:00Z · acp-inspector {} · thread main\npanicked at src/client.rs:12:5: the probe panicked\n0: frame\n",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert!(include_str!("main.rs").contains("        default(info);\n    }));"));
+    }
+
+    #[test]
+    fn a_screen_that_fails_to_draw_is_replaced_by_a_way_back() {
+        #[component]
+        fn Broken() -> Element {
+            Err(dioxus::core::CapturedError::from_display("the probe failed to draw").into())
+        }
+        #[component]
+        fn Host() -> Element {
+            rsx! {
+                ErrorBoundary { handle_error: recovery, Broken {} }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="recovery""#)
+                && html.contains("the probe failed to draw")
+                && html.contains(">Reload</button>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_quit_question_is_named_and_offers_export_first() {
+        #[component]
+        fn Host() -> Element {
+            rsx! { QuitDialog { on_export: move |()| {} } }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"id="quit-dialog""#)
+                && html.contains(r#"aria-labelledby="quit-title""#)
+                && html.contains(">Export trace</button>")
+                && html.contains(">Quit anyway</button>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_spawn_is_given_the_login_path_only_where_none_was_set() {
+        let set = AgentCommand {
+            command: "npx".to_owned(),
+            args: String::new(),
+            env: "PATH=/mine".to_owned(),
+            cwd: String::new(),
+        };
+        assert_eq!(effective_path(Some(&set)).as_deref(), Some("/mine"));
     }
 }

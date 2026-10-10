@@ -28,12 +28,22 @@ pub(crate) fn use_navigation() -> Navigation {
 #[derive(serde::Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Destination {
-    Control { id: &'static str },
-    Entry { ordinal: u64 },
-    Frames { ordinals: Vec<u64> },
+    Control {
+        id: &'static str,
+    },
+    Entry {
+        ordinal: u64,
+    },
+    Frames {
+        ordinals: Vec<u64>,
+    },
     Layout,
     Cancel,
-    Latest { list: &'static str },
+    Latest {
+        list: &'static str,
+    },
+    /// The composer's prompt field, once it is enabled.
+    Prompt,
 }
 
 impl Destination {
@@ -96,6 +106,21 @@ impl Navigation {
         self.revealed.set(frames.clone());
         self.sought.set(None);
         Destination::Frames { ordinals: frames }.focus();
+    }
+
+    /// The request the agent is waiting on, shown and focused without marking
+    /// it as sought: it is not a frame the reader followed here.
+    pub fn waiting(mut self, ordinal: u64) {
+        self.spine.set(Spine::Split);
+        self.region.set(Focus::Turn);
+        Destination::Entry { ordinal }.focus();
+    }
+
+    /// The prompt, which is on the timeline.
+    pub fn prompt(mut self) {
+        self.spine.set(Spine::Split);
+        self.region.set(Focus::Turn);
+        Destination::Prompt.focus();
     }
 
     pub fn seek(mut self, ordinal: u64) {

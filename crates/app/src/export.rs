@@ -110,22 +110,41 @@ fn RetrievalAction(
 pub struct Work {
     pub pending: bool,
     pub result: Option<Result<PathBuf, String>>,
+    /// How many frames had been recorded when the export in flight began.
+    taking: usize,
+    /// How many frames had been recorded when the last export that was
+    /// written began: everything up to there is in a file.
+    exported: usize,
 }
 
 impl Work {
-    pub fn begin(&mut self, trace: &Trace) -> Option<Export> {
+    /// Takes a snapshot to export, unless one is already being written.
+    /// `recorded` is how many frames the trace has ever recorded, dropped and
+    /// cleared ones included, as of this snapshot.
+    pub fn begin(&mut self, trace: &Trace, recorded: usize) -> Option<Export> {
         if self.pending {
             return None;
         }
         let snapshot = trace.export();
         self.pending = true;
         self.result = None;
+        self.taking = recorded;
         Some(snapshot)
     }
 
     pub fn finish(&mut self, result: Result<PathBuf, String>) {
+        if result.is_ok() {
+            self.exported = self.exported.max(self.taking);
+        }
         self.result = Some(result);
         self.pending = false;
+    }
+
+    /// Whether frames recorded up to `recorded` include some no export has
+    /// written (F9).
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn unexported(&self, recorded: usize) -> bool {
+        recorded > self.exported
     }
 }
 
@@ -263,9 +282,9 @@ mod tests {
     async fn pending_job_does_not_block_executor_or_accept_duplicates_and_failure_can_retry() {
         let trace = Trace::default();
         let mut work = Work::default();
-        let snapshot = work.begin(&trace).unwrap();
+        let snapshot = work.begin(&trace, 3).unwrap();
         assert!(work.pending);
-        assert!(work.begin(&trace).is_none());
+        assert!(work.begin(&trace, 3).is_none());
         let (release, wait) = std::sync::mpsc::channel();
         let (started, ready) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(in_background(move || {
@@ -280,7 +299,14 @@ mod tests {
         work.finish(task.await.unwrap());
         assert!(!work.pending);
         assert_eq!(work.result, Some(Err("disk probe".into())));
-        assert!(work.begin(&trace).is_some());
+        assert!(work.unexported(3), "a failed export wrote nothing");
+        assert!(work.begin(&trace, 3).is_some());
         assert!(work.result.is_none());
+        work.finish(Ok(PathBuf::from("/tmp/trace.jsonl")));
+        assert!(
+            !work.unexported(3),
+            "what the export began with is in a file"
+        );
+        assert!(work.unexported(4), "a frame recorded since is not");
     }
 }

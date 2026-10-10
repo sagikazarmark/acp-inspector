@@ -79,11 +79,6 @@ pub fn valid() -> bool {
     try_consume_context::<McpInput>().is_none_or(|input| input.draft.read().findings().is_empty())
 }
 
-/// How many servers the next session opening will carry.
-pub fn count() -> usize {
-    try_consume_context::<McpInput>().map_or(0, |input| input.draft.read().servers.len())
-}
-
 /// A launch was attempted: say every finding, and take the reader to the first
 /// one if there is any. Answers whether the draft is valid.
 pub fn attempt_launch() -> bool {

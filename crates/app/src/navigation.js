@@ -31,6 +31,9 @@ for (let attempt = 0; attempt < 60; attempt += 1) {
       if (!active?.closest('.turns, .rail') || visible(active)) return;
       target = document.querySelector('.wire-tabs [aria-selected="true"]');
       break;
+    case 'prompt':
+      target = document.querySelector('[data-slot="composer"] textarea:not([disabled])');
+      break;
     case 'latest':
       target = document.querySelector(`[data-tail="${intent.list}"]`);
       if (!visible(target) || target.dataset.pageLatest === 'false') continue;

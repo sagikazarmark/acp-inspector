@@ -24,6 +24,10 @@
 
 use acp_inspector_core::{AgentCommand, ConnectionStatus, SessionSettings, v1};
 use dioxus::prelude::*;
+use dioxus_free_icons::{
+    Icon,
+    icons::ld_icons::{LdPower, LdRotateCw},
+};
 
 use crate::agent::{Advertiser, AgentClaims, Claims};
 use crate::session_settings::{Choice, SessionSettings as SessionSettingsPanel};
@@ -64,6 +68,32 @@ impl Tab {
     }
 }
 
+/// Which tab a key moves to from `selected`, if any: the arrow keys go to the
+/// other tab, Home to the first and End to the last — the tab pattern the
+/// Console's own tabs follow (`console::tab_for_key`).
+fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
+    match key {
+        Key::ArrowLeft | Key::ArrowRight => Some(match selected {
+            Tab::Session => Tab::Capabilities,
+            Tab::Capabilities => Tab::Session,
+        }),
+        Key::Home => Some(Tab::Session),
+        Key::End => Some(Tab::Capabilities),
+        _ => None,
+    }
+}
+
+fn focus_tab(tab: Tab) {
+    // The id is one of the two literals above, never content from the Agent.
+    let _ = document::eval(&format!(
+        "document.getElementById({:?})?.focus();",
+        tab.id()
+    ));
+}
+
+/// The rail's Restart button, which focus goes to after a disconnect.
+pub const RESTART: &str = "rail-restart";
+
 /// The rail.
 #[component]
 pub fn Rail(
@@ -85,62 +115,86 @@ pub fn Rail(
     tab: Tab,
     on_tab: EventHandler<Tab>,
     on_stop: EventHandler<()>,
+    /// Whether a launch is in flight, which is when Restart would race it.
+    #[props(default)]
+    launching: bool,
+    /// Relaunch the last invocation, keeping the trace (X4).
+    #[props(default)]
+    on_restart: Option<EventHandler<()>>,
     on_set_mode: EventHandler<v1::SessionModeId>,
     on_set_config_option: EventHandler<Choice>,
 ) -> Element {
     let connected = status == ConnectionStatus::Connected;
     let described = claims.agent.is_some();
     let on_new_session = claims.on_new_session;
+    // Session-scoped surfaces are for a window that has an agent, or the
+    // record of one: before the first launch there is nothing for them to say
+    // but "none", and a first run reads better without three of those (D10).
+    let active = connected || described || session.is_some();
+    let restart = on_restart.filter(|_| launched.is_some() && !launching);
 
     rsx! {
         aside { class: "rail", "data-slot": "rail", aria_label: "Connection",
             section { class: "rail-conn",
                 span { class: "eyebrow", "Connection" }
-                {connection(status, launched.as_ref(), connected, on_stop)}
+                {connection(status, launched.as_ref(), connected, on_stop, restart)}
             }
 
-            div { class: "rail-tabs", role: "tablist", aria_label: "Rail",
-                for choice in [Tab::Session, Tab::Capabilities] {
-                    button {
-                        key: "{choice.label()}",
-                        id: choice.id(),
-                        class: "rail-tab",
-                        r#type: "button",
-                        role: "tab",
-                        aria_selected: choice == tab,
-                        aria_controls: choice.panel_id(),
-                        tabindex: if choice == tab { "0" } else { "-1" },
-                        onclick: move |_| on_tab.call(choice),
-                        "{choice.label()}"
+            if active {
+                div { class: "rail-tabs", role: "tablist", aria_label: "Details",
+                    for choice in [Tab::Session, Tab::Capabilities] {
+                        button {
+                            key: "{choice.label()}",
+                            id: choice.id(),
+                            class: "rail-tab",
+                            r#type: "button",
+                            role: "tab",
+                            aria_selected: choice == tab,
+                            aria_controls: choice.panel_id(),
+                            tabindex: if choice == tab { "0" } else { "-1" },
+                            onclick: move |_| on_tab.call(choice),
+                            // The tab pattern: the arrows move between tabs and
+                            // select as they go, Home and End go to the ends.
+                            onkeydown: move |event| {
+                                if let Some(next) = tab_for_key(tab, &event.key()) {
+                                    event.prevent_default();
+                                    on_tab.call(next);
+                                    focus_tab(next);
+                                }
+                            },
+                            "{choice.label()}"
+                        }
                     }
                 }
-            }
 
-            div {
-                id: tab.panel_id(),
-                class: "rail-body",
-                role: "tabpanel",
-                aria_labelledby: tab.id(),
-                match tab {
-                    Tab::Session => rsx! {
-                        {live(session.as_ref(), connected, described, on_new_session)}
-                        if session.is_some() {
-                            SessionSettingsPanel {
-                                settings,
-                                settings_epoch,
-                                changing_mode,
-                                setting_option,
-                                connected,
-                                on_set_mode,
-                                on_set_config_option,
+                div {
+                    id: tab.panel_id(),
+                    class: "rail-body",
+                    role: "tabpanel",
+                    aria_labelledby: tab.id(),
+                    match tab {
+                        Tab::Session => rsx! {
+                            {live(session.as_ref(), connected, described, on_new_session)}
+                            if session.is_some() {
+                                SessionSettingsPanel {
+                                    settings,
+                                    settings_epoch,
+                                    changing_mode,
+                                    setting_option,
+                                    connected,
+                                    on_set_mode,
+                                    on_set_config_option,
+                                }
                             }
-                        }
-                    },
-                    Tab::Capabilities => rsx! {
-                        AgentClaims { claims: claims.clone(), whose: Advertiser::Agent }
-                        AgentClaims { claims, whose: Advertiser::Client }
-                    },
+                        },
+                        Tab::Capabilities => rsx! {
+                            AgentClaims { claims: claims.clone(), whose: Advertiser::Agent }
+                            AgentClaims { claims, whose: Advertiser::Client }
+                        },
+                    }
                 }
+            } else {
+                div { class: "rail-body" }
             }
 
             footer { class: "rail-foot",
@@ -149,15 +203,19 @@ pub fn Rail(
                     "data-slot": "open-palette",
                     r#type: "button",
                     aria_haspopup: "dialog",
+                    aria_keyshortcuts: if crate::palette::shortcut::MAC { "Meta+K" } else { "Control+K" },
                     title: "Every command this window has, by name",
                     onclick: move |_| crate::palette::open(),
                     "Command palette"
-                    span { class: "palette-key", "Ctrl K" }
+                    kbd { class: "palette-key", {crate::palette::shortcut::PALETTE.here()} }
                 }
                 // The agent's own count, under the way to the list it is about:
-                // what it published, not what this window can do.
-                p { class: "hint", "data-slot": "command-count",
-                    "{commands} available_commands"
+                // what it published, not what this window can do. Nothing is
+                // said about none.
+                if active && commands > 0 {
+                    p { class: "hint", "data-slot": "command-count",
+                        if commands == 1 { "1 slash command · type /" } else { "{commands} slash commands · type /" }
+                    }
                 }
             }
         }
@@ -177,6 +235,7 @@ fn connection(
     launched: Option<&AgentCommand>,
     connected: bool,
     on_stop: EventHandler<()>,
+    on_restart: Option<EventHandler<()>>,
 ) -> Element {
     let (tone, said) = crate::connection_state(status);
     let endpoint = launched.map(invocation).filter(|said| !said.is_empty());
@@ -209,27 +268,40 @@ fn connection(
                     class: "btn btn-xs btn-quiet",
                     "data-slot": "configure",
                     r#type: "button",
+                    aria_haspopup: "dialog",
                     title: "Open the launch fields",
                     onclick: move |_| crate::connect::open(),
-                    "configure…"
+                    {connect_label(launched.is_some())}
                 }
-                if connected {
+                if connected || on_restart.is_some() {
                     div { class: "tile-actions",
-                        button {
-                            class: "btn btn-xs btn-quiet btn-bad",
-                            "data-slot": "rail-disconnect",
-                            r#type: "button",
-                            title: "End the connection and stop the agent",
-                            onclick: move |_| on_stop.call(()),
-                            "disconnect"
+                        if connected {
+                            button {
+                                class: "btn btn-xs btn-quiet btn-bad",
+                                "data-slot": "rail-disconnect",
+                                r#type: "button",
+                                title: "End the connection and stop the agent",
+                                onclick: move |_| on_stop.call(()),
+                                span { class: "disclosure-icon", aria_hidden: "true",
+                                    Icon { class: "icon", width: 16, height: 16, icon: LdPower }
+                                }
+                                "Disconnect"
+                            }
                         }
-                        button {
-                            class: "btn btn-xs btn-quiet btn-go",
-                            "data-slot": "reconnect",
-                            r#type: "button",
-                            title: "Disconnect and open the launch fields to run it again",
-                            onclick: move |_| { on_stop.call(()); crate::connect::open(); },
-                            "reconnect"
+                        if let Some(on_restart) = on_restart {
+                            button {
+                                id: RESTART,
+                                class: "btn btn-xs btn-quiet btn-go",
+                                "data-slot": "restart",
+                                r#type: "button",
+                                aria_keyshortcuts: if crate::palette::shortcut::MAC { "Meta+R" } else { "Control+R" },
+                                title: "Run the same command again ({crate::palette::shortcut::RESTART.here()}). The trace is kept.",
+                                onclick: move |_| on_restart.call(()),
+                                span { class: "disclosure-icon", aria_hidden: "true",
+                                    Icon { class: "icon", width: 16, height: 16, icon: LdRotateCw }
+                                }
+                                "Restart"
+                            }
                         }
                     }
                 }
@@ -271,7 +343,7 @@ fn live(
                     },
                     None => rsx! {
                         span { class: "session-tile-name", "No session" }
-                        span { class: "session-tile-id", "nothing is open to prompt into" }
+                        span { class: "session-tile-id", "Not open" }
                     },
                 }
             }
@@ -284,13 +356,13 @@ fn live(
                         aria_haspopup: "dialog",
                         title: "Open, switch or end a session",
                         onclick: move |_| crate::session::open(),
-                        "manage…"
+                        "Manage sessions…"
                     }
                     button {
                         class: "btn btn-xs btn-quiet btn-go",
                         "data-slot": "rail-new-session",
                         r#type: "button",
-                        title: crate::agent::SESSION_NEW_COSTS,
+                        title: "{v1::AGENT_METHOD_NAMES.session_new} — {crate::agent::SESSION_NEW_COSTS}",
                         aria_disabled: (!connected).then_some("true"),
                         tabindex: (!connected).then_some("-1"),
                         // No roots ride with it: the control that supplies them
@@ -302,11 +374,22 @@ fn live(
                                 on_new_session.call(None);
                             }
                         },
-                        "{v1::AGENT_METHOD_NAMES.session_new}"
+                        "New session"
                     }
                 }
             }
         }
+    }
+}
+
+/// What the way to the launch fields is called: Connect… before anything was
+/// launched, and Edit command… once there is a command to edit — one name per
+/// state, the same in the rail, the palette and the empty timeline.
+pub fn connect_label(launched: bool) -> &'static str {
+    if launched {
+        "Edit command…"
+    } else {
+        "Connect…"
     }
 }
 
@@ -348,6 +431,8 @@ mod tests {
         agent: bool,
         tab: Tab,
         settings: bool,
+        restart: bool,
+        commands: usize,
     }
 
     impl Default for Screen {
@@ -359,6 +444,8 @@ mod tests {
                 agent: true,
                 tab: Tab::Session,
                 settings: true,
+                restart: true,
+                commands: 0,
             }
         }
     }
@@ -383,10 +470,11 @@ mod tests {
                     settings_epoch: 0,
                     changing_mode: false,
                     setting_option: None,
-                    commands: 0,
+                    commands: screen.commands,
                     tab: screen.tab,
                     on_tab: move |_| {},
                     on_stop: move |()| {},
+                    on_restart: screen.restart.then(|| EventHandler::new(move |()| {})),
                     on_set_mode: move |_| {},
                     on_set_config_option: move |_| {},
                 }
@@ -443,8 +531,164 @@ mod tests {
             "and nothing to open a session on until an agent has described itself: {html}"
         );
         assert!(
-            html.contains("No session") && html.contains("nothing is open to prompt into"),
-            "the live session says which of the two states it is in: {html}"
+            !html.contains("No session")
+                && !html.contains(r#"role="tablist""#)
+                && !html.contains(r#"data-slot="command-count""#),
+            "session-scoped surfaces wait for an agent (D10): {html}"
+        );
+        assert!(
+            html.contains(">Connect…</button>") && !html.contains(r#"data-slot="restart""#),
+            "the way in is named for what it does first, and there is nothing to restart: {html}"
+        );
+    }
+
+    #[test]
+    fn a_session_that_is_not_open_says_so_in_two_words() {
+        let html = shown(Screen {
+            session: false,
+            ..Screen::default()
+        });
+        assert!(
+            html.contains("No session") && html.contains(">Not open<"),
+            "{html}"
+        );
+        assert!(
+            html.contains(">Manage sessions…</button>")
+                && html.contains(">New session</button>")
+                && html.contains("title=\"session/new — "),
+            "verbs on the buttons, the method in the tooltip: {html}"
+        );
+    }
+
+    #[test]
+    fn restart_is_offered_wherever_there_is_a_command_to_run_again() {
+        for status in [
+            ConnectionStatus::Connected,
+            ConnectionStatus::Lost,
+            ConnectionStatus::FailedToStart,
+            ConnectionStatus::Disconnected,
+        ] {
+            let html = shown(Screen {
+                status,
+                ..Screen::default()
+            });
+            assert!(
+                html.contains(r#"id="rail-restart""#) && html.contains("Restart</button>"),
+                "{status:?}: {html}"
+            );
+            assert!(
+                html.contains(">Edit command…</button>") && !html.contains("reconnect"),
+                "{status:?}: {html}"
+            );
+            assert_eq!(
+                html.contains("Disconnect</button>"),
+                status == ConnectionStatus::Connected,
+                "only a live connection can be ended: {html}"
+            );
+        }
+        let launching = shown(Screen {
+            restart: false,
+            ..Screen::default()
+        });
+        assert!(!launching.contains(r#"data-slot="restart""#), "{launching}");
+    }
+
+    #[test]
+    fn the_slash_command_count_is_said_in_words_and_not_at_all_at_zero() {
+        assert!(!shown(Screen::default()).contains(r#"data-slot="command-count""#));
+        let html = shown(Screen {
+            commands: 3,
+            ..Screen::default()
+        });
+        assert!(html.contains("3 slash commands · type /"), "{html}");
+        assert!(!html.contains("available_commands"), "{html}");
+    }
+
+    #[test]
+    fn the_arrow_keys_home_and_end_move_between_the_rail_tabs() {
+        assert_eq!(
+            tab_for_key(Tab::Session, &Key::ArrowRight),
+            Some(Tab::Capabilities)
+        );
+        assert_eq!(
+            tab_for_key(Tab::Capabilities, &Key::ArrowLeft),
+            Some(Tab::Session)
+        );
+        assert_eq!(
+            tab_for_key(Tab::Capabilities, &Key::ArrowRight),
+            Some(Tab::Session)
+        );
+        assert_eq!(
+            tab_for_key(Tab::Capabilities, &Key::Home),
+            Some(Tab::Session)
+        );
+        assert_eq!(
+            tab_for_key(Tab::Session, &Key::End),
+            Some(Tab::Capabilities)
+        );
+        assert_eq!(tab_for_key(Tab::Session, &Key::Enter), None);
+    }
+
+    #[test]
+    fn a_rail_tab_answers_the_arrow_keys() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::Mutation;
+        use dioxus::html::{PlatformEventData, SerializedKeyboardData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut tab = use_signal(Tab::default);
+            rsx! {
+                Rail {
+                    status: ConnectionStatus::Connected,
+                    launched: None,
+                    session: None,
+                    claims: Claims::about(None),
+                    settings: SessionSettings::default(),
+                    settings_epoch: 0,
+                    changing_mode: false,
+                    setting_option: None,
+                    commands: 0,
+                    tab: tab(),
+                    on_tab: move |chosen| tab.set(chosen),
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_set_config_option: move |_| {},
+                }
+            }
+        }
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let first = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "keydown" => Some(*id),
+                _ => None,
+            })
+            .expect("the tabs listen for keys");
+        let key = SerializedKeyboardData::new(
+            Key::ArrowRight,
+            Code::ArrowRight,
+            Location::Standard,
+            false,
+            Modifiers::empty(),
+            false,
+        );
+        dom.runtime().handle_event(
+            "keydown",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::new(key))) as Rc<dyn Any>,
+                true,
+            ),
+            first,
+        );
+        dom.render_immediate_to_vec();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"id="rail-panel-capabilities""#),
+            "ArrowRight selected the next tab: {html}"
         );
     }
 
@@ -555,7 +799,7 @@ mod tests {
         assert!(
             html.contains(r#"data-slot="open-palette""#)
                 && html.contains(r#"aria-haspopup="dialog""#)
-                && html.contains("Ctrl K"),
+                && html.contains(&crate::palette::shortcut::PALETTE.here()),
             "the palette is named, reachable and says its shortcut: {html}"
         );
     }
