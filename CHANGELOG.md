@@ -30,16 +30,22 @@ wire side by side.
 ### Platforms
 
 - macOS 11 or later: a disk image per architecture (Apple Silicon, Intel).
-- Linux and Windows: build from source. Linux is exercised by CI and the
-  native acceptance runs; Windows is only compiled in CI. Neither is packaged.
+- Linux and Windows: build from source, or build an archive of the binary
+  with cargo-dist (`just dist-build`) on the platform it is for. Linux is
+  exercised by CI and the native acceptance runs; Windows is only compiled in
+  CI. The archives are not built or tested on CI.
 
 ### Added
 
 - **Connection.** Spawn an agent from a command, arguments, environment and
-  working directory; whole JSON-RPC frames in both directions; the agent's
-  stderr as a line-timestamped diagnostic channel; disconnect and relaunch
+  working directory, with inherited variables unset or the environment
+  started empty (and a minimal-environment preset); whole JSON-RPC frames in
+  both directions; the agent's stderr as a line-timestamped diagnostic
+  channel; disconnect (stdin closed, then SIGTERM, then SIGKILL) and relaunch
   without losing the trace. The last ten invocations that answered are
-  remembered.
+  remembered, with their variables by name only unless values are asked for;
+  each can be launched, refilled or removed from the form and the first-run
+  card.
 - **Typed ACP v1 client** (schema crate 1.7). Drives `initialize`,
   `authenticate`, `logout`, `session/new`, `session/load`, `session/resume`,
   `session/list`, `session/close`, `session/delete`, `session/prompt`,
@@ -57,8 +63,9 @@ wire side by side.
   on the advertisement.
 - **Sessions.** Create, list, load, resume, close and delete sessions without
   relaunching; additional directories; session modes and config options.
-- **Prompt content.** Image, audio, text and PDF attachments where the agent
-  advertises them; slash commands from `available_commands_update`.
+- **Prompt content.** Image, audio, text, PDF and other binary attachments
+  where the agent advertises them; resource links, which every agent accepts;
+  slash commands from `available_commands_update`.
 - **MCP server definitions** (stdio, HTTP, SSE) supplied on session opening.
 - **Conformance annotations** where captured traffic decides a MUST (for
   example, a `session/load` that answered without replaying).
@@ -69,6 +76,9 @@ wire side by side.
   ([schema](docs/trace-export.md)).
 - **Window.** Light and dark themes following the system or chosen, a command
   palette, keyboard navigation, and a single-region layout for narrow windows.
+  The window navigates only to its own pages. A background task that panics
+  loses the connection with a diagnostic instead of leaving its calls hanging,
+  and a state file that cannot be read is set aside and said.
 
 ### Known limitations
 

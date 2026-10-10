@@ -118,6 +118,10 @@ pub fn Rail(
     /// Whether a launch is in flight, which is when Restart would race it.
     #[props(default)]
     launching: bool,
+    /// Whether the agent this window disconnected is still being stopped
+    /// (F6): stdin closed, then SIGTERM, then SIGKILL.
+    #[props(default)]
+    stopping: bool,
     /// Relaunch the last invocation, keeping the trace (X4).
     #[props(default)]
     on_restart: Option<EventHandler<()>>,
@@ -137,7 +141,7 @@ pub fn Rail(
         aside { class: "rail", "data-slot": "rail", aria_label: "Connection",
             section { class: "rail-conn",
                 span { class: "eyebrow", "Connection" }
-                {connection(status, launched.as_ref(), connected, on_stop, restart)}
+                {connection(status, launched.as_ref(), connected, stopping, on_stop, restart)}
             }
 
             if active {
@@ -234,10 +238,15 @@ fn connection(
     status: ConnectionStatus,
     launched: Option<&AgentCommand>,
     connected: bool,
+    stopping: bool,
     on_stop: EventHandler<()>,
     on_restart: Option<EventHandler<()>>,
 ) -> Element {
-    let (tone, said) = crate::connection_state(status);
+    let (tone, said) = if stopping && !connected {
+        ("idle", "stopping\u{2026}")
+    } else {
+        crate::connection_state(status)
+    };
     let endpoint = launched.map(invocation).filter(|said| !said.is_empty());
     let cwd = launched
         .map(|command| command.cwd.trim())
@@ -433,6 +442,7 @@ mod tests {
         settings: bool,
         restart: bool,
         commands: usize,
+        stopping: bool,
     }
 
     impl Default for Screen {
@@ -446,6 +456,7 @@ mod tests {
                 settings: true,
                 restart: true,
                 commands: 0,
+                stopping: false,
             }
         }
     }
@@ -474,6 +485,7 @@ mod tests {
                     tab: screen.tab,
                     on_tab: move |_| {},
                     on_stop: move |()| {},
+                    stopping: screen.stopping,
                     on_restart: screen.restart.then(|| EventHandler::new(move |()| {})),
                     on_set_mode: move |_| {},
                     on_set_config_option: move |_| {},
@@ -558,6 +570,20 @@ mod tests {
                 && html.contains("title=\"session/new — "),
             "verbs on the buttons, the method in the tooltip: {html}"
         );
+    }
+
+    #[test]
+    fn a_graceful_stop_in_progress_says_stopping_and_still_offers_restart() {
+        let html = shown(Screen {
+            status: ConnectionStatus::Disconnected,
+            stopping: true,
+            ..Screen::default()
+        });
+        assert!(
+            html.contains(">stopping\u{2026}<") && html.contains(r#"id="rail-restart""#),
+            "{html}"
+        );
+        assert!(!html.contains("Disconnect</button>"), "{html}");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! that names another project in the task switcher — and the alternative to
 //! that is a PNG in the tree, which is a binary asset for a shell whose whole
 //! build story is that `cargo run` needs nothing resolved
-//! ([ADR 0003](../../../docs/adr/0003-the-stylesheet-is-generated-and-committed.md)
+//! (ADR 0003, `docs/adr/0003-the-stylesheet-is-generated-and-committed.md`,
 //! makes the same argument about the stylesheet).
 //!
 //! What it draws is the tool's subject: two bars crossing a rounded square in
@@ -17,7 +17,7 @@
 //! canvas, which is what a window icon does (`shell::icon`). The macOS bundle's
 //! icon is the same function at the ten sizes an `.icns` holds, on the grid
 //! macOS lays its icons out on (`examples/bundle-icon.rs`, run by `just icon`
-//! — [ADR 0010](../../../docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md)).
+//! — ADR 0010, `docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md`).
 //! The proportions are stated once, as sixty-fourths of the mark's side — the
 //! grid it was first drawn on, pixel by pixel — and every edge is drawn by
 //! coverage rather than by rounding to a pixel, so a size is a parameter and

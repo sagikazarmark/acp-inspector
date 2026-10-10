@@ -35,12 +35,16 @@ use dioxus::prelude::*;
 /// what this says is never something to act on.
 const LINGER: Duration = Duration::from_secs(2);
 
+/// How long a [`notice`](Announcer::notice) stays: a sentence about the
+/// window's own files, long enough to read the path in it.
+const NOTICE: Duration = Duration::from_secs(10);
+
 /// What the window is saying about itself, if anything.
 ///
 /// A handle rather than a store: it is one signal, held by the root and reached
 /// from wherever a control has something to say.
 #[derive(Clone, Copy, PartialEq)]
-pub struct Announcer(Signal<Option<String>>);
+pub struct Announcer(Signal<Option<String>>, Signal<Duration>);
 
 impl Announcer {
     /// Says one thing, which takes the place of whatever was being said.
@@ -52,7 +56,18 @@ impl Announcer {
         // Callable from an event handler, an async task, anywhere — a write is
         // not a subscription, so nothing that clicks becomes a subscriber to
         // every announcement the window ever makes.
-        let mut said = self.0;
+        let (mut said, mut linger) = (self.0, self.1);
+        linger.set(LINGER);
+        said.set(Some(what));
+    }
+
+    /// Says something about the window's own state that the reader may want
+    /// to act on later — a state file that could not be read and was set
+    /// aside — and lets it stay long enough to read. Still nothing about the
+    /// agent: that is the record's.
+    pub fn notice(&self, what: String) {
+        let (mut said, mut linger) = (self.0, self.1);
+        linger.set(NOTICE);
         said.set(Some(what));
     }
 
@@ -77,7 +92,7 @@ impl Announcer {
 /// subscription, so a second announcement drops the first's timer and starts
 /// its own.
 pub fn provide() -> Announcer {
-    let announcer = use_context_provider(|| Announcer(Signal::new(None)));
+    let announcer = use_context_provider(|| Announcer(Signal::new(None), Signal::new(LINGER)));
 
     use_resource(move || async move {
         // Read and dropped in the one statement — a signal's guard held across
@@ -85,7 +100,8 @@ pub fn provide() -> Announcer {
         if announcer.0.read().is_none() {
             return;
         }
-        tokio::time::sleep(LINGER).await;
+        let linger = *announcer.1.peek();
+        tokio::time::sleep(linger).await;
         // Which is itself a change, so this future is started once more and
         // returns at the line above. That is the whole of the loop.
         announcer.0.clone().set(None);
@@ -102,7 +118,9 @@ pub fn provide() -> Announcer {
 /// them hostage to a corner of the window they are not about. Nobody hears a
 /// detached announcer, and the clipboard write happens either way.
 pub fn announcer() -> Announcer {
-    use_hook(|| try_consume_context().unwrap_or_else(|| Announcer(Signal::new(None))))
+    use_hook(|| {
+        try_consume_context().unwrap_or_else(|| Announcer(Signal::new(None), Signal::new(LINGER)))
+    })
 }
 
 /// The toast, wherever the window has one.

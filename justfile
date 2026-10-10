@@ -305,3 +305,27 @@ bundle-macos identity="" notary="":
     if [ -z "$identity" ]; then
         echo "bundle-macos: unsigned — on another Mac, Gatekeeper wants Open Anyway in System Settings → Privacy & Security."
     fi
+
+# Reads `dist-workspace.toml` and the workspace; builds nothing and publishes
+# nothing.
+#
+# Show what `dist` would build for Linux and Windows.
+dist-plan:
+    dist plan
+
+# Untested on CI, and never uploads: `dist-workspace.toml` configures no CI. On
+# Linux it needs the WebKitGTK development packages (README, "Building"); on
+# Windows, the MSVC toolchain. Ship `just licenses` beside it (L5).
+#
+#   just dist-build                              # this machine's target
+#   just dist-build x86_64-unknown-linux-gnu     # a named one, if this machine can build it
+#
+# Build the Linux or Windows archive into `target/distrib/`.
+dist-build target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n {{quote(target)}} ]; then
+        dist build --artifacts=local --target {{quote(target)}}
+    else
+        dist build --artifacts=local
+    fi

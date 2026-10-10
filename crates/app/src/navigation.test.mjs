@@ -170,3 +170,21 @@ test('a launch hands focus to the prompt once it is enabled', async () => {
   await h.paint(); await pending;
   assert.deepEqual(h.effects, [['focus', key]]);
 });
+
+test('Clear from the palette arms the Console button once and focuses it', async () => {
+  const h = mount();
+  const key = '.clear-trace [data-slot="clear"]';
+  const group = { dataset: { armed: 'false' } };
+  const button = h.node(key);
+  button.closest = () => group;
+  button.click = () => { h.effects.push(['click', key]); group.dataset.armed = 'true'; };
+  const first = h.request({ kind: 'armclear' });
+  await h.paint(); await first;
+  assert.deepEqual(h.effects, [['click', key], ['focus', key]]);
+
+  // Asked again while armed: focus only, never the confirming press.
+  h.effects.length = 0;
+  const second = h.request({ kind: 'armclear' });
+  await h.paint(); await second;
+  assert.deepEqual(h.effects, [['focus', key]]);
+});

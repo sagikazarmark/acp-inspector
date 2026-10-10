@@ -48,6 +48,12 @@ pub struct AgentCommand {
     /// Start the agent with only the variables in [`env`](Self::env), not
     /// the inspector's environment.
     pub clear_env: bool,
+    /// Whether the recent list may keep the values in [`env`](Self::env).
+    ///
+    /// Off by default: a value is where an API key would be, and the recent
+    /// list is a plaintext file. Without it only the variable names are kept
+    /// ([`remembered`](Self::remembered)). It changes nothing about what runs.
+    pub remember_env_values: bool,
 }
 
 /// What a minimal environment keeps from the inspector's: enough for a shell
@@ -155,7 +161,56 @@ impl AgentCommand {
             cwd: self.cwd.trim().to_owned(),
             unset: joined(&self.unset),
             clear_env: self.clear_env,
+            remember_env_values: self.remember_env_values,
         }
+    }
+
+    /// The invocation as the recent list keeps it: [`normalized`](Self::normalized),
+    /// and with only the variable names in [`env`](Self::env) unless
+    /// [`remember_env_values`](Self::remember_env_values) is set.
+    ///
+    /// An invocation that sets no variables has nothing to remember either way,
+    /// so it is kept without the flag: one invocation, one row.
+    pub fn remembered(&self) -> Self {
+        let mut kept = self.normalized();
+        if kept.variables().next().is_none() {
+            kept.remember_env_values = false;
+        }
+        if kept.remember_env_values {
+            kept
+        } else {
+            kept.without_env_values()
+        }
+    }
+
+    /// The same invocation with every variable's value taken out: `NAME=value`
+    /// becomes `NAME=`. Lines that set nothing are kept as they are.
+    pub fn without_env_values(&self) -> Self {
+        Self {
+            env: self
+                .env
+                .lines()
+                .map(|line| match line.split_once('=') {
+                    Some((name, _)) => format!("{}=", name.trim()),
+                    None => line.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            remember_env_values: false,
+            ..self.clone()
+        }
+    }
+
+    /// Whether any variable carries a value — what a remembered entry would be
+    /// keeping on disk.
+    pub fn has_env_values(&self) -> bool {
+        self.variables().any(|(_, value)| !value.is_empty())
+    }
+
+    /// Whether this is a remembered entry whose variable values were not kept:
+    /// it names variables, and none of them has a value to launch with.
+    pub fn env_values_missing(&self) -> bool {
+        !self.remember_env_values && self.variables().next().is_some() && !self.has_env_values()
     }
 
     /// Whether there is an agent to launch at all — the Launch button's

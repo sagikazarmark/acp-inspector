@@ -401,16 +401,33 @@ fn App() -> Element {
     // machine with a home directory, which is why it is a note under the form
     // rather than a screen.
     let mut unsaved = use_signal(|| None::<String>);
+    // A remembered invocation the first-run card asked the launch form to be
+    // filled with, numbered so choosing the same one twice refills twice.
+    let mut prefill = use_signal(|| None::<(u64, AgentCommand)>);
+    // Whether an agent this window let go of gracefully is still stopping
+    // (F6): the rail says so, and a relaunch waits for it.
+    let stopping_agent = use_signal(|| false);
     let mut appearance = use_signal(Appearance::default);
     // And how a payload is drawn (§8). Put where every surface that draws bytes
     // can find it rather than threaded to each of them (`indent.rs`).
     let mut indentation = indent::provide(Indentation::default());
+    // And the one thing the window says about *itself* rather than about the
+    // agent: that a copy took, or that one of its own files was set aside
+    // (`toast.rs`). Provided here because the controls it answers for are on
+    // three screens, and takes itself away on a clock this call starts — the
+    // window's, so no row can carry it off.
+    let announcer = toast::provide();
     use_future(move || async move {
         let Ok((stored, remembered_list)) =
             tokio::task::spawn_blocking(|| (Settings::load(), RecentCommands::load())).await
         else {
             return;
         };
+        // A file that could not be read was moved aside rather than
+        // overwritten (L2); say where, once, so it can be looked at (I13).
+        if let Some(notice) = set_aside(remembered_list.backup(), stored.backup()) {
+            announcer.notice(notice);
+        }
         // The stored choice takes the same path a chosen one does.
         let chosen = stored.appearance();
         if chosen != Appearance::default() {
@@ -591,12 +608,6 @@ fn App() -> Element {
         };
         shell::set_title(&titled);
     });
-
-    // And the one thing the window says about *itself* rather than about the
-    // agent: that a copy took (`toast.rs`). Provided here because the control
-    // it answers for is on three screens, and takes itself away on a clock this
-    // call starts — the window's, so no row can carry it off.
-    let announcer = toast::provide();
 
     // One subscription per store, all the same shape: wait for the store to
     // change, then re-read it. Nothing here polls, and nothing in core pushes
@@ -823,7 +834,6 @@ fn App() -> Element {
     let logs_out = use_memo(move || described.read().is_some() && advertising_logout.logs_out());
 
     let stopping = inspector.clone();
-    let clearing_palette = inspector.clone();
     let prompting = inspector.clone();
     let cancelling = inspector.clone();
     let cancelling_turn = inspector.clone();
@@ -853,12 +863,44 @@ fn App() -> Element {
     });
     let clearing = inspector.clone();
 
-    // Ending the connection, from wherever it is asked for. Focus goes to the
+    // Ending the connection, from wherever it is asked for: the agent is asked
+    // to stop (stdin closed, then SIGTERM, then SIGKILL — F6) rather than
+    // killed, and the rail says "Stopping…" until it has. Focus goes to the
     // way back, Restart, rather than to the document (X6).
     let on_disconnect = EventHandler::new(move |()| {
-        stopping.disconnect();
+        stopping.disconnect_gracefully();
+        watch_stop(stopping.clone(), stopping_agent);
         navigation::Destination::Control { id: rail::RESTART }.focus();
     });
+
+    // Forgetting a remembered invocation, or the values it kept (X10, S2).
+    // Off the UI thread like every other write to the list (L6).
+    let edit_recent = use_callback(move |(entry, forget): (AgentCommand, bool)| {
+        let Some(list) = recent.peek().clone() else {
+            return;
+        };
+        spawn(async move {
+            if let Ok((error, entries)) = tokio::task::spawn_blocking(move || {
+                let done = if forget {
+                    list.forget_values(&entry)
+                } else {
+                    list.remove(&entry)
+                };
+                (done.err(), list.entries())
+            })
+            .await
+            {
+                remembered.set(entries);
+                if let Some(error) = error {
+                    announcer.notice(format!("Couldn't update the recent commands file: {error}"));
+                }
+            }
+        });
+    });
+    let on_remove_recent =
+        EventHandler::new(move |entry: AgentCommand| edit_recent.call((entry, false)));
+    let on_forget_recent =
+        EventHandler::new(move |entry: AgentCommand| edit_recent.call((entry, true)));
 
     // The one way an agent is launched: the dialog's Launch, a recent row's
     // play button, Restart and "Restart with these settings" all come here
@@ -883,6 +925,9 @@ fn App() -> Element {
         launch_mark.set(*dropped_lines.peek() + lines.peek().len());
         launched.set(Some(agent.clone()));
         spawn(async move {
+            // An agent this window disconnected is gone before the next one
+            // starts (F6): Restart right after Disconnect waits for the stop.
+            inspector.stopped().await;
             let spawned = with_login_path(agent.clone()).await;
             let failure = inspector.start(&spawned).await.err();
             launching.set(false);
@@ -947,13 +992,21 @@ fn App() -> Element {
                 .read()
                 .unexported(dropped() + frames.read().len())
     });
-    // Quitting for good: the connection is stopped here rather than left to a
-    // teardown the event loop may not reach.
+    // Quitting for good: the agent is asked to stop, given a moment to, and
+    // then the window closes — whose teardown kills whatever is left
+    // (`shell::use_shutdown`). Stopped here rather than left to a teardown the
+    // event loop may not reach.
     let quitting = inspector.clone();
     let quit_now = EventHandler::new(move |()| {
-        quitting.disconnect();
-        #[cfg(feature = "desktop")]
-        shell::quit();
+        quitting.disconnect_gracefully();
+        watch_stop(quitting.clone(), stopping_agent);
+        let inspector = quitting.clone();
+        spawn(async move {
+            let _ = tokio::time::timeout(QUIT_GRACE, inspector.stopped()).await;
+            inspector.disconnect();
+            #[cfg(feature = "desktop")]
+            shell::quit();
+        });
     });
     #[cfg(feature = "desktop")]
     let on_quit = EventHandler::new(move |()| {
@@ -975,13 +1028,13 @@ fn App() -> Element {
     // of its own. Items that cannot do anything now are disabled below.
     #[cfg(feature = "desktop")]
     {
-        let menu_clear = inspector.clone();
         let menu_open = inspector.clone();
         shell::use_menu(move |command| match command {
             shell::command::EXPORT_TRACE => {
                 on_export.call(());
             }
-            shell::command::CLEAR_TRACE => menu_clear.trace().clear(),
+            // The Console's own two-step Clear, armed (I2).
+            shell::command::CLEAR_TRACE => navigation.clear(),
             shell::command::DISCONNECT => on_disconnect.call(()),
             shell::command::RESTART => on_restart.call(()),
             shell::command::CANCEL_TURN => on_cancel_turn.call(()),
@@ -1275,7 +1328,10 @@ fn App() -> Element {
             unsaved: unsaved(),
             failure,
             launched: launched(),
+            prefill: prefill(),
             on_launch: move |agent: AgentCommand| launch.call(agent),
+            on_remove: on_remove_recent,
+            on_forget: on_forget_recent,
         }
 
         // Quitting with frames nobody exported asks first (F9).
@@ -1295,7 +1351,7 @@ fn App() -> Element {
             on_new_session: claims.on_new_session,
             on_stop: on_disconnect,
             on_export,
-            on_clear: EventHandler::new(move |()| clearing_palette.trace().clear()),
+            on_clear: EventHandler::new(move |()| navigation.clear()),
             on_indent: EventHandler::new(move |()| {
                 let chosen = Indentation::of(!indentation().indented());
                 indentation.set(chosen);
@@ -1359,6 +1415,7 @@ fn App() -> Element {
                 on_tab: move |chosen| navigation.rail(chosen),
                 on_stop: on_disconnect,
                 launching: launching(),
+                stopping: stopping_agent(),
                 on_restart,
                 // Nothing is waited for here: what the Agent answered — an
                 // acknowledgement it never restated, or a refusal — is written
@@ -1487,6 +1544,36 @@ fn App() -> Element {
                 described: described.read().is_some(),
                 sought: sought(),
                 on_reveal: move |frames| navigation.reveal(frames),
+                // The login the agent asked for, where the session would be
+                // (X5): the Capabilities surface's own guidance and actions.
+                login: agent::login_guidance(
+                    described.read().as_ref().map(|agent| agent.auth_methods.as_slice()).unwrap_or_default(),
+                    &auth(),
+                    &auth_work().pending,
+                    status() == ConnectionStatus::Connected,
+                    claims.on_authenticate,
+                ),
+                // The first-run card's recent invocations (D10, X10): the
+                // launch form's own rows, launching directly; a row whose
+                // variable values were not kept opens the form filled in.
+                recent: (!remembered.read().is_empty()).then(|| rsx! {
+                    spawn::RecentList {
+                        entries: remembered(),
+                        launching: launching(),
+                        on_launch: move |entry: AgentCommand| {
+                            if mcp::attempt_launch() {
+                                launch.call(entry);
+                            }
+                        },
+                        on_refill: move |entry: AgentCommand| {
+                            let next = prefill.peek().as_ref().map_or(0, |(nth, _)| nth + 1);
+                            prefill.set(Some((next, entry)));
+                            connect::open();
+                        },
+                        on_remove: on_remove_recent,
+                        on_forget: on_forget_recent,
+                    }
+                }),
             }
             },
 
@@ -1632,6 +1719,42 @@ mod quit_dialog {
     pub fn close() {
         document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
     }
+}
+
+/// How long quitting waits for a graceful stop before the window's teardown
+/// kills the agent.
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Marks `stopping` until the inspector's graceful stop is over (F6).
+fn watch_stop(inspector: Inspector, mut stopping: Signal<bool>) {
+    if !inspector.is_stopping() {
+        return;
+    }
+    stopping.set(true);
+    spawn(async move {
+        inspector.stopped().await;
+        stopping.set(false);
+    });
+}
+
+/// What the window says when a state file could not be read at startup and
+/// was moved aside (I13), or `None` when both were read.
+fn set_aside(
+    recent: Option<&std::path::Path>,
+    settings: Option<&std::path::Path>,
+) -> Option<String> {
+    let said: Vec<String> = [("recent commands", recent), ("settings", settings)]
+        .into_iter()
+        .filter_map(|(what, moved)| {
+            moved.map(|moved| {
+                format!(
+                    "Your {what} file couldn't be read and was saved as {}.",
+                    moved.display()
+                )
+            })
+        })
+        .collect();
+    (!said.is_empty()).then(|| said.join(" "))
 }
 
 /// Writes a preference off the UI thread (L6). Nothing is said about a write
@@ -2656,5 +2779,26 @@ mod tests {
             ..AgentCommand::default()
         };
         assert_eq!(effective_path(Some(&set)).as_deref(), Some("/mine"));
+    }
+
+    #[test]
+    fn a_state_file_set_aside_at_startup_is_said_with_where_it_went() {
+        use std::path::Path;
+        assert_eq!(set_aside(None, None), None);
+        assert_eq!(
+            set_aside(Some(Path::new("/state/recent.json.bak")), None).as_deref(),
+            Some(
+                "Your recent commands file couldn't be read and was saved as /state/recent.json.bak."
+            )
+        );
+        let both = set_aside(
+            Some(Path::new("/state/recent.json.bak")),
+            Some(Path::new("/state/settings.json.bak")),
+        )
+        .unwrap();
+        assert!(
+            both.contains("recent commands") && both.contains("settings.json.bak"),
+            "{both}"
+        );
     }
 }

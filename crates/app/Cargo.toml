@@ -74,3 +74,8 @@ dioxus-html = { workspace = true, features = ["serialize"] }
 # macOS bundle's icon holds. Packaging, and no part of the program — a
 # dev-dependency so that it never is.
 png.workspace = true
+
+# The one package `dist` archives for Linux and Windows (`dist-workspace.toml`),
+# although nothing here is published to crates.io.
+[package.metadata.dist]
+dist = true

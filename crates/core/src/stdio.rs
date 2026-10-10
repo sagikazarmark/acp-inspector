@@ -7,6 +7,7 @@
 //! remote layer (§4).
 
 use std::ffi::{OsStr, OsString};
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
@@ -230,33 +231,53 @@ fn pump(child: Spawned, ends: TransportEnds) {
     let stdout_reading = Arc::new(Reading::default());
     let stderr_reading = Arc::new(Reading::default());
 
-    let stdin_done = tokio::spawn(write_frames(
-        stdin,
-        outgoing,
+    let stdin_done = tokio::spawn(guarded(
         diagnostics.clone(),
-        stop_writing.clone(),
+        write_frames(stdin, outgoing, diagnostics.clone(), stop_writing.clone()),
     ));
-    let stdout_done = tokio::spawn(read_frames(
-        Lines::new(stdout, MAX_FRAME_BYTES + 1, stdout_reading.clone()),
-        incoming,
+    let stdout_done = tokio::spawn(guarded(
         diagnostics.clone(),
+        read_frames(
+            Lines::new(stdout, MAX_FRAME_BYTES + 1, stdout_reading.clone()),
+            incoming,
+            diagnostics.clone(),
+        ),
     ));
-    let stderr_done = tokio::spawn(read_stderr(
-        Lines::new(stderr, MAX_STDERR_LINE_BYTES, stderr_reading.clone()),
+    let stderr_done = tokio::spawn(guarded(
         diagnostics.clone(),
+        read_stderr(
+            Lines::new(stderr, MAX_STDERR_LINE_BYTES, stderr_reading.clone()),
+            diagnostics.clone(),
+        ),
     ));
-    tokio::spawn(watch(Watch {
-        child: WatchOwner(process),
-        diagnostics,
-        shutdown,
-        graceful,
-        stop_writing,
-        stdin_done,
-        readers: [
-            (Some(stdout_done), stdout_reading),
-            (Some(stderr_done), stderr_reading),
-        ],
-    }));
+    tokio::spawn(guarded(
+        diagnostics.clone(),
+        watch(Watch {
+            child: WatchOwner(process),
+            diagnostics,
+            shutdown,
+            graceful,
+            stop_writing,
+            stdin_done,
+            readers: [
+                (Some(stdout_done), stdout_reading),
+                (Some(stderr_done), stderr_reading),
+            ],
+        }),
+    ));
+}
+
+/// A pump that reports its own panic (C8): as a terminal transport failure,
+/// so the connection is Lost and its calls fail rather than wait on a task
+/// that is gone. The panic hook, where the app installs one, logs the rest.
+async fn guarded(diagnostics: mpsc::Sender<Diagnostic>, task: impl Future<Output = ()>) {
+    if let Err(what) = crate::unwind::caught(task).await {
+        let _ = diagnostics
+            .send(Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(
+                crate::unwind::internal_error(&what),
+            ))))
+            .await;
+    }
 }
 
 /// Client frames onto the agent's stdin, one per line.
@@ -616,4 +637,31 @@ impl<R: AsyncRead + Unpin> Lines<R> {
 /// A terminal read or process-wait failure. Write failure leaves evidence to drain.
 fn broken_pipe(error: io::Error) -> Diagnostic {
     Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(error)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_pump_that_panics_reports_a_terminal_transport_failure() {
+        let (sender, mut said) = mpsc::channel(1);
+        guarded(sender, async { panic!("stdout pump") }).await;
+        let Some(Diagnostic {
+            kind: DiagnosticKind::TransportFailed(error),
+            ..
+        }) = said.recv().await
+        else {
+            panic!("a transport failure")
+        };
+        assert_eq!(
+            error.to_string(),
+            "internal error: stdout pump (see crash log)"
+        );
+
+        // A pump that ends normally says nothing.
+        let (sender, mut said) = mpsc::channel(1);
+        guarded(sender, async {}).await;
+        assert!(said.recv().await.is_none());
+    }
 }

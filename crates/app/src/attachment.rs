@@ -1,4 +1,5 @@
-//! One selected attachment, preserving its original binary bytes or UTF-8 text.
+//! One prompt attachment: a selected file, preserving its original binary bytes
+//! or UTF-8 text, or a resource link (a URI the agent is pointed at).
 use acp_inspector_core::v1;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -13,10 +14,33 @@ pub struct Attachment {
 
 #[derive(Clone, PartialEq)]
 enum AttachmentContent {
-    Image { mime: &'static str, base64: String },
-    Audio { mime: &'static str, base64: String },
-    EmbeddedText { text: String, uri: String },
-    Pdf { base64: String, uri: String },
+    Image {
+        mime: &'static str,
+        base64: String,
+    },
+    Audio {
+        mime: &'static str,
+        base64: String,
+    },
+    EmbeddedText {
+        text: String,
+        uri: String,
+    },
+    Pdf {
+        base64: String,
+        uri: String,
+    },
+    /// Any other binary file, embedded as a `resource` blob (F12).
+    Blob {
+        mime: &'static str,
+        base64: String,
+        uri: String,
+    },
+    /// A `resource_link`: the agent is told where, not given the bytes (F12).
+    Link {
+        uri: String,
+        mime: Option<String>,
+    },
 }
 
 /// Presentation data, without exposing or reclassifying the stored payload.
@@ -25,6 +49,8 @@ pub enum AttachmentPreview {
     Audio { src: String },
     Text { excerpt: String },
     Pdf,
+    Blob,
+    Link,
 }
 
 impl Attachment {
@@ -75,8 +101,9 @@ impl Attachment {
             file.read_bytes().await.map_err(|e| e.to_string())?.to_vec()
         };
         let mut media = Self::from_bytes(name, &bytes)?;
-        if let AttachmentContent::EmbeddedText { uri, .. } | AttachmentContent::Pdf { uri, .. } =
-            &mut media.content
+        if let AttachmentContent::EmbeddedText { uri, .. }
+        | AttachmentContent::Pdf { uri, .. }
+        | AttachmentContent::Blob { uri, .. } = &mut media.content
             && path.is_absolute()
         {
             *uri = url::Url::from_file_path(path)
@@ -115,7 +142,7 @@ impl Attachment {
                 uri: attachment_uri("pdf", &name),
             }
         } else {
-            return Self::text(name, bytes);
+            return Self::text(name.clone(), bytes).or_else(|_| Self::blob(name, bytes));
         };
         Ok(Self {
             name,
@@ -123,11 +150,61 @@ impl Attachment {
             content,
         })
     }
-    pub fn mime(&self) -> &'static str {
+    /// A resource link the user typed (F12): an absolute URI, a name (the
+    /// URI's last segment when left empty), and an optional MIME type.
+    ///
+    /// Links are baseline prompt content — every agent must accept them — so
+    /// unlike the embedded kinds they need no advertisement.
+    pub fn link(uri: &str, name: &str, mime: &str) -> Result<Self, String> {
+        let uri = uri.trim();
+        let parsed = url::Url::parse(uri).map_err(|_| {
+            "Enter an absolute URI, such as file:///path/to/notes.md or https://example.com/spec."
+                .to_owned()
+        })?;
+        let mime = mime.trim();
+        if !mime.is_empty()
+            && !mime.split_once('/').is_some_and(|(kind, sub)| {
+                !kind.is_empty() && !sub.is_empty() && !mime.contains(char::is_whitespace)
+            })
+        {
+            return Err("A MIME type looks like text/markdown or application/pdf.".to_owned());
+        }
+        let name = match name.trim() {
+            "" => parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| uri.to_owned()),
+            name => name.to_owned(),
+        };
+        Ok(Self {
+            name,
+            bytes: 0,
+            content: AttachmentContent::Link {
+                uri: uri.to_owned(),
+                mime: (!mime.is_empty()).then(|| mime.to_owned()),
+            },
+        })
+    }
+    pub fn mime(&self) -> &str {
         match &self.content {
-            AttachmentContent::Image { mime, .. } | AttachmentContent::Audio { mime, .. } => mime,
+            AttachmentContent::Image { mime, .. }
+            | AttachmentContent::Audio { mime, .. }
+            | AttachmentContent::Blob { mime, .. } => mime,
             AttachmentContent::EmbeddedText { .. } => "text/plain",
             AttachmentContent::Pdf { .. } => "application/pdf",
+            AttachmentContent::Link { mime, .. } => mime.as_deref().unwrap_or(""),
+        }
+    }
+    /// One line saying what this is, for its row in the composer.
+    pub fn describe(&self) -> String {
+        match &self.content {
+            AttachmentContent::Link { uri, mime } => match mime {
+                Some(mime) => format!("{} · link · {mime} · {uri}", self.name),
+                None => format!("{} · link · {uri}", self.name),
+            },
+            _ => format!("{} · {} · {} bytes", self.name, self.mime(), self.bytes),
         }
     }
     pub fn preview(&self) -> AttachmentPreview {
@@ -142,15 +219,21 @@ impl Attachment {
                 excerpt: text.chars().take(2000).collect(),
             },
             AttachmentContent::Pdf { .. } => AttachmentPreview::Pdf,
+            AttachmentContent::Blob { .. } => AttachmentPreview::Blob,
+            AttachmentContent::Link { .. } => AttachmentPreview::Link,
         }
     }
     pub fn content(&self) -> v1::ContentBlock {
         match &self.content {
-            AttachmentContent::Pdf { base64, uri } => v1::ContentBlock::Resource(
+            AttachmentContent::Pdf { base64, uri }
+            | AttachmentContent::Blob { base64, uri, .. } => v1::ContentBlock::Resource(
                 v1::EmbeddedResource::new(v1::EmbeddedResourceResource::BlobResourceContents(
                     v1::BlobResourceContents::new(base64.clone(), uri.clone())
                         .mime_type(self.mime().to_owned()),
                 )),
+            ),
+            AttachmentContent::Link { uri, mime } => v1::ContentBlock::ResourceLink(
+                v1::ResourceLink::new(self.name.clone(), uri.clone()).mime_type(mime.clone()),
             ),
             AttachmentContent::EmbeddedText { text, uri } => v1::ContentBlock::Resource(
                 v1::EmbeddedResource::new(v1::EmbeddedResourceResource::TextResourceContents(
@@ -169,12 +252,32 @@ impl Attachment {
     pub fn is_image(&self) -> bool {
         matches!(self.content, AttachmentContent::Image { .. })
     }
+    /// A file that is neither identified media nor text, embedded as a blob —
+    /// unless its name claims a kind identified by signature that its bytes
+    /// are not, which is a mistake to say rather than a file to send.
+    fn blob(name: String, bytes: &[u8]) -> Result<Self, String> {
+        let extension = extension(&name);
+        if matches!(
+            extension.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "wav" | "mp3" | "pdf"
+        ) {
+            return Err(format!(
+                "This file is named .{extension} but its contents are not one. Choose the file again, or rename it."
+            ));
+        }
+        let uri = attachment_uri("file", &name);
+        Ok(Self {
+            content: AttachmentContent::Blob {
+                mime: blob_mime(&extension, bytes),
+                base64: STANDARD.encode(bytes),
+                uri,
+            },
+            name,
+            bytes: bytes.len(),
+        })
+    }
     fn text(name: String, bytes: &[u8]) -> Result<Self, String> {
-        let extension = std::path::Path::new(&name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let extension = extension(&name);
         let binary_name = matches!(
             extension.as_str(),
             "png"
@@ -240,9 +343,11 @@ impl Attachment {
         let (advertised, kind) = match &self.content {
             AttachmentContent::Image { .. } => (image, "image"),
             AttachmentContent::Audio { .. } => (audio, "audio"),
-            AttachmentContent::EmbeddedText { .. } | AttachmentContent::Pdf { .. } => {
-                (embedded, "embedded context")
-            }
+            AttachmentContent::EmbeddedText { .. }
+            | AttachmentContent::Pdf { .. }
+            | AttachmentContent::Blob { .. } => (embedded, "embedded context"),
+            // Baseline: every agent must accept a resource link.
+            AttachmentContent::Link { .. } => (true, "resource link"),
         };
         if advertised {
             Ok(())
@@ -250,6 +355,49 @@ impl Attachment {
             Err(format!("The agent did not advertise {kind} prompts."))
         }
     }
+}
+
+/// A file name's extension, lowercased.
+fn extension(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// The MIME type a binary blob is sent with: from a short list of names and
+/// signatures, else `application/octet-stream`. Never a guess past that.
+fn blob_mime(extension: &str, bytes: &[u8]) -> &'static str {
+    let named = match extension {
+        "zip" => Some("application/zip"),
+        "gz" | "tgz" => Some("application/gzip"),
+        "tar" => Some("application/x-tar"),
+        "wasm" => Some("application/wasm"),
+        "mp4" => Some("video/mp4"),
+        "ogg" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        "doc" => Some("application/msword"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "sqlite" | "db" => Some("application/vnd.sqlite3"),
+        _ => None,
+    };
+    named.unwrap_or(
+        if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+            "application/zip"
+        } else if bytes.starts_with(b"\x1f\x8b") {
+            "application/gzip"
+        } else if bytes.starts_with(b"\0asm") {
+            "application/wasm"
+        } else if bytes.starts_with(b"fLaC") {
+            "audio/flac"
+        } else if bytes.starts_with(b"OggS") {
+            "application/ogg"
+        } else {
+            "application/octet-stream"
+        },
+    )
 }
 
 fn attachment_uri(kind: &str, name: &str) -> String {
@@ -421,17 +569,21 @@ mod tests {
         assert!(
             matches!(Attachment::from_bytes("empty.txt".into(), b"").unwrap().preview(), AttachmentPreview::Text { excerpt } if excerpt.is_empty())
         );
-        for bytes in [
-            b"a\0b".as_slice(),
-            b"\xff",
-            b"%PDF-1.7",
-            b"PK\x03\x04",
-            b"ID3",
-            b"fLaC",
-            b"!<arch>\n",
-            b"RIFF",
+        // Bytes that are not text are not refused any more: they are
+        // embedded as a blob, under the same advertisement (F12).
+        for (bytes, mime) in [
+            (b"a\0b".as_slice(), "application/octet-stream"),
+            (b"\xff", "application/octet-stream"),
+            (b"%PDF-1.7", "application/octet-stream"),
+            (b"PK\x03\x04", "application/zip"),
+            (b"ID3", "application/octet-stream"),
+            (b"fLaC", "audio/flac"),
+            (b"!<arch>\n", "application/octet-stream"),
+            (b"RIFF", "application/octet-stream"),
         ] {
-            assert!(Attachment::from_bytes("x.txt".into(), bytes).is_err());
+            let blob = Attachment::from_bytes("x.txt".into(), bytes).unwrap();
+            assert_eq!(blob.mime(), mime, "{bytes:?}");
+            assert!(matches!(blob.preview(), AttachmentPreview::Blob));
         }
     }
     #[test]
@@ -486,5 +638,77 @@ mod tests {
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.resize(MAX_ATTACHMENT_BYTES + 1, 0);
         assert!(Attachment::from_bytes("x".into(), &bytes).is_err());
+    }
+
+    #[test]
+    fn other_binary_files_are_embedded_as_blobs_with_every_byte() {
+        let bytes = b"PK\x03\x04\0\xff\x80archive";
+        let blob = Attachment::from_bytes("bundle.zip".into(), bytes).unwrap();
+        assert_eq!(blob.mime(), "application/zip");
+        assert_eq!(blob.bytes, bytes.len());
+        assert!(blob.require_advertisement(false, false, true).is_ok());
+        assert!(blob.require_advertisement(true, true, false).is_err());
+        let v1::ContentBlock::Resource(resource) = blob.content() else {
+            panic!("resource")
+        };
+        let v1::EmbeddedResourceResource::BlobResourceContents(contents) = resource.resource else {
+            panic!("blob")
+        };
+        assert_eq!(STANDARD.decode(contents.blob).unwrap(), bytes);
+        assert_eq!(contents.mime_type.as_deref(), Some("application/zip"));
+        assert!(contents.uri.starts_with("attachment:///file/"));
+        assert_eq!(
+            Attachment::from_bytes("data.bin".into(), b"\0\x01\x02")
+                .unwrap()
+                .mime(),
+            "application/octet-stream"
+        );
+        // A name that claims a kind identified by its signature, over bytes
+        // that are not that kind, is said rather than sent.
+        assert!(Attachment::from_bytes("photo.png".into(), b"\0\x01").is_err());
+        let mut oversized = b"PK\x03\x04".to_vec();
+        oversized.resize(MAX_ATTACHMENT_BYTES + 1, 0);
+        assert!(Attachment::from_bytes("large.zip".into(), &oversized).is_err());
+    }
+
+    #[test]
+    fn a_resource_link_is_a_uri_and_a_name_and_needs_no_advertisement() {
+        let link = Attachment::link(" file:///repo/docs/spec.md ", "", "text/markdown").unwrap();
+        assert_eq!(link.name, "spec.md");
+        assert_eq!(link.bytes, 0, "a link costs none of the byte budget");
+        assert!(link.require_advertisement(false, false, false).is_ok());
+        assert!(matches!(link.preview(), AttachmentPreview::Link));
+        assert_eq!(
+            link.describe(),
+            "spec.md · link · text/markdown · file:///repo/docs/spec.md"
+        );
+        let v1::ContentBlock::ResourceLink(sent) = link.content() else {
+            panic!("a resource link")
+        };
+        assert_eq!(sent.uri, "file:///repo/docs/spec.md");
+        assert_eq!(sent.name, "spec.md");
+        assert_eq!(sent.mime_type.as_deref(), Some("text/markdown"));
+
+        let named = Attachment::link("https://example.com/", "The site", "").unwrap();
+        assert_eq!(named.name, "The site");
+        let v1::ContentBlock::ResourceLink(sent) = named.content() else {
+            panic!("a resource link")
+        };
+        assert_eq!(sent.mime_type, None);
+        assert_eq!(
+            Attachment::link("https://example.com", "", "")
+                .unwrap()
+                .name,
+            "https://example.com",
+            "no path segment: the URI names itself"
+        );
+
+        assert!(
+            Attachment::link("docs/spec.md", "", "").is_err(),
+            "relative"
+        );
+        assert!(Attachment::link("", "", "").is_err());
+        assert!(Attachment::link("file:///a", "", "markdown").is_err());
+        assert!(Attachment::link("file:///a", "", "text/ plain").is_err());
     }
 }

@@ -260,13 +260,15 @@ impl Inspector {
             shutdown: shutdown.clone(),
         });
 
-        tokio::spawn(read(
-            Arc::clone(&self.0.0),
+        let state = Arc::clone(&self.0.0);
+        let reader = read(
+            Arc::clone(&state),
             client,
             incoming,
             diagnostics,
-            shutdown,
-        ));
+            shutdown.clone(),
+        );
+        tokio::spawn(watched(state, shutdown, reader));
     }
 
     /// Starts an agent and opens the session a turn can happen in: connect,
@@ -808,6 +810,21 @@ impl Inspector {
         self.0.release(ConnectionStatus::Disconnected, true);
     }
 
+    /// Whether an agent released by [`disconnect_gracefully`](Self::disconnect_gracefully)
+    /// (or a reconnect) is still being stopped.
+    pub fn is_stopping(&self) -> bool {
+        !locked(&self.0.stopping).is_empty()
+    }
+
+    /// Waits until no graceful stop is in progress, which is what a relaunch
+    /// waits for so the old agent is gone before the next one starts. Bounded
+    /// by the stop's own escalation to SIGKILL.
+    pub async fn stopped(&self) {
+        while self.is_stopping() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     /// The calls this client sent on the live connection that have no answer
     /// yet, oldest first. Empty when there is no connection.
     pub fn pending_calls(&self) -> Vec<PendingCall> {
@@ -1301,6 +1318,29 @@ async fn read(
     let released = drain(&state, client, incoming, &mut diagnostics, &shutdown).await;
     if released && sink.stopping_gracefully() {
         stopped(&state, &sink, diagnostics).await;
+    } else {
+        // The transport ended before the release was seen (or there was none):
+        // whatever stop was asked for is over, so nothing is still stopping.
+        locked(&state.stopping).retain(|stopping| !stopping.same(&sink));
+    }
+}
+
+/// Runs the reader, and reports its panic as a terminal transport failure
+/// (C8): the connection moves to Lost and its pending calls fail, instead of
+/// the status staying Connected over a reader that is gone. A reader that
+/// panics after its connection was released has nothing left to report.
+async fn watched(
+    state: Arc<State>,
+    shutdown: CancellationToken,
+    reader: impl std::future::Future<Output = ()>,
+) {
+    if let Err(what) = crate::unwind::caught(reader).await {
+        state.observe(
+            Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(
+                crate::unwind::internal_error(&what),
+            ))),
+            &shutdown,
+        );
     }
 }
 
@@ -1371,4 +1411,72 @@ async fn drain(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::connection::{Connection, ConnectionFactory, TransportEnds, connection};
+
+    /// A connection whose other ends the test holds.
+    struct Held(Mutex<Option<Connection>>);
+
+    impl ConnectionFactory for Held {
+        fn connect(&self) -> Connection {
+            self.0.lock().unwrap().take().expect("one connection")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reader_that_panics_loses_the_connection_with_a_diagnostic() {
+        let (made, _ends): (Connection, TransportEnds) = connection();
+        let inspector = Inspector::new();
+        inspector.connect(&Held(Mutex::new(Some(made))));
+        assert_eq!(inspector.status(), ConnectionStatus::Connected);
+
+        let shutdown = inspector
+            .0
+            .connection()
+            .as_ref()
+            .map(|live| live.shutdown.clone())
+            .expect("a live connection");
+        watched(Arc::clone(&inspector.0.0), shutdown, async {
+            panic!("the reader fell over")
+        })
+        .await;
+
+        assert_eq!(inspector.status(), ConnectionStatus::Lost);
+        let said = inspector.diagnostics().entries();
+        assert!(
+            said.iter().any(|line| matches!(
+                &line.kind,
+                DiagnosticKind::TransportFailed(error)
+                    if error.to_string() == "internal error: the reader fell over (see crash log)"
+            )),
+            "{said:?}"
+        );
+        assert!(
+            inspector.initialize().await.is_err(),
+            "calls fail rather than wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_graceful_disconnect_is_stopping_until_the_transport_lets_go() {
+        let (made, ends): (Connection, TransportEnds) = connection();
+        let inspector = Inspector::new();
+        inspector.connect(&Held(Mutex::new(Some(made))));
+        assert!(!inspector.is_stopping());
+
+        inspector.disconnect_gracefully();
+        assert_eq!(inspector.status(), ConnectionStatus::Disconnected);
+        assert!(inspector.is_stopping(), "the agent has not said it stopped");
+
+        // The transport going away is the last it will say.
+        drop(ends);
+        tokio::time::timeout(std::time::Duration::from_secs(2), inspector.stopped())
+            .await
+            .expect("the stop finishes");
+        assert!(!inspector.is_stopping());
+    }
 }

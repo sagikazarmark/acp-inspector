@@ -93,7 +93,12 @@ pub fn Connect(
     /// The invocation the window last launched, which the fields follow.
     #[props(default)]
     launched: Option<AgentCommand>,
+    /// A remembered invocation to fill the fields with (`SpawnForm::prefill`).
+    #[props(default)]
+    prefill: Option<(u64, AgentCommand)>,
     on_launch: EventHandler<AgentCommand>,
+    #[props(default)] on_remove: Option<EventHandler<AgentCommand>>,
+    #[props(default)] on_forget: Option<EventHandler<AgentCommand>>,
 ) -> Element {
     rsx! {
         dialog {
@@ -116,7 +121,7 @@ pub fn Connect(
                     }
                 }
 
-                SpawnForm { running, launching, recent, unsaved, failure, launched, on_launch }
+                SpawnForm { running, launching, recent, unsaved, failure, launched, prefill, on_launch, on_remove, on_forget }
             }
 
             // The click outside. Nothing in it is drawn — the box above covers

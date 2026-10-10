@@ -5,7 +5,7 @@
 //! Renders the mark the window draws (`src/mark.rs`) on macOS's icon grid, at
 //! the size asked for, as a PNG. `just icon` runs this at the ten sizes an
 //! `.icns` holds and has `iconutil` fold them into `crates/app/bundle/icon.icns`
-//! ([ADR 0010](../../../docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md)).
+//! (ADR 0010, `docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md`).
 //! Nothing the program is built from touches this file: it is packaging.
 //!
 //! An example rather than a second binary, so that `cargo run -p acp-inspector`

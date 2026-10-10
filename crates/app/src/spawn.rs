@@ -25,13 +25,17 @@ use std::rc::Rc;
 use acp_inspector_core::{AgentCommand, CallError, ConnectionStatus, Diagnostic, DiagnosticKind};
 use dioxus::prelude::*;
 use dioxus_field::{Binding, FieldContext, FieldMetaValues};
-use dioxus_free_icons::{Icon, icons::ld_icons::LdPlay};
+use dioxus_free_icons::{
+    Icon,
+    icons::ld_icons::{LdEraser, LdPlay, LdX},
+};
 use dioxus_primitives::dioxus_attributes::attributes;
 
 use crate::components::{
+    checkbox::Checkbox,
     field::{
         Field, FieldAppearance, FieldDescription, FieldDescriptionAppearance, FieldError,
-        FieldLabel,
+        FieldLabel, FieldRow,
     },
     input::Input,
     textarea::Textarea,
@@ -257,7 +261,25 @@ fn unset_warning(lines: &[usize]) -> String {
     }
 }
 
-/// Field metadata for one of the four launch fields.
+/// `env` with [`AgentCommand::minimal_env`]'s variables put first, for the
+/// ones it does not already set: what the "Minimal environment" preset fills.
+pub fn with_minimal_env(env: &str, minimal: &str) -> String {
+    let set: Vec<&str> = env
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name.trim()))
+        .collect();
+    minimal
+        .lines()
+        .filter(|line| {
+            line.split_once('=')
+                .is_some_and(|(name, _)| !set.contains(&name.trim()))
+        })
+        .chain(env.lines().filter(|line| !line.trim().is_empty()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Field metadata for one of the launch fields.
 fn meta(id: &str, error: Option<&str>) -> FieldMetaValues {
     FieldMetaValues {
         id: Some(Rc::from(id)),
@@ -287,12 +309,29 @@ pub fn SpawnForm(
     /// dialog opened over a running agent shows what is running.
     #[props(default)]
     launched: Option<AgentCommand>,
+    /// A remembered invocation to fill the fields with, from outside the form
+    /// (the first-run card's recent rows). Numbered so the same entry chosen
+    /// twice refills twice.
+    #[props(default)]
+    prefill: Option<(u64, AgentCommand)>,
     on_launch: EventHandler<AgentCommand>,
+    /// Forget a remembered invocation.
+    #[props(default)]
+    on_remove: Option<EventHandler<AgentCommand>>,
+    /// Drop the variable values a remembered invocation kept.
+    #[props(default)]
+    on_forget: Option<EventHandler<AgentCommand>>,
 ) -> Element {
     let mut command = use_signal(String::new);
     let mut args = use_signal(String::new);
     let mut env = use_signal(String::new);
     let mut cwd = use_signal(String::new);
+    let mut unset = use_signal(String::new);
+    let mut clear_env = use_signal(|| false);
+    let mut remember = use_signal(|| false);
+    // Set when the fields were filled from an entry whose variable values were
+    // not kept: the names are there, and the values are the reader's to type.
+    let mut values_missing = use_signal(|| false);
     let mut recall_confirmation = use_signal(|| None::<String>);
     let mut clear_recall_confirmation = move || recall_confirmation.set(None);
     // Whether the reader tried to launch, or left Command: either is when an
@@ -300,12 +339,20 @@ pub fn SpawnForm(
     let mut attempted = use_signal(|| false);
     let mut left_command = use_signal(|| false);
 
+    let mut fill = move |entry: &AgentCommand| {
+        command.set(entry.command.clone());
+        args.set(entry.args.clone());
+        env.set(entry.env.clone());
+        cwd.set(entry.cwd.clone());
+        unset.set(entry.unset.clone());
+        clear_env.set(entry.clear_env);
+        remember.set(entry.remember_env_values);
+        values_missing.set(entry.env_values_missing());
+    };
+
     use_effect(use_reactive!(|launched| {
         if let Some(entry) = launched {
-            command.set(entry.command.clone());
-            args.set(entry.args.clone());
-            env.set(entry.env.clone());
-            cwd.set(entry.cwd.clone());
+            fill(&entry);
         }
     }));
 
@@ -314,27 +361,38 @@ pub fn SpawnForm(
         args: args(),
         env: env(),
         cwd: cwd(),
-        ..AgentCommand::default()
+        unset: unset(),
+        clear_env: clear_env(),
+        remember_env_values: remember(),
     });
 
     // Selecting a remembered invocation's label is a *refill*: the fields are
     // where a run is decided. Its play button is the direct way, beside it.
     let mut refill = move |entry: &AgentCommand| {
         let invocation = invocation(entry);
-        command.set(entry.command.clone());
-        args.set(entry.args.clone());
-        env.set(entry.env.clone());
-        cwd.set(entry.cwd.clone());
-        recall_confirmation.set(Some(format!(
-            "Filled in {invocation}. Press Launch to start it."
-        )));
+        fill(entry);
+        recall_confirmation.set(Some(if entry.env_values_missing() {
+            format!(
+                "Filled in {invocation}. Its variable values weren't saved: fill them in, then press Launch."
+            )
+        } else {
+            format!("Filled in {invocation}. Press Launch to start it.")
+        }));
     };
+
+    use_effect(use_reactive!(|prefill| {
+        if let Some((_, entry)) = prefill {
+            refill(&entry);
+        }
+    }));
 
     let runnable = agent().is_runnable();
     let command_error =
         (!runnable && (attempted() || left_command())).then_some("Enter a command to launch.");
     let split = command_line(&command());
-    let unset = unset_lines(&env());
+    let half_lines = unset_lines(&env());
+    // Still worth saying while any named variable has no value.
+    let show_missing = values_missing() && agent().variables().any(|(_, value)| value.is_empty());
     let mcp_valid = crate::mcp::valid();
     let reason = if launching {
         Some("Starting the agent\u{2026}")
@@ -498,12 +556,75 @@ pub fn SpawnForm(
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "One NAME=value per line, added to the inspector's own environment."
                     }
-                    if !unset.is_empty() {
+                    if !half_lines.is_empty() {
                         FieldDescription {
                             appearance: FieldDescriptionAppearance::None,
                             class: "hint field-warning",
                             "data-slot": "env-warning",
-                            {unset_warning(&unset)}
+                            {unset_warning(&half_lines)}
+                        }
+                    }
+                    if show_missing {
+                        FieldDescription {
+                            appearance: FieldDescriptionAppearance::None,
+                            class: "hint field-warning",
+                            "data-slot": "env-values-missing",
+                            "The values weren't saved with this command. Fill them in after each \u{201c}=\u{201d}."
+                        }
+                    }
+                }
+                Field {
+                    context: FieldContext::new(Binding::<bool>::from(remember)).with_meta_values(meta("launch-remember-env", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field form-check",
+                    FieldRow {
+                        Checkbox { size: crate::components::checkbox::CheckboxSize::Sm }
+                        FieldLabel { "Remember values" }
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "Keep the variable values in the recent list, a plaintext file. Otherwise only their names are kept."
+                    }
+                }
+                Field {
+                    context: FieldContext::new(Binding::<String>::from(unset)).with_meta_values(meta("launch-unset", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field",
+                    FieldLabel { "Unset variables" }
+                    Textarea {
+                        class: "mono",
+                        on_change: move |_| clear_recall_confirmation(),
+                        attributes: attributes!(textarea {
+                            rows: 2,
+                            "spellcheck": "false",
+                            placeholder: "OPENAI_API_KEY",
+                        }),
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "One name per line, left out of the inherited environment."
+                    }
+                }
+                Field {
+                    context: FieldContext::new(Binding::<bool>::from(clear_env)).with_meta_values(meta("launch-clear-env", None)),
+                    appearance: FieldAppearance::None,
+                    class: "form-field form-check",
+                    FieldRow {
+                        Checkbox { size: crate::components::checkbox::CheckboxSize::Sm }
+                        FieldLabel { "Start with an empty environment" }
+                    }
+                    FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
+                        "The agent gets only the variables above, nothing inherited. "
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            "data-slot": "minimal-env",
+                            r#type: "button",
+                            title: "Add PATH, HOME, USER and the other basics from the inspector's environment, and start empty",
+                            onclick: move |_| {
+                                let filled = with_minimal_env(&env.peek(), &AgentCommand::minimal_env());
+                                env.set(filled);
+                                clear_env.set(true);
+                                clear_recall_confirmation();
+                            },
+                            "Minimal environment"
                         }
                     }
                 }
@@ -533,46 +654,19 @@ pub fn SpawnForm(
                         div { class: "form-label",
                             span { class: "eyebrow", id: "recent-label", "Recent" }
                         }
-                        div { class: "recents", role: "list", aria_labelledby: "recent-label",
-                            for (nth , entry) in recent.iter().enumerate() {
-                                // By position, because the list *is* an order: the
-                                // same invocation relaunched moves to the front.
-                                div { class: "recent-row", key: "{nth}", role: "listitem",
-                                    button {
-                                        class: "recent-label recall",
-                                        r#type: "button",
-                                        title: "Fill in the form with {invocation(entry)}",
-                                        onclick: {
-                                            let entry = entry.clone();
-                                            move |_| refill(&entry)
-                                        },
-                                        {running_label(entry)}
-                                    }
-                                    if let Some(under) = under(entry) {
-                                        span { class: "recent-when", title: "{under}", "{under}" }
-                                    }
-                                    button {
-                                        class: "btn btn-xs btn-quiet recent-launch",
-                                        "data-slot": "recent-launch",
-                                        r#type: "button",
-                                        aria_label: "Launch {invocation(entry)}",
-                                        title: "Launch {invocation(entry)}",
-                                        aria_disabled: launching.then_some("true"),
-                                        onclick: {
-                                            let entry = entry.clone();
-                                            move |_| {
-                                                if !launching && crate::mcp::attempt_launch() {
-                                                    clear_recall_confirmation();
-                                                    on_launch.call(entry.clone());
-                                                }
-                                            }
-                                        },
-                                        span { class: "disclosure-icon", aria_hidden: "true",
-                                            Icon { class: "icon", width: 16, height: 16, icon: LdPlay }
-                                        }
-                                    }
+                        RecentList {
+                            entries: recent.clone(),
+                            labelled_by: "recent-label",
+                            launching,
+                            on_launch: move |entry: AgentCommand| {
+                                if crate::mcp::attempt_launch() {
+                                    clear_recall_confirmation();
+                                    on_launch.call(entry);
                                 }
-                            }
+                            },
+                            on_refill: move |entry: AgentCommand| refill(&entry),
+                            on_remove,
+                            on_forget,
                         }
                         p {
                             class: "hint",
@@ -622,6 +716,119 @@ pub fn SpawnForm(
                     aria_disabled: launching.then_some("true"),
                     tabindex: launching.then_some("-1"),
                     if launching { "Launching" } else if running { "Restart with these settings" } else { "Launch" }
+                }
+            }
+        }
+    }
+}
+
+/// The invocations that worked, newest first: each row refills the form from
+/// its label and launches from its play button, and can be removed. A row
+/// whose variable values were not kept refills instead of launching, because
+/// launching it would set each of its variables to nothing.
+///
+/// Shared by the spawn form and the first-run card (D10, X10).
+#[component]
+pub fn RecentList(
+    entries: Vec<AgentCommand>,
+    /// The id of the heading that names the list.
+    #[props(default)]
+    labelled_by: Option<String>,
+    launching: bool,
+    on_launch: EventHandler<AgentCommand>,
+    on_refill: EventHandler<AgentCommand>,
+    #[props(default)] on_remove: Option<EventHandler<AgentCommand>>,
+    #[props(default)] on_forget: Option<EventHandler<AgentCommand>>,
+) -> Element {
+    rsx! {
+        div { class: "recents", role: "list",
+            aria_label: labelled_by.is_none().then_some("Recent commands"),
+            aria_labelledby: labelled_by,
+            for (nth , entry) in entries.iter().enumerate() {
+                // By position, because the list *is* an order: the same
+                // invocation relaunched moves to the front.
+                div { class: "recent-row", key: "{nth}", role: "listitem",
+                    button {
+                        class: "recent-label recall",
+                        r#type: "button",
+                        title: "Fill in the form with {invocation(entry)}",
+                        onclick: {
+                            let entry = entry.clone();
+                            move |_| on_refill.call(entry.clone())
+                        },
+                        {running_label(entry)}
+                    }
+                    if let Some(under) = under(entry) {
+                        span { class: "recent-when", title: "{under}", "{under}" }
+                    }
+                    if let Some(on_forget) = on_forget.filter(|_| entry.has_env_values()) {
+                        button {
+                            class: "btn btn-xs btn-quiet recent-forget",
+                            "data-slot": "recent-forget",
+                            r#type: "button",
+                            aria_label: "Forget saved values for {invocation(entry)}",
+                            title: "Forget the saved variable values; keep the names",
+                            onclick: {
+                                let entry = entry.clone();
+                                move |_| on_forget.call(entry.clone())
+                            },
+                            span { class: "disclosure-icon", aria_hidden: "true",
+                                Icon { class: "icon", width: 16, height: 16, icon: LdEraser }
+                            }
+                        }
+                    }
+                    if entry.env_values_missing() {
+                        button {
+                            class: "btn btn-xs btn-quiet recent-launch",
+                            "data-slot": "recent-launch",
+                            r#type: "button",
+                            aria_label: "Fill in {invocation(entry)}: its variable values weren't saved",
+                            title: "Its variable values weren't saved: fill them in, then launch",
+                            onclick: {
+                                let entry = entry.clone();
+                                move |_| on_refill.call(entry.clone())
+                            },
+                            span { class: "disclosure-icon", aria_hidden: "true",
+                                Icon { class: "icon", width: 16, height: 16, icon: LdPlay }
+                            }
+                        }
+                    } else {
+                        button {
+                            class: "btn btn-xs btn-quiet recent-launch",
+                            "data-slot": "recent-launch",
+                            r#type: "button",
+                            aria_label: "Launch {invocation(entry)}",
+                            title: "Launch {invocation(entry)}",
+                            aria_disabled: launching.then_some("true"),
+                            onclick: {
+                                let entry = entry.clone();
+                                move |_| {
+                                    if !launching {
+                                        on_launch.call(entry.clone());
+                                    }
+                                }
+                            },
+                            span { class: "disclosure-icon", aria_hidden: "true",
+                                Icon { class: "icon", width: 16, height: 16, icon: LdPlay }
+                            }
+                        }
+                    }
+                    if let Some(on_remove) = on_remove {
+                        button {
+                            class: "btn btn-xs btn-quiet recent-remove",
+                            "data-slot": "recent-remove",
+                            r#type: "button",
+                            aria_label: "Remove {invocation(entry)} from recent commands",
+                            title: "Remove from recent commands",
+                            onclick: {
+                                let entry = entry.clone();
+                                move |_| on_remove.call(entry.clone())
+                            },
+                            span { class: "disclosure-icon", aria_hidden: "true",
+                                Icon { class: "icon", width: 16, height: 16, icon: LdX }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -679,8 +886,9 @@ fn running_label(command: &AgentCommand) -> String {
         .join(" ")
 }
 
-/// The rest of what makes it a different invocation: where it ran, and how many
-/// variables it carried.
+/// The rest of what makes it a different invocation: where it ran, how many
+/// variables it carried (and whether their values were kept), and how its
+/// environment was trimmed.
 ///
 /// The environment is counted rather than shown. Its values are where a token
 /// would be, and a list of invocations under a form is not the place to put one
@@ -694,10 +902,22 @@ fn under(command: &AgentCommand) -> Option<String> {
         said.push(format!("in {}", tail(command.cwd.trim(), 2)));
     }
     if variables > 0 {
-        said.push(match variables {
+        let counted = match variables {
             1 => "1 variable".to_owned(),
             many => format!("{many} variables"),
+        };
+        said.push(if command.env_values_missing() {
+            format!("{counted}, values not saved")
+        } else {
+            counted
         });
+    }
+    if command.clear_env {
+        said.push("empty environment".to_owned());
+    }
+    let unset = command.unset_names().count();
+    if unset > 0 {
+        said.push(format!("{unset} unset"));
     }
     (!said.is_empty()).then(|| said.join(" · "))
 }
@@ -788,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_fields_are_four_labelled_fields_of_one_form() {
+    fn launch_fields_are_labelled_fields_of_one_form() {
         let html = shown();
 
         assert!(
@@ -797,13 +1017,21 @@ mod tests {
         );
         assert_eq!(
             html.matches(r#"class="form-field""#).count(),
-            4,
+            5,
             "one field per value the transport takes: {html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="form-field form-check""#).count(),
+            2,
+            "and the two switches: {html}"
         );
         for (id, label) in [
             ("launch-command", "Command"),
             ("launch-args", "Arguments"),
             ("launch-env", "Environment"),
+            ("launch-remember-env", "Remember values"),
+            ("launch-unset", "Unset variables"),
+            ("launch-clear-env", "Start with an empty environment"),
             ("launch-cwd", "Working directory"),
         ] {
             assert!(
@@ -1095,7 +1323,9 @@ mod tests {
             let html = dioxus_ssr::render(&dom);
             if html.contains(r#"value="npx""#) {
                 assert!(
-                    html.contains("-y\nagent\n--verbose") && html.contains(r#"value="FOO=1""#),
+                    // Other controls (the minimal-environment preset) may have
+                    // been driven first; the split puts its variable first.
+                    html.contains("-y\nagent\n--verbose") && html.contains(r#"value="FOO=1"#),
                     "the words went to their fields: {html}"
                 );
                 return;
@@ -1157,6 +1387,8 @@ mod tests {
         #[component]
         fn Host() -> Element {
             let mut launched = use_signal(Vec::<AgentCommand>::new);
+            let mut removed = use_signal(|| 0);
+            let mut forgotten = use_signal(|| 0);
             rsx! {
                 SpawnForm {
                     running: false,
@@ -1169,8 +1401,12 @@ mod tests {
                     )],
                     unsaved: None,
                     on_launch: move |agent: AgentCommand| launched.write().push(agent),
+                    on_remove: move |_: AgentCommand| removed += 1,
+                    on_forget: move |_: AgentCommand| forgotten += 1,
                 }
                 span { "data-slot": "launches", "{launched.read().len()}" }
+                span { "data-slot": "removed", "{removed}" }
+                span { "data-slot": "forgotten", "{forgotten}" }
                 for agent in launched.read().iter() {
                     span { "data-slot": "launched", "{agent.command}" }
                 }
@@ -1194,8 +1430,29 @@ mod tests {
         let clicks = listeners(&edits, "click");
         assert_eq!(
             clicks.len(),
-            3,
-            "the row's label and play button, and Cancel"
+            8,
+            "the row's label, forget, play and remove buttons; the two switches, the preset, and Cancel"
+        );
+
+        // A row can be removed, and a row that kept values can forget them.
+        let remove = target(
+            &edits,
+            "aria-label",
+            "Remove bunx --flag agent-package from recent commands",
+        );
+        dom.runtime().handle_event("click", mouse_event(), remove);
+        let forget = target(
+            &edits,
+            "aria-label",
+            "Forget saved values for bunx --flag agent-package",
+        );
+        dom.runtime().handle_event("click", mouse_event(), forget);
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="removed">1"#)
+                && html.contains(r#"data-slot="forgotten">1"#),
+            "{html}"
         );
 
         // The label refills without launching.
@@ -1239,6 +1496,80 @@ agent-package""#,
                 && html.contains(r#"data-slot="launched">bunx<"#),
             "the remembered invocation, not the edited fields: {html}"
         );
+    }
+
+    #[test]
+    fn a_refill_carries_the_environment_switches_and_says_when_values_were_not_saved() {
+        #[component]
+        fn Host() -> Element {
+            let mut launched = use_signal(|| 0);
+            rsx! {
+                SpawnForm {
+                    running: false,
+                    launching: false,
+                    recent: vec![AgentCommand {
+                        command: "agent".to_owned(),
+                        env: "ANTHROPIC_API_KEY=".to_owned(),
+                        unset: "OPENAI_API_KEY\nAWS_PROFILE".to_owned(),
+                        clear_env: true,
+                        ..AgentCommand::default()
+                    }],
+                    unsaved: None,
+                    on_launch: move |_: AgentCommand| launched += 1,
+                }
+                span { "data-slot": "launches", "{launched}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("1 variable, values not saved · empty environment · 2 unset"),
+            "{html}"
+        );
+        // Launching it as kept would set the key to nothing: its play button
+        // refills instead.
+        let play = target(
+            &edits,
+            "aria-label",
+            "Fill in agent: its variable values weren't saved",
+        );
+        dom.runtime().handle_event("click", mouse_event(), play);
+        settle(&mut dom);
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains(r#"data-slot="launches">0"#), "{html}");
+        assert!(
+            html.contains(
+                r#"value="OPENAI_API_KEY
+AWS_PROFILE""#
+            ),
+            "the names to unset are refilled: {html}"
+        );
+        let clear = html
+            .split("<button")
+            .find(|button| button.contains(r#"id="launch-clear-env""#))
+            .expect("the empty-environment switch");
+        assert!(clear.contains(r#"aria-checked="true""#), "{clear}");
+        assert!(
+            html.contains(r#"value="ANTHROPIC_API_KEY=""#)
+                && html.contains(r#"data-slot="env-values-missing""#)
+                && html.contains("Its variable values weren&#39;t saved"),
+            "the names come back with empty values, and the form says why: {html}"
+        );
+    }
+
+    #[test]
+    fn the_minimal_environment_adds_what_is_not_already_set() {
+        assert_eq!(
+            with_minimal_env(
+                "PATH=/mine\n\nACP_LOG=debug",
+                "PATH=/usr/bin\nHOME=/home/me"
+            ),
+            "HOME=/home/me\nPATH=/mine\nACP_LOG=debug"
+        );
+        assert_eq!(with_minimal_env("", "HOME=/h"), "HOME=/h");
     }
 
     #[test]
