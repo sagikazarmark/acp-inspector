@@ -328,10 +328,24 @@ Explicit disconnect and terminal transport failures (`TransportFailed`, includin
 incoming pipe) still interrupt the reader rather than waiting for a drain, even during a blocked
 automatic reply. A cancelled reader cannot mutate the replacement Connection's stores or release it.
 
+**Framing is on bytes.** A stdout line that is not UTF-8 is still a Frame: it is recorded lossily,
+flagged, keeps its raw bytes and exports as base64. A stdout line over 10 MiB leaves a placeholder
+Frame holding its first 4 KiB plus a `FrameDropped { limit, length }` diagnostic; if the retained start
+names a pending call, that call fails with `AnswerDropped`. Stderr is decoded lossily
+(`StderrLineLossy`), cut at 1 MiB per line (`StderrLineCut`), and always drained to EOF. Incoming
+Frames are stamped when the pump reads them; the trace's order is authoritative, its timestamps are
+read times.
+
+**Stopping is graceful when the reader asks for it.** A user-facing disconnect, a restart and quit
+close the agent's stdin, wait 1.5 s, send SIGTERM to the process group, wait 1.5 s, then SIGKILL,
+and record which step ended it as `Stopped { by }`. After the leader exits, readers left idle on
+pipes held open by an escaped descendant are abandoned after 1 s (`DrainAbandoned`). Windows keeps
+the Job Object kill and has no SIGTERM step.
+
 **Stdio owns the launched process tree.** Unix launches in a private process group;
 Windows assigns the suspended launcher to a private kill-on-close Job Object before
-letting it run. Disconnect, the last public Inspector owner going away, runtime drop,
-and native window/event-loop shutdown terminate that ownership boundary synchronously,
+letting it run. The last public Inspector owner going away, runtime drop, and native
+window/event-loop shutdown terminate that ownership boundary synchronously,
 without waiting for another async task to run. Unix observes launcher exit without
 reaping it, terminates the group while the leader still pins its id, then reaps; no
 later cleanup signals a potentially reused group id. On natural launcher exit the
@@ -1870,7 +1884,7 @@ Capture still precedes decoding. Retention is bounded independently of transport
   in the Console and every export. Ordinals never reset or renumber.
 - **Diagnostic channel:** newest 10,000 entries within 8 MiB of accounted text and fixed entry
   storage. Whole oldest entries leave, including transport remarks, counted on its Console tab.
-  A retained `FrameDropped`/`StderrLineDropped` still names a transport hole; an aged-out diagnostic
+  A retained `FrameDropped`/`StderrLineCut` still names a transport hole; an aged-out diagnostic
   is counted as a missing diagnostic, not misrepresented as a captured Frame.
 - **Timeline:** oldest eligible entries leave whole at 1,000 entries, 2,000 raw Frames, or
   16 MiB of raw evidence. Counts of removed entries, Frames, raw bytes and Turn records remain
