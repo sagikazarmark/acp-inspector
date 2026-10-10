@@ -34,13 +34,12 @@ fn agent() -> AgentCommand {
 /// The `sessionUpdate` discriminant of an entry, which is what "every variant
 /// arrived" is counted in.
 ///
-/// **Eleven, not the spec's twelve.** The spec counts the stable v1 variants
-/// from the schema metadata the surface research read
-/// (docs/architecture.md §7.4); `agent-client-protocol-schema` 1.6 exposes
-/// eleven outside its `unstable_*` features, and unstable ones are not decoded
-/// on purpose — they are unknown traffic, which is displayed rather than
-/// understood (§8). This match is what the schema crate actually offers, and
-/// its `_` arm is what says so when that changes.
+/// **Fourteen stable variants.** `agent-client-protocol-schema` 1.11 exposes
+/// fourteen outside its `unstable_*` features — the eleven of 1.7 plus
+/// `notice`, `compaction_update` and `compaction_summary_chunk` — and unstable
+/// ones are not decoded on purpose: they are unknown traffic, which is
+/// displayed rather than understood (§8). This match is what the schema crate
+/// actually offers, and its `_` arm is what says so when that changes.
 fn variant(kind: &EntryKind) -> Option<&'static str> {
     let EntryKind::Update(update) = kind else {
         return None;
@@ -57,6 +56,9 @@ fn variant(kind: &EntryKind) -> Option<&'static str> {
         v1::SessionUpdate::ConfigOptionUpdate(_) => "config_option_update",
         v1::SessionUpdate::SessionInfoUpdate(_) => "session_info_update",
         v1::SessionUpdate::UsageUpdate(_) => "usage_update",
+        v1::SessionUpdate::Notice(_) => "notice",
+        v1::SessionUpdate::CompactionUpdate(_) => "compaction_update",
+        v1::SessionUpdate::CompactionSummaryChunk(_) => "compaction_summary_chunk",
         // The enum is `#[non_exhaustive]`: a variant the schema crate grows
         // later is one this test has not been taught to expect, which is a
         // failure of the list below and not of the timeline.

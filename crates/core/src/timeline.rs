@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use agent_client_protocol_schema::v1;
+use agent_client_protocol_schema::{MaybeUndefined, v1};
 use tokio::sync::watch;
 
 use crate::blocking::RequestId;
@@ -41,6 +41,7 @@ use crate::conformance::Annotation;
 use crate::elicitation::ElicitationRequest;
 use crate::frame::Frame;
 use crate::permission::PermissionRequest;
+use crate::service::ServiceRequest;
 use crate::store::{Changes, locked};
 use crate::turn::TurnOutcome;
 
@@ -149,6 +150,13 @@ pub enum EntryId {
     /// a permission request and an elicitation that arrived under the same
     /// JSON-RPC id — which nothing forbids across a reconnect — one entry.
     Elicitation(RequestId),
+    /// A client-service request the reader or a rules file answers, keyed by
+    /// the JSON-RPC id it arrived under for the reason a permission request is.
+    Service(RequestId),
+    /// A context compaction, keyed by the session and the id the agent gave
+    /// it: its updates are upserts and its summary chunks append, so one
+    /// compaction is one entry however many frames it arrived in.
+    Compaction(v1::SessionId, v1::CompactionId),
     /// Everything the protocol gives no id: one entry, keyed by when it turned
     /// up, merging with nothing.
     Arrival(u64),
@@ -180,6 +188,10 @@ pub enum EntryKind {
     /// than to a conversation — which is why the timeline draws these even when
     /// nothing is open.
     Elicitation(ElicitationRequest),
+    /// A client-service request (F3): a claimed `fs/*` or `terminal/*` call,
+    /// or another request this client does not service, waiting for the
+    /// reader's answer or already answered by a rules file.
+    Service(ServiceRequest),
     /// A frame it did not, kept as itself.
     Unrecognized(Unrecognized),
     /// A place the specification says MUST and the frames say it was not met
@@ -396,7 +408,7 @@ impl Timeline {
                 entries.entries.push(TimelineEntry::new(
                     id.clone(),
                     frame,
-                    EntryKind::Update(notification.update),
+                    EntryKind::Update(created(notification.update)),
                     turn,
                 ));
                 if !matches!(id, EntryId::Arrival(_)) {
@@ -441,6 +453,21 @@ impl Timeline {
             EntryId::Elicitation(request.id().clone()),
             frame,
             EntryKind::Elicitation(request),
+            turn,
+        ));
+        self.moved(&mut entries);
+    }
+
+    /// Puts a client-service request where the agent asked it (F3), keyed by
+    /// the id it arrived under like the other two blocking requests.
+    pub(crate) fn serviced(&self, request: ServiceRequest, frame: Recorded) {
+        let mut entries = self.lock();
+        entries.charge(&frame);
+        let turn = entries.open;
+        entries.entries.push(TimelineEntry::new(
+            EntryId::Service(request.id().clone()),
+            frame,
+            EntryKind::Service(request),
             turn,
         ));
         self.moved(&mut entries);
@@ -746,6 +773,10 @@ impl TimelineEntry {
                 crate::elicitation::ElicitationState::Waiting
                     | crate::elicitation::ElicitationState::Answering
             ),
+            EntryKind::Service(request) => matches!(
+                request.state(),
+                crate::service::ServiceState::Waiting | crate::service::ServiceState::Answering
+            ),
             _ => false,
         }
     }
@@ -753,6 +784,7 @@ impl TimelineEntry {
         match &self.kind {
             EntryKind::Permission(request) => request.is_waiting(),
             EntryKind::Elicitation(request) => request.is_waiting(),
+            EntryKind::Service(request) => request.is_waiting(),
             _ => false,
         }
     }
@@ -799,7 +831,36 @@ fn merge_key(notification: &v1::SessionNotification) -> Option<EntryId> {
         v1::SessionUpdate::ToolCallUpdate(update) => {
             Some(EntryId::ToolCall(session, update.tool_call_id.clone()))
         }
+        v1::SessionUpdate::CompactionUpdate(update) => {
+            Some(EntryId::Compaction(session, update.compaction_id.clone()))
+        }
+        v1::SessionUpdate::CompactionSummaryChunk(chunk) => {
+            Some(EntryId::Compaction(session, chunk.compaction_id.clone()))
+        }
         _ => None,
+    }
+}
+
+/// What an update is as the first entry for its id.
+///
+/// A summary chunk for a compaction nobody announced creates an in-progress
+/// compaction holding that one block, which is what the schema says a
+/// first-seen id means. Everything else is itself.
+fn created(update: v1::SessionUpdate) -> v1::SessionUpdate {
+    match update {
+        v1::SessionUpdate::CompactionSummaryChunk(chunk) => v1::SessionUpdate::CompactionUpdate(
+            v1::CompactionUpdate::new(chunk.compaction_id, v1::CompactionStatus::InProgress)
+                .summary(vec![chunk.content]),
+        ),
+        update => update,
+    }
+}
+
+/// One patch field of a compaction update: absent leaves it, `null` clears
+/// it, a value replaces it (an empty summary is a value that clears).
+fn patched<T>(field: &mut MaybeUndefined<T>, update: MaybeUndefined<T>) {
+    if !matches!(update, MaybeUndefined::Undefined) {
+        *field = update;
     }
 }
 
@@ -827,6 +888,25 @@ fn merge(kind: &mut EntryKind, update: v1::SessionUpdate) {
             // over if it ever arrives.
             patch_fields(&mut existing.fields, update.fields);
         }
+        // A compaction is an upsert with patch semantics: omitted leaves a
+        // field alone, `null` clears it, a value replaces it.
+        (
+            v1::SessionUpdate::CompactionUpdate(existing),
+            v1::SessionUpdate::CompactionUpdate(update),
+        ) => {
+            existing.status = update.status;
+            patched(&mut existing.summary, update.summary);
+            patched(&mut existing.error, update.error);
+            patched(&mut existing.meta, update.meta);
+        }
+        // And its summary chunks append, in the order they arrived.
+        (
+            v1::SessionUpdate::CompactionUpdate(existing),
+            v1::SessionUpdate::CompactionSummaryChunk(chunk),
+        ) => match &mut existing.summary {
+            MaybeUndefined::Value(summary) => summary.push(chunk.content),
+            summary => *summary = MaybeUndefined::Value(vec![chunk.content]),
+        },
         // A create for an id that already has an entry — the agent restating
         // the whole call — is the whole call, so it replaces.
         (existing, update) => *existing = update,
@@ -838,6 +918,7 @@ fn patch(call: &mut v1::ToolCall, fields: v1::ToolCallUpdateFields) {
         kind,
         status,
         title,
+        name,
         content,
         locations,
         raw_input,
@@ -853,6 +934,10 @@ fn patch(call: &mut v1::ToolCall, fields: v1::ToolCallUpdateFields) {
     }
     if let Some(title) = title {
         call.title = title;
+    }
+    // Omitted and `null` both leave the name as it was (schema 1.8).
+    if let Some(name) = name {
+        call.name = Some(name);
     }
     // Collections are overwritten rather than extended, which is what the
     // protocol says an update means by them.
@@ -875,6 +960,7 @@ fn patch_fields(fields: &mut v1::ToolCallUpdateFields, update: v1::ToolCallUpdat
         kind,
         status,
         title,
+        name,
         content,
         locations,
         raw_input,
@@ -885,6 +971,7 @@ fn patch_fields(fields: &mut v1::ToolCallUpdateFields, update: v1::ToolCallUpdat
     fields.kind = kind.or(fields.kind);
     fields.status = status.or(fields.status);
     fields.title = title.or_else(|| fields.title.take());
+    fields.name = name.or_else(|| fields.name.take());
     fields.content = content.or_else(|| fields.content.take());
     fields.locations = locations.or_else(|| fields.locations.take());
     fields.raw_input = raw_input.or_else(|| fields.raw_input.take());

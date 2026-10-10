@@ -35,6 +35,41 @@ struct Asked {
     request: v1::RequestPermissionRequest,
     state: Mutex<PermissionState>,
     resolver: Resolver,
+    /// The policy that answered it, when one did.
+    policy: Mutex<Option<PermissionPolicy>>,
+}
+
+/// How `session/request_permission` is answered in the open session (F11).
+///
+/// Session-scoped: it goes back to [`Ask`](Self::Ask) when the session changes
+/// or the agent disconnects. **Never a standing grant**: the two automatic
+/// answers pick only an `allow_once` or a `reject_once` option, and a request
+/// that offers neither waits for the reader as if the policy were `Ask`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PermissionPolicy {
+    /// Every request waits for the reader.
+    #[default]
+    Ask,
+    /// Pick the first `allow_once` option.
+    AllowOnce,
+    /// Pick the first `reject_once` option.
+    RejectOnce,
+}
+
+impl PermissionPolicy {
+    /// The option this policy answers with, out of what the agent offered.
+    ///
+    /// `None` for [`Ask`](Self::Ask), and for a request offering no option of
+    /// the one kind this policy picks: an `*_always` option is never chosen
+    /// automatically, because it outlives the click.
+    pub fn pick(self, options: &[v1::PermissionOption]) -> Option<&v1::PermissionOption> {
+        let kind = match self {
+            Self::Ask => return None,
+            Self::AllowOnce => v1::PermissionOptionKind::AllowOnce,
+            Self::RejectOnce => v1::PermissionOptionKind::RejectOnce,
+        };
+        options.iter().find(|option| option.kind == kind)
+    }
 }
 
 /// Where a blocking request stands.
@@ -84,6 +119,7 @@ impl PermissionRequest {
             request,
             state: Mutex::new(PermissionState::Waiting),
             resolver,
+            policy: Mutex::new(None),
         }))
     }
 
@@ -153,6 +189,30 @@ impl PermissionRequest {
         .await
     }
 
+    /// The policy that answered this request, if one did rather than the
+    /// reader.
+    pub fn by_policy(&self) -> Option<PermissionPolicy> {
+        *locked(&self.0.policy)
+    }
+
+    /// Answers with the option `policy` picks, if it picks one. Says whether
+    /// it did; a request it leaves alone is still waiting for the reader.
+    pub(crate) async fn answer_by_policy(&self, policy: PermissionPolicy) -> bool {
+        let Some(option) = policy
+            .pick(self.options())
+            .map(|option| option.option_id.clone())
+        else {
+            return false;
+        };
+        // Recorded before the answer, so the card never shows a policy's
+        // answer as the reader's.
+        *locked(&self.0.policy) = Some(policy);
+        if self.select(&option).await.is_err() {
+            *locked(&self.0.policy) = None;
+        }
+        true
+    }
+
     /// The turn was cancelled out from under it (§7.2).
     ///
     /// Not public: cancelling a turn is what produces this, and a surface that
@@ -163,11 +223,6 @@ impl PermissionRequest {
             .await
     }
 
-    /// Nobody answered it and nobody can now: the turn it blocked ended, or the
-    /// agent went away holding it.
-    ///
-    /// Leaves an answer that is already on its way alone — that one is being
-    /// decided by the wire, and this is not evidence about it.
     /// The agent withdrew the request with `$/cancel_request`, and is answered
     /// with the cancellation error the protocol asks for.
     pub(crate) async fn withdrawn(&self) -> Result<(), CallError> {
@@ -185,6 +240,11 @@ impl PermissionRequest {
         told
     }
 
+    /// Nobody answered it and nobody can now: the turn it blocked ended, or the
+    /// agent went away holding it.
+    ///
+    /// Leaves an answer that is already on its way alone — that one is being
+    /// decided by the wire, and this is not evidence about it.
     pub(crate) fn abandoned(&self) {
         {
             let mut state = self.held();

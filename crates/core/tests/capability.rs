@@ -124,8 +124,9 @@ fn claimed_by_this_client(inspector: &Inspector) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The whole of what this client claims, on every connection: boolean config
-/// options, both elicitation modes, and the services still declined.
+/// The whole of what this client claims by default: boolean config options,
+/// session compaction and notices, both elicitation modes, and the services a
+/// launch did not choose.
 ///
 /// Written out as the JSON an agent reads rather than assembled from the
 /// builders core assembles it with — an expectation restated in core's own
@@ -137,7 +138,9 @@ fn the_claim() -> serde_json::Value {
         // Schema 1.7 stabilized terminal authentication; its default is an
         // explicit refusal, matching the inspector's own-terminal rule (§7.1).
         "auth": {"terminal": false},
-        "session": {"configOptions": {"boolean": {}}},
+        // Schema 1.11 stabilized compaction and notices; the timeline draws
+        // both, so both are claimed.
+        "session": {"compaction": {}, "configOptions": {"boolean": {}}, "notices": {}},
         "elicitation": {"form": {}, "url": {}},
     })
 }
@@ -164,10 +167,10 @@ async fn the_client_advertises_what_it_will_honour_and_nothing_else() {
 
 #[tokio::test]
 async fn every_connection_advertises_the_same_claim() {
-    // **Fixed, with no way to turn it off** (§7.6): there is no spawn-form
-    // switch and no per-connection state behind it, so a second agent is told
-    // exactly what the first was. Driven rather than read, because "not
-    // configurable" is a claim about what crosses the wire.
+    // **The same launch makes the same claim** (§7.6): with the launch's
+    // services left alone, a second agent is told exactly what the first was.
+    // Driven rather than read, because the claim is about what crosses the
+    // wire. What a launch can change is `tests/client_services.rs`'s.
     let inspector = Inspector::new();
     inspector.connect(&agent().factory());
     inspector.initialize().await.expect("Testy initializes");
@@ -195,13 +198,13 @@ async fn every_connection_advertises_the_same_claim() {
 /// than decoded (§8).
 fn defined<T: schemars::JsonSchema>() -> Vec<String> {
     let schema = schemars::schema_for!(T);
+    // An object with no fields at all (a claim made by presence alone, like
+    // `compaction: {}`) has no `properties` to list.
     let mut named: Vec<_> = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
-        .expect("a capability object has properties")
-        .keys()
-        .cloned()
-        .collect();
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
     named.sort();
     named
 }
@@ -339,8 +342,20 @@ fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_define
     // object, whose presence is the claim at every step.
     assert_eq!(
         defined::<v1::ClientSessionCapabilities>(),
-        ["_meta", "configOptions"],
+        ["_meta", "compaction", "configOptions", "notices"],
         "the session-scoped client capabilities moved"
+    );
+    // Schema 1.11's two, claimed as presence: each object is empty today, so
+    // a field appearing in either is a claim that says more than `{}`.
+    assert_eq!(
+        defined::<v1::CompactionCapabilities>(),
+        Vec::<String>::new(),
+        "the compaction claim grew a field"
+    );
+    assert_eq!(
+        defined::<v1::NoticeCapabilities>(),
+        Vec::<String>::new(),
+        "the notice claim grew a field"
     );
     assert_eq!(
         defined::<v1::SessionConfigOptionsCapabilities>(),
