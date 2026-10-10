@@ -35,7 +35,7 @@ acp-inspector-core = { path = "crates/core" }
 # and coincide with that rule
 # (docs/adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md).
 # Traffic outside the stable schema stays displayed rather than decoded (§8).
-agent-client-protocol-schema = "1.7"
+agent-client-protocol-schema = "1.11"
 
 # No renderer here: which one is a decision the app crate makes with a feature
 # of its own (`desktop`, `web`), because the renderer is what a build of the

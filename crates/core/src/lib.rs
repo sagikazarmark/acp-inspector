@@ -123,6 +123,9 @@ mod recent;
 mod restore;
 mod roots;
 mod rpc;
+mod script;
+mod service;
+mod services;
 mod session_settings;
 mod settings;
 mod stdio;
@@ -139,7 +142,7 @@ mod unwind;
 /// module joins it here is the day the seam is used. [`ProtocolVersion`] sits
 /// beside it rather than inside it, in the schema crate and here, because which
 /// dialect is being spoken is not a statement in any one of them.
-pub use agent_client_protocol_schema::{ProtocolVersion, v1};
+pub use agent_client_protocol_schema::{MaybeUndefined, ProtocolVersion, v1};
 
 pub use appearance::Appearance;
 pub use auth::AuthState;
@@ -159,11 +162,16 @@ pub use frame::{Direction, Frame, FrameKind, FrameSummary, Omission};
 pub use indentation::Indentation;
 pub use inspector::{ConnectionStatus, DiagnosticLog, Inspector};
 pub use listing::{Cursor, SessionListing};
-pub use permission::{PermissionRequest, PermissionState};
+pub use permission::{PermissionPolicy, PermissionRequest, PermissionState};
 pub use recent::RecentCommands;
 pub use restore::Restore;
 pub use roots::Roots;
 pub use rpc::PendingCall;
+pub use script::{Rule, ScriptError, Scripted, ServiceScript, Unmatched, glob};
+pub use service::{
+    AnsweredBy, ServiceAnswer, ServiceReply, ServiceRequest, ServiceState, read_json, skeleton,
+};
+pub use services::{ClientClaim, ClientServices};
 pub use session_settings::{ConfigRefusal, ModeChange, SessionSettings};
 pub use settings::Settings;
 pub use stdio::StdioSpawn;

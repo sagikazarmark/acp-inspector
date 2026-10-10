@@ -209,6 +209,11 @@ pub fn Timeline(
                 // says where the turn stands, at the far end where a desktop
                 // application puts the state of what a region is showing.
                 span { class: "grow" }
+                // How permission requests are answered in this session (F11):
+                // only while there is a session for it to belong to.
+                if connected && session.is_some() {
+                    crate::client_services::PolicyControl {}
+                }
                 {composer::badge(&composer::presented(&turn, blocked, problem.as_ref(), connected && session.is_some(), connected))}
             }
 
@@ -729,6 +734,8 @@ fn named(id: &EntryId) -> String {
         // re-render answering causes: a half-filled form is the reader's
         // work, and a name that moved would hand it to another row.
         EntryId::Elicitation(request) => format!("elicitation {request}"),
+        EntryId::Service(request) => format!("service {request}"),
+        EntryId::Compaction(session, compaction) => format!("compaction {session} {compaction}"),
         EntryId::Arrival(arrival) => format!("arrival {arrival}"),
         // `EntryId` is non-exhaustive, and an identity this window has not
         // been taught still has to be one: two rows sharing a name is worse
@@ -926,6 +933,11 @@ fn happened(
                 }
             },
         )),
+        // A client-service request (F3): the third kind of row the agent waits
+        // on, answered from the card in it.
+        EntryKind::Service(request) => {
+            Some(("service", "ask", crate::client_services::card(request)))
+        }
         // A conformance annotation, in the flow where the traffic it is about
         // was — never a modal, a toast, or a lane of its own (§15 q7).
         EntryKind::Annotation(annotation) => Some(("conformance", "spec", claim(annotation))),
@@ -1074,6 +1086,29 @@ fn unnamed(kind: &EntryKind) -> Element {
                 EntryKind::Unrecognized(Unrecognized::Unsolicited) => rsx! {
                     "An answer to a request this client never sent."
                 },
+                EntryKind::Unrecognized(Unrecognized::ForeignSession { session }) => rsx! {
+                    "An update for session "
+                    code { "{session}" }
+                    ", not the open one. It changed nothing here."
+                },
+                EntryKind::Unrecognized(Unrecognized::Dropped { length, limit }) => rsx! {
+                    "A frame of {sized(*length)} was dropped (limit {sized(*limit)}). Its start is below."
+                },
+                EntryKind::Unrecognized(Unrecognized::MistypedId { id, call }) => rsx! {
+                    "An answer for call {call} with id "
+                    code { "{id}" }
+                    " ({id_kind(id)}). The call is still waiting."
+                },
+                EntryKind::Unrecognized(Unrecognized::Unaddressed { error }) => rsx! {
+                    "An error with no id: "
+                    code { "{i32::from(error.code)}" }
+                    " {error.message}"
+                },
+                EntryKind::Unrecognized(Unrecognized::OverCapacity { method, limit }) => rsx! {
+                    "Over {limit} requests waiting, so this "
+                    code { "{method}" }
+                    " was refused."
+                },
                 // A `session/update` variant this window has no arm for: an
                 // unstable-v1 one, an extension, or v2 arriving early.
                 EntryKind::Update(_) => rsx! {
@@ -1085,6 +1120,31 @@ fn unnamed(kind: &EntryKind) -> Element {
             }}
             " What arrived is below, as it arrived."
         }
+    }
+}
+
+/// A byte count the way a reader says it: bytes, KB or MB, binary units, to
+/// one decimal where that is not zero.
+fn sized(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let amount = bytes as f64;
+    let (value, unit) = if amount >= KB * KB {
+        (amount / (KB * KB), "MB")
+    } else if amount >= KB {
+        (amount / KB, "KB")
+    } else {
+        return format!("{bytes} bytes");
+    };
+    let said = format!("{value:.1}");
+    format!("{} {unit}", said.strip_suffix(".0").unwrap_or(&said))
+}
+
+/// What is wrong with an id that names a call but is not the call's id.
+fn id_kind(id: &str) -> &'static str {
+    if id.starts_with('"') {
+        "a string"
+    } else {
+        "not a whole number"
     }
 }
 
@@ -1103,12 +1163,14 @@ fn unnamed(kind: &EntryKind) -> Element {
 /// a conversation is a column nobody reads.
 fn kind_said(label: &str, at: Option<SystemTime>) -> Element {
     /// The rows whose body says what they are.
-    const NAMED_BY_ITS_BODY: [&str; 5] = [
+    const NAMED_BY_ITS_BODY: [&str; 7] = [
         "agent_message_chunk",
         "tool call",
         "plan",
         "permission",
         "elicitation",
+        "service",
+        "compaction",
     ];
 
     rsx! {
@@ -2350,5 +2412,69 @@ mod tests {
             !html.contains("The agent is waiting on you."),
             "and it says nothing: {html}"
         );
+    }
+
+    #[test]
+    fn transport_and_envelope_findings_each_read_as_one_plain_line() {
+        let said = |unrecognized: Unrecognized| {
+            dioxus_ssr::render_element(unnamed(&EntryKind::Unrecognized(unrecognized)))
+        };
+        let foreign = said(Unrecognized::ForeignSession {
+            session: v1::SessionId::new("other"),
+        });
+        assert!(
+            foreign.contains("An update for session <code>other</code>, not the open one."),
+            "{foreign}"
+        );
+        let dropped = said(Unrecognized::Dropped {
+            length: 12 * 1024 * 1024,
+            limit: 10 * 1024 * 1024,
+        });
+        assert!(
+            dropped.contains("A frame of 12 MB was dropped (limit 10 MB)."),
+            "{dropped}"
+        );
+        let mistyped = said(Unrecognized::MistypedId {
+            id: r#""3""#.to_owned(),
+            call: 3,
+        });
+        assert!(
+            mistyped.contains("An answer for call 3 with id <code>&#34;3&#34;</code> (a string). The call is still waiting."),
+            "{mistyped}"
+        );
+        let float = said(Unrecognized::MistypedId {
+            id: "3.0".to_owned(),
+            call: 3,
+        });
+        assert!(float.contains("(not a whole number)"), "{float}");
+        let unaddressed = said(Unrecognized::Unaddressed {
+            error: v1::Error::new(-32700, "Parse error"),
+        });
+        assert!(
+            unaddressed.contains("An error with no id: <code>-32700</code> Parse error"),
+            "{unaddressed}"
+        );
+        let refused = said(Unrecognized::OverCapacity {
+            method: "session/request_permission".to_owned(),
+            limit: 100,
+        });
+        assert!(
+            refused.contains("Over 100 requests waiting, so this <code>session/request_permission</code> was refused."),
+            "{refused}"
+        );
+        for html in [foreign, dropped, mistyped, unaddressed, refused] {
+            assert!(
+                !html.contains("no rendering for"),
+                "each has its own line: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_counts_read_in_the_unit_a_reader_would_use() {
+        assert_eq!(sized(512), "512 bytes");
+        assert_eq!(sized(1536), "1.5 KB");
+        assert_eq!(sized(10 * 1024 * 1024), "10 MB");
+        assert_eq!(sized(10 * 1024 * 1024 + 1), "10 MB");
     }
 }

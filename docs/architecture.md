@@ -176,7 +176,7 @@ decision being reversed for all three
 | WebSocket transport (remote agents) | Later — a second connection factory behind the seam in [§6](#6-the-transport-seam); the transport RFD's `/acp` upgrade slots there | host #51, host #52, map fog |
 | Full 25-method v1 coverage | Later — mechanical enumeration against the coverage checklist ([§7.4](#74-the-coverage-yardstick)) | host #51, map fog |
 | v2 support and dual-version decoding | Later — v2 remains a draft with no stated timeline and nothing published since 2026-07-28, when upstream instead *removed* its own version-conversion helpers citing unrepresentable states. The seams stay open ([§11](#11-v2-seams-kept-open)) and nothing is decoded as v2. Its folding of modes into config options — `session/set_mode` gone, a `category` on a config option in its place — is one more thing the seams have to survive rather than something built for | host #51, host #75, host #84, map fog |
-| `fs/*` and `terminal/*` client services | Declined by advertising no capability for either, and **still declined** now that the client claims several things about itself ([§7.3](#73-decline-by-capability)): these are *services* the inspector genuinely cannot perform — there is no filesystem mediation to offer and no terminal embedded. Arriving calls are logged and answered method-not-found. `elicitation/*` left this row with the fifth ring ([§7.8](#78-the-fifth-ring-elicitation)): it had been declined in the same sentence on the strength of one clause about what this tool *had built* rather than what it can do, and a schema-driven form is a thing it draws | host #56, host #84, host #133 |
+| Performing `fs/*` and `terminal/*` client services | **Not performed**: there is no filesystem mediation and no embedded terminal, and real mediation (reads and writes scoped to the session roots, terminals as captured subprocesses) is deferred as F16. What *is* built is answering them (F3, [`client-services.md`](client-services.md)): by default nothing is claimed and an arriving call is logged and answered method-not-found ([§7.3](#73-decline-by-capability)); a launch may claim `fs.readTextFile`, `fs.writeTextFile` and `terminal`, and each claimed call — or any other unserviced request, where the reader opts in — becomes a blocking card the reader answers with a result or an error, or is answered first by a rules file chosen at launch. Nothing reads or writes a file or runs a command on the agent's behalf. `elicitation/*` left this row with the fifth ring ([§7.8](#78-the-fifth-ring-elicitation)): it had been declined in the same sentence on the strength of one clause about what this tool *had built* rather than what it can do, and a schema-driven form is a thing it draws | host #56, host #84, host #133, F3, F16 |
 | Authentication beyond `authenticate` and `logout` | `authMethods` shown, `-32000 auth_required` surfaced as a real state; every practical login runs in the user's own terminal. `logout` leaves this row with the fourth ring ([§7.7](#77-the-fourth-ring-what-was-driven)) — it was a drawn capability row with no method anywhere in the tool, which is the gap the ring's record made impossible to keep quiet | host #51 §2, host #54, host #96 |
 | A TUI surface | Out of MVP. The CLI half of this row was built after it, as a headless surface over core (`crates/cli`, release plan F10): run, prompt, a permission policy, export and an exit code for CI — no interactive screen | host #56 |
 | Observing *third-party* client↔agent pairs (MITM) | **Never in this project** — that is ACP Wiretap's charter; the inspector event-logs only its own traffic | host #55 |
@@ -400,7 +400,7 @@ conformant agent MUST NOT call.
 
 | Method | MVP behaviour |
 |---|---|
-| `initialize` | `protocolVersion: 1`, honest `clientCapabilities` — empty at MVP, and narrowed to one claim by the third ring ([§7.3](#73-decline-by-capability), [§7.6](#76-the-third-ring-session-settings)) — and `clientInfo`. Its result is the first display artifact: agent info, capabilities, auth methods ([§9](#9-screens)) |
+| `initialize` | `protocolVersion: 1` unless the launch overrides it (F13), honest `clientCapabilities` — empty at MVP, narrowed to one claim by the third ring ([§7.3](#73-decline-by-capability), [§7.6](#76-the-third-ring-session-settings)), and since F3 including the file and terminal services a launch chose to answer ([`client-services.md`](client-services.md)) — and `clientInfo`. Its result is the first display artifact: agent info, capabilities, auth methods ([§9](#9-screens)) |
 | `session/new` | `cwd` from the spawn form; `mcpServers` from the MCP editor — stdio, HTTP and SSE definitions, HTTP and SSE only where `mcpCapabilities` advertises them, and an empty array when there are none (the same list goes on `session/load` and `session/resume`); `additionalDirectories` from a control the fourth ring adds, where the agent advertised it ([§7.7](#77-the-fourth-ring-what-was-driven)) |
 | `session/list` | Only when `sessionCapabilities.list` advertised; paging ignored (no surveyed agent emits `nextCursor`), cursor treated as opaque if one appears. The listing the tool refreshes on its own initiative after a close or delete still reports a failure in the trace and nowhere else ([§7.5](#75-the-second-ring-the-session-lifecycle)) — it is not a call anybody asked for, so it writes no record ([§7.7](#77-the-fourth-ring-what-was-driven)) |
 | `session/prompt` | A `ContentBlock[]` composer: text, plus image, audio and embedded-resource (text and PDF) attachments where `promptCapabilities` advertises them; render the `stopReason` |
@@ -412,7 +412,7 @@ conformant agent MUST NOT call.
 
 | Method | MVP behaviour |
 |---|---|
-| `session/update` | The heart of the inspector: every notification shown raw *and* typed where known. Every stable v1 `sessionUpdate` variant decoded — **eleven**, not the twelve this document first said (see below); unknown variants rendered as unrecognized entries ([§8](#8-unknown-traffic-the-raw-first-rule)) |
+| `session/update` | The heart of the inspector: every notification shown raw *and* typed where known. Every stable v1 `sessionUpdate` variant decoded — **fourteen** as of schema 1.11 (see below); unknown variants rendered as unrecognized entries ([§8](#8-unknown-traffic-the-raw-first-rule)) |
 | `session/request_permission` | Interactive and **inline in the timeline at the point the turn blocks**: render the tool call and the four option kinds (`allow_once`, `allow_always`, `reject_once`, `reject_always`), respond `selected {optionId}`; auto-respond `cancelled` when the turn is cancelled |
 | `elicitation/create` | The second blocking request, added by the fifth ring and specified there ([§7.8](#78-the-fifth-ring-elicitation)): a form built from the agent's own schema or a URL shown in full, answered `accept`, `decline` or `cancel`, inline where the agent asked it |
 | `elicitation/complete` | Swallowed onto the entry whose `elicitationId` it names ([§7.8](#78-the-fifth-ring-elicitation)). A notification, so nothing answers it; one naming an id nobody issued is ignored and shown ([§8](#8-unknown-traffic-the-raw-first-rule)) |
@@ -421,24 +421,38 @@ An option that was activated remains the same focused button while the answer is
 It becomes ARIA-disabled, leaves future Tab order, and guards repeat activation rather than becoming
 natively disabled and dropping keyboard focus to the document.
 
-> **Eleven stable variants, corrected by the build.** The twelve this document first said came
-> from the surface research's reading of the schema metadata ([§7.4](#74-the-coverage-yardstick)).
-> `agent-client-protocol-schema` 1.7 exposes **eleven** `v1::SessionUpdate` variants outside its
-> `unstable_*` features; the four it hides (`plan_update`, `plan_removed`, behind
-> `unstable_plan_operations`, and `compaction_update`, `compaction_summary_chunk`, behind
-> `unstable_session_compaction`) are traffic this client does not claim to understand, so they are
-> deliberately not decoded and land in the raw-first path like any other unknown variant
-> ([§8](#8-unknown-traffic-the-raw-first-rule)). The count is asserted in both places it is
-> claimed: `crates/app/src/update.rs` renders eleven and its test constructs each one, and
-> `crates/core/tests/typed.rs` counts the same eleven off a real agent. Both matches end in a `_` arm,
-> so the day the schema stabilizes a twelfth it says so rather than silently swallowing it.
+> **Fourteen stable variants, counted off the build.** The twelve this document first said came
+> from the surface research's reading of the schema metadata ([§7.4](#74-the-coverage-yardstick)),
+> and schema 1.7 exposed eleven. `agent-client-protocol-schema` 1.11 exposes **fourteen**
+> `v1::SessionUpdate` variants outside its `unstable_*` features: the eleven, plus `notice`,
+> `compaction_update` and `compaction_summary_chunk`, which 1.11 stabilized. What it still hides
+> (`plan_update` and `plan_removed` behind `unstable_plan_operations`, and the subagent updates
+> behind `unstable_subagents`) is traffic this client does not claim to understand, so it is
+> deliberately not decoded and lands in the raw-first path like any other unknown variant
+> ([§8](#8-unknown-traffic-the-raw-first-rule)). A compaction is merge-keyed like a tool call — its
+> updates patch one entry and its summary chunks append to it. The count is asserted in both places
+> it is claimed: `crates/app/src/update.rs` renders fourteen and its test constructs each one, and
+> `crates/core/tests/typed.rs` names the same fourteen. Both matches end in a `_` arm, so the day
+> the schema stabilizes a fifteenth it says so rather than silently swallowing it.
 
 ### 7.3 Decline by capability
 
-`fs/*` and `terminal/*`: declined by advertising no capability for either of them.
+`fs/*` and `terminal/*`: declined by default by advertising no capability for either of them.
 A conformant agent then never calls them — but a misbehaving agent is the inspector's subject
 matter, so if such a call arrives anyway it is **logged in the trace as first-class evidence and
 answered method-not-found**, never silently swallowed.
+
+> **A launch may claim them, and then they are answered, not performed** (F3,
+> [`client-services.md`](client-services.md)). The launch dialog's Client services section claims
+> `fs.readTextFile`, `fs.writeTextFile` and `terminal` one at a time. A claimed call becomes a
+> blocking request, like a permission request: a timeline card with the params and a response
+> editor prefilled with a valid result for the method, answered by the reader with a result or an
+> error — or first by a rules file chosen at launch, whose answer the card attributes to its rule.
+> The reader may also opt in to answering any other unserviced request by hand. This keeps the
+> rule below: what is claimed is honoured, because every call the claim invites gets an answer the
+> reader chose; nothing reads or writes a file or runs a command on the agent's behalf (F16).
+> The launch also chooses the `protocolVersion` the request carries (F13; 1 by default), and the
+> capability view shows what the agent answered and flags a difference.
 
 > **The MVP's empty client capabilities are narrowed here, not abandoned**
 > (host #84). The stance the sentence above
@@ -464,14 +478,17 @@ answered method-not-found**, never silently swallowed.
 > else, so the inspector was silently reshaping the behaviour it exists to observe, by a claim it had
 > never examined, with nothing on screen saying so. For a tool whose thesis is that claims should be
 > legible, that was the dishonest answer rather than the honest one. The inspector therefore claims
-> **boolean config options** ([§7.6](#76-the-third-ring-session-settings)) and, since the fifth ring,
-> **elicitation in form and URL modes** ([§7.8](#78-the-fifth-ring-elicitation)) — and nothing else:
-> no `fs`, no `terminal`. The claim is fixed for every connection (`client_capabilities()` in
-> `crates/core/src/client.rs`), and shown beside the agent's ([§9](#9-screens)).
+> **boolean config options** ([§7.6](#76-the-third-ring-session-settings)), since the fifth ring
+> **elicitation in form and URL modes** ([§7.8](#78-the-fifth-ring-elicitation)), and since schema
+> 1.11 **session compaction and notices**, which the timeline draws. By default that is all: no
+> `fs`, no `terminal`. The default claim is `client_capabilities()` in `crates/core/src/client.rs`;
+> what a connection actually sent — including the services and version a launch chose (F3, F13) —
+> is `Inspector::client_claim`, and it is shown beside the agent's ([§9](#9-screens)).
 >
 > The rule the two halves share is unchanged: **the inspector claims exactly what it will honour.**
-> A service it cannot perform is not claimed; a data shape it will render is. Neither half is a
-> guess about what an agent would like to hear.
+> A service it cannot perform is claimed only where the reader has undertaken to answer it, by
+> hand or by rules; a data shape it will render is. Neither half is a guess about what an agent
+> would like to hear.
 
 ### 7.4 The coverage yardstick
 
@@ -504,6 +521,23 @@ methods: thirteen agent methods, eleven client methods and `$/cancel_request`.
   wire expectations include its default `false`. The elicitation tests are unchanged. Testy built
   from rust-sdk [`v2.1.0` (`726c503`)](https://github.com/agentclientprotocol/rust-sdk/tree/726c503),
   itself using schema 1.7.0, runs both the `callbacks` and `full` scenarios to `end_turn`.
+
+**Schema 1.11 audit, 2026-10-10** (release plan C4). The workspace depends on
+`agent-client-protocol-schema` 1.11 with default features. The stable method list is unchanged —
+the same 25 methods, compared off the crate's method-name tables — so under
+[ADR 0008](adr/0008-the-stable-method-list-is-the-gate-not-the-feature-name.md)'s gate nothing new
+becomes a typed method and no `unstable_*` feature is enabled. What changed is inside existing
+methods:
+
+- **The tool-call `name`** (1.8) is stable on `tool_call` and `tool_call_update`; the timeline keeps
+  it through patches and the card shows it.
+- **`notice`, `compaction_update` and `compaction_summary_chunk`** (1.11) are stable
+  `session/update` variants, which makes fourteen ([§7.2](#72-serviced-agent--client)). Each is
+  gated on a new client capability, `session.notices` and `session.compaction`; the timeline
+  renders both — a compaction merge-keyed on its id, with patch semantics for its summary, error and
+  `_meta`, and chunks appended — so both are claimed, and the capability tripwire names them.
+- **Plan operations and subagents** stay behind `unstable_*` features and raw-first
+  ([§8](#8-unknown-traffic-the-raw-first-rule)).
 
 ### 7.5 The second ring: the session lifecycle
 
@@ -1479,10 +1513,12 @@ primitives to browse (host #49 §5).
   **Transport** for the connection's own remarks. The compact coloured mark repeats tone only and
   remains decorative; Copy still takes the evidence text rather than its presentation label.
 - **Timeline** (center screen) — prompt composer; the streamed `session/update` sequence
-  (message/thought chunks, tool-call cards with status updates, plans, the rest of the eleven —
-  [§7.2](#72-serviced-agent--client) on why eleven); inline blocking-request panels that block
-  where the turn blocks — a permission request, or an elicitation and the form or URL it asks with
-  ([§7.8](#78-the-fifth-ring-elicitation)); turn state and `stopReason` rendered from the stream.
+  (message/thought chunks, tool-call cards with status updates, plans, notices, compactions, the
+  rest of the fourteen — [§7.2](#72-serviced-agent--client) on the count); inline blocking-request
+  panels that block where the turn blocks — a permission request, an elicitation and the form or
+  URL it asks with ([§7.8](#78-the-fifth-ring-elicitation)), or a client-service request and its
+  response editor ([`client-services.md`](client-services.md)); a permission policy for the open
+  session in the header; turn state and `stopReason` rendered from the stream.
   > **The rows are grouped by the turn they arrived in.** Every entry carries the turn it was made
   > during and the store keeps a record of each turn with what it came to, so the screen draws a
   > quiet line under a turn that is over carrying the agent's own `stopReason` — a session of six
@@ -1624,9 +1660,9 @@ primitives to browse (host #49 §5).
   > panel, and each account has a screen to itself where a row is one line, in tracks stated once
   > for the account so that the four facts align down the whole of it. The identity is the screen's
   > heading rather than a list of three rows, and the composer is drawn on the turn's view alone.
-  > **Beside now means one click and never merged.** The client's claim is fixed for every
-  > connection, so sharing the agent's screen spent half of it on a block that is the same on every
-  > launch of every agent; the two are still drawn identically, still never folded into one list of
+  > **Beside now means one click and never merged.** The client's claim is the same on every
+  > launch unless the reader chooses client services (F3), so sharing the agent's screen spent half
+  > of it on a block that rarely changes; the two are still drawn identically, still never folded into one list of
   > "capabilities", and the causal reading §7.6 wants — a boolean config option whose shape is an
   > answer to this client's claim — costs a tab rather than a glance. **And the inspector's own
   > commentary is not drawn as a pull-quote.** A hairline down the near edge marked every aside this
@@ -2373,7 +2409,7 @@ backlog.
       (`crates/core/tests/session_settings.rs`). The read-only row
       ([§7.6](#76-the-third-ring-session-settings)) is therefore a forward-compatibility arm for the
       day the schema adds a variant this client does not drive — the same shape as the `_` arm on the
-      eleven update variants ([§7.2](#72-serviced-agent--client)) — and not something a scripted
+      fourteen update variants ([§7.2](#72-serviced-agent--client)) — and not something a scripted
       agent can arm today, which is why the ring shipped two scripted fixtures and not three. The
       seam-2 component test the ring also wanted for it is not writable either, for a second reason:
       the kind is a `#[non_exhaustive]` enum in another crate with no third variant, so nothing

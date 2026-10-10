@@ -20,7 +20,7 @@
 //! turn state and a connection status, would be a second answer to a question
 //! that already has one, wrong in exactly the moments that matter.
 
-use acp_inspector_core::{PermissionRequest, PermissionState, v1};
+use acp_inspector_core::{PermissionPolicy, PermissionRequest, PermissionState, v1};
 use dioxus::prelude::*;
 
 use crate::update;
@@ -74,6 +74,11 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
                 span { class: "blocking-meta", "{request.id()}" }
 
                 {said(&state)}
+                if let Some(policy) = request.by_policy() {
+                    p { class: "detail", "data-slot": "by-policy",
+                        "Answered automatically by policy ({policy_named(policy)})."
+                    }
+                }
 
                 if request.options().is_empty() {
                     // A request with nothing to answer it with. It is a finding,
@@ -144,6 +149,7 @@ fn choice(
         PermissionState::Answered(v1::RequestPermissionOutcome::Selected(_)) => "disabled",
         PermissionState::Answered(v1::RequestPermissionOutcome::Cancelled) => "refused",
         PermissionState::Abandoned => "unavailable",
+        PermissionState::CancelledByAgent => "withdrawn",
         _ => "unrecognized",
     };
     let accessible_name = format!("{}; option {}; {label}", option.name, option.option_id);
@@ -226,11 +232,27 @@ fn said(state: &PermissionState) -> Element {
                 "Can no longer be answered: the turn ended or the agent disconnected."
             }
         },
+        // The agent took the question back with `$/cancel_request`, and was
+        // answered with the cancellation error.
+        PermissionState::CancelledByAgent => rsx! {
+            p { class: "detail detail-warn", "data-slot": "withdrawn",
+                "The agent withdrew this request."
+            }
+        },
         // Both enums are non-exhaustive, and a state this window has not been
         // taught must not be rendered as one it has.
         _ => rsx! {
             p { class: "detail", "A state this window has no rendering for." }
         },
+    }
+}
+
+/// A permission policy in the words its control uses.
+pub fn policy_named(policy: PermissionPolicy) -> &'static str {
+    match policy {
+        PermissionPolicy::Ask => "ask",
+        PermissionPolicy::AllowOnce => "allow once",
+        PermissionPolicy::RejectOnce => "reject once",
     }
 }
 
@@ -290,6 +312,21 @@ mod tests {
                 v1::PermissionOptionKind::RejectAlways,
             ),
         ]
+    }
+
+    #[test]
+    fn a_request_the_agent_withdrew_says_so() {
+        let html = shown(options(), PermissionState::CancelledByAgent);
+        assert!(html.contains("The agent withdrew this request."), "{html}");
+        assert!(html.contains(r#"data-state="withdrawn""#), "{html}");
+        assert!(!html.contains("no rendering for"), "{html}");
+    }
+
+    #[test]
+    fn every_policy_has_a_name_for_the_card() {
+        assert_eq!(policy_named(PermissionPolicy::AllowOnce), "allow once");
+        assert_eq!(policy_named(PermissionPolicy::RejectOnce), "reject once");
+        assert_eq!(policy_named(PermissionPolicy::Ask), "ask");
     }
 
     #[test]

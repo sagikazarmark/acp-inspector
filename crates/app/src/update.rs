@@ -2,12 +2,12 @@
 //! §9): a rendering for every stable v1 variant, and a way of saying so for the
 //! ones there is no rendering for.
 //!
-//! **Eleven variants, not the spec's twelve.** The spec counts the stable v1
-//! `sessionUpdate` variants from the schema metadata (§7.4);
-//! `agent-client-protocol-schema` 1.6 exposes eleven outside its `unstable_*`
-//! features, and the unstable ones are deliberately not decoded — they are
-//! unknown traffic, which is displayed rather than understood (§8).
-//! `crates/core/tests/typed.rs` counts the same eleven against a real agent.
+//! **Fourteen variants.** `agent-client-protocol-schema` 1.11 exposes fourteen
+//! stable `sessionUpdate` variants outside its `unstable_*` features: the
+//! eleven of 1.7, plus `notice`, `compaction_update` and
+//! `compaction_summary_chunk`. The unstable ones are deliberately not decoded —
+//! they are unknown traffic, which is displayed rather than understood (§8).
+//! `crates/core/tests/typed.rs` names the same fourteen.
 //!
 //! Every `match` here ends in a `_` arm, and none of them is a fallthrough for
 //! tidiness: the schema's enums are `#[non_exhaustive]`, so the arm is what
@@ -108,8 +108,89 @@ pub fn render(update: &v1::SessionUpdate) -> Option<(&'static str, &'static str,
         v1::SessionUpdate::ConfigOptionUpdate(update) => ("config", "note", config(update)),
         v1::SessionUpdate::SessionInfoUpdate(update) => ("session", "note", info(update)),
         v1::SessionUpdate::UsageUpdate(update) => ("usage", "note", usage(update)),
+        v1::SessionUpdate::Notice(notice) => ("notice", "note", noticed(notice)),
+        // Core folds a compaction's summary chunks into its update, so a
+        // compaction is one card however many frames it took.
+        v1::SessionUpdate::CompactionUpdate(update) => ("compaction", "note", compaction(update)),
+        v1::SessionUpdate::CompactionSummaryChunk(chunk) => (
+            "compaction",
+            "note",
+            rsx! {
+                div { class: "evidence", "data-slot": "compaction",
+                    div { class: "evidence-head",
+                        strong { class: "evidence-title", "Context compaction" }
+                        code { class: "evidence-kind", "{chunk.compaction_id}" }
+                    }
+                    div { class: "said", {content(&chunk.content)} }
+                }
+            },
+        ),
         _ => return None,
     })
+}
+
+/// Information the agent showed the reader outside the session's history:
+/// its severity, title and description, as sent.
+fn noticed(notice: &v1::Notice) -> Element {
+    let (severity, tone) = match &notice.severity {
+        v1::NoticeSeverity::Info => ("info".to_owned(), ""),
+        v1::NoticeSeverity::Warning => ("warning".to_owned(), "warn"),
+        v1::NoticeSeverity::Error => ("error".to_owned(), "bad"),
+        v1::NoticeSeverity::Other(other) => (other.clone(), ""),
+        _ => ("a severity this window has no name for".to_owned(), ""),
+    };
+    rsx! {
+        div { class: "evidence", "data-slot": "notice",
+            div { class: "evidence-head",
+                strong { class: "evidence-title", "{notice.title}" }
+                span { class: "evidence-state {tone}", "{severity}" }
+            }
+            if let Some(description) = &notice.description {
+                p { class: "evidence-note", "{description}" }
+            }
+        }
+    }
+}
+
+/// A context compaction: where it stands, its summary, and its error, with the
+/// three patch states (absent, cleared, set) kept apart.
+fn compaction(update: &v1::CompactionUpdate) -> Element {
+    let (status, tone) = match &update.status {
+        v1::CompactionStatus::InProgress => ("in_progress".to_owned(), "working"),
+        v1::CompactionStatus::Completed => ("completed".to_owned(), "done"),
+        v1::CompactionStatus::Failed => ("failed".to_owned(), "bad"),
+        v1::CompactionStatus::Cancelled => ("cancelled".to_owned(), "waiting"),
+        v1::CompactionStatus::Other(other) => (other.clone(), "waiting"),
+        _ => ("unrecognized status".to_owned(), "waiting"),
+    };
+    let summary: Option<Option<Vec<v1::ContentBlock>>> = update.summary.clone().into();
+    let error: Option<Option<String>> = update.error.clone().into();
+
+    rsx! {
+        div { class: "evidence", "data-slot": "compaction",
+            div { class: "evidence-head",
+                span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
+                strong { class: "evidence-title", "Context compaction" }
+                code { class: "evidence-kind", title: "compactionId", "{update.compaction_id}" }
+                span { class: "evidence-state {tone}", "{status}" }
+            }
+            {match summary {
+                Some(Some(blocks)) if !blocks.is_empty() => rsx! {
+                    div { class: "said", "data-slot": "compaction-summary",
+                        for (position, block) in blocks.iter().enumerate() {
+                            span { key: "{position}", {content(block)} }
+                        }
+                    }
+                },
+                Some(_) => rsx! { p { class: "evidence-note", "Summary cleared." } },
+                None => rsx! {},
+            }}
+            {match error {
+                Some(Some(error)) => rsx! { p { class: "evidence-note", "data-slot": "compaction-error", "Error: {error}" } },
+                _ => rsx! {},
+            }}
+        }
+    }
 }
 
 /// One content block, wherever one turns up: in a message, in a thought, in a
@@ -190,6 +271,7 @@ fn tool_call(call: &v1::ToolCall) -> Element {
             div { class: "evidence-head",
                 span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
                 strong { class: "evidence-title", "{call.title}" }
+                {tool_name(call.name.as_deref())}
                 span { class: "evidence-kind", "{kind(call.kind)}" }
                 span { class: "evidence-state {tone}", "{status}" }
             }
@@ -228,6 +310,7 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
                         None => rsx! { code { "{update.tool_call_id}" } },
                     }}
                 }
+                {tool_name(fields.name.as_deref())}
                 if let Some(doing) = fields.kind {
                     span { class: "evidence-kind", "{kind(doing)}" }
                 }
@@ -250,6 +333,15 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
             }
             {raw(&update.tool_call_id, "input", fields.raw_input.as_ref())}
             {raw(&update.tool_call_id, "output", fields.raw_output.as_ref())}
+        }
+    }
+}
+
+/// The tool's programmatic name, where the agent gave one (schema 1.8).
+fn tool_name(name: Option<&str>) -> Element {
+    rsx! {
+        if let Some(name) = name {
+            code { class: "evidence-kind mono", "data-slot": "tool-name", title: "name", "{name}" }
         }
     }
 }
@@ -671,6 +763,15 @@ mod tests {
             v1::SessionUpdate::ConfigOptionUpdate(v1::ConfigOptionUpdate::new(vec![])),
             v1::SessionUpdate::SessionInfoUpdate(v1::SessionInfoUpdate::new()),
             v1::SessionUpdate::UsageUpdate(v1::UsageUpdate::new(120, 200_000)),
+            v1::SessionUpdate::Notice(v1::Notice::new(v1::NoticeSeverity::Info, "Heads up")),
+            v1::SessionUpdate::CompactionUpdate(v1::CompactionUpdate::new(
+                "k1",
+                v1::CompactionStatus::InProgress,
+            )),
+            v1::SessionUpdate::CompactionSummaryChunk(v1::CompactionSummaryChunk::new(
+                "k1",
+                v1::ContentBlock::from("summary"),
+            )),
         ]
     }
 
@@ -683,8 +784,8 @@ mod tests {
         let variants = every_variant();
         assert_eq!(
             variants.len(),
-            11,
-            "the eleven stable variants `agent-client-protocol-schema` 1.6 exposes"
+            14,
+            "the fourteen stable variants `agent-client-protocol-schema` 1.11 exposes"
         );
 
         for update in variants {
@@ -693,6 +794,56 @@ mod tests {
                 "{update:?} renders as itself rather than as unknown traffic"
             );
         }
+    }
+
+    #[test]
+    fn a_tool_calls_name_is_on_its_card() {
+        let call = v1::ToolCall::new("call-1", "Reading a file").name("read_file");
+        let (_, _, body) = render(&v1::SessionUpdate::ToolCall(call)).expect("it renders");
+        let html = dioxus_ssr::render_element(body);
+        assert!(
+            html.contains(r#"data-slot="tool-name""#) && html.contains(">read_file<"),
+            "{html}"
+        );
+
+        let unnamed = v1::ToolCall::new("call-1", "Reading a file");
+        let (_, _, body) = render(&v1::SessionUpdate::ToolCall(unnamed)).expect("it renders");
+        assert!(!dioxus_ssr::render_element(body).contains("tool-name"));
+
+        let update = v1::ToolCallUpdate::new(
+            "call-1",
+            v1::ToolCallUpdateFields::new().name("write_file".to_owned()),
+        );
+        let html = dioxus_ssr::render_element(tool_call_update(&update));
+        assert!(html.contains(">write_file<"), "{html}");
+    }
+
+    #[test]
+    fn a_notice_and_a_compaction_read_as_themselves() {
+        let notice = v1::Notice::new(v1::NoticeSeverity::Warning, "Rate limited")
+            .description("Retrying in 30 seconds".to_owned());
+        let (label, _, body) = render(&v1::SessionUpdate::Notice(notice)).expect("it renders");
+        assert_eq!(label, "notice");
+        let html = dioxus_ssr::render_element(body);
+        assert!(html.contains("Rate limited") && html.contains("Retrying in 30 seconds"));
+        assert!(html.contains(">warning<"), "{html}");
+
+        let compaction = v1::CompactionUpdate::new("k1", v1::CompactionStatus::Completed)
+            .summary(vec![v1::ContentBlock::from("kept the plan")])
+            .error(acp_inspector_core::MaybeUndefined::Null);
+        let (label, _, body) =
+            render(&v1::SessionUpdate::CompactionUpdate(compaction)).expect("it renders");
+        assert_eq!(label, "compaction");
+        let html = dioxus_ssr::render_element(body);
+        assert!(
+            html.contains("Context compaction") && html.contains(">completed<"),
+            "{html}"
+        );
+        assert!(html.contains("kept the plan"), "{html}");
+        assert!(
+            !html.contains("compaction-error"),
+            "a cleared error is no error: {html}"
+        );
     }
 
     #[test]

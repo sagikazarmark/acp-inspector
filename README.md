@@ -71,11 +71,14 @@ The image also holds `THIRD_PARTY_LICENSES.html`, the notices for every dependen
 
 ## Known limitations
 
-- **The inspector does not mediate files or terminals.** It advertises no `fs` or `terminal`
-  capability and answers those requests method-not-found, so a real agent reads and writes files
-  and runs commands **itself, directly, in its working directory, with your privileges**. Nothing
-  is sandboxed or confirmed except what the agent chooses to ask permission for. Point it at a
-  directory you are prepared to have changed.
+- **The inspector does not mediate files or terminals.** By default it advertises no `fs` or
+  `terminal` capability and answers those requests method-not-found, so a real agent reads and
+  writes files and runs commands **itself, directly, in its working directory, with your
+  privileges**. Nothing is sandboxed or confirmed except what the agent chooses to ask permission
+  for. Point it at a directory you are prepared to have changed. A launch can claim these services
+  so you can [answer each call by hand or from a rules file](docs/client-services.md), but the
+  inspector never performs them: it does not read or write your files or run commands for the
+  agent.
 - **Disconnect ends the agent's process group, not every descendant.** A process the agent starts
   that leaves the group (a daemon, a `setsid` child) keeps running after disconnect.
 - **Remembered environment values are plaintext, when you ask for them.** The spawn form's recent
@@ -84,7 +87,7 @@ The image also holds `THIRD_PARTY_LICENSES.html`, the notices for every dependen
   the platform's state directory (`0600` on Unix). Lists written by earlier versions kept values
   for every launch and still do until you press **Forget saved values** on the row. See
   [where it is kept](#remembered-commands).
-- **ACP v1 as of `agent-client-protocol-schema` 1.7.** Messages added to the stable schema later
+- **ACP v1 as of `agent-client-protocol-schema` 1.11.** Messages added to the stable schema later
   are shown raw, as unrecognized traffic, rather than decoded.
 - **One agent and one live session at a time**, over stdio only.
 
@@ -112,7 +115,9 @@ The typed layer decorates the trace; it never replaces it
 — an extension method, an update variant v1 has no name for, a client service the inspector
 declined by advertising no capability — becomes a first-class unrecognized entry carrying the
 frame verbatim, and an agent that calls a declined service is answered method-not-found with the
-call recorded as evidence.
+call recorded as evidence. The launch dialog's **Client services** section can instead claim file
+reads, file writes and terminals, and answer those calls — or any other unhandled request — by
+hand or from a rules file ([`docs/client-services.md`](docs/client-services.md)).
 
 The window is a rail and two screens ([ADR 0009](docs/adr/0009-the-window-is-the-drawing.md)):
 the connection on the left with the live session's settings and both parties' capabilities behind
@@ -414,11 +419,12 @@ each of them, the panel appears inline in the timeline where it stopped, and the
 you answer it. A form is built from the schema Testy sent — ten fields, defaults filled in, and a
 Raw tab holding the exact object your answer will send; a URL is shown in full with its host, and
 opens in your own browser when you click it and not before. The `fs/` and `terminal/` calls between
-them are **declined by capability** — this client mediates no filesystem and embeds no terminal
-([§7.3](docs/architecture.md#73-decline-by-capability)) — so each is answered method-not-found and
-recorded as a first-class unrecognized entry, which is
+them are **declined by capability** by default — this client mediates no filesystem and embeds no
+terminal ([§7.3](docs/architecture.md#73-decline-by-capability)) — so each is answered
+method-not-found and recorded as a first-class unrecognized entry, which is
 [§8](docs/architecture.md#8-unknown-traffic-the-raw-first-rule) doing its job rather than a
-failure. Answer them and the scenario runs to `end_turn`
+failure. Claim them under **Client services** at launch and each becomes a card you answer
+instead ([`docs/client-services.md`](docs/client-services.md)). Answer them and the scenario runs to `end_turn`
 ([§7.8](docs/architecture.md#78-the-fifth-ring-elicitation)); leave one unanswered and the turn
 stays stopped, and the line above the composer says the agent is waiting on you.
 

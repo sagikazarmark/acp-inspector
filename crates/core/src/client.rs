@@ -25,13 +25,16 @@
 //! published, which is an advertisement of a different shape and not a
 //! capability at all. What the inspector does not offer, it declines by
 //! advertising no capabilities (§7.3) — and answers method-not-found to,
-//! loudly, when an agent calls it anyway.
+//! loudly, when an agent calls it anyway. The filesystem and terminal services
+//! a launch claims, and any other request the reader opts in to, are answered
+//! by the reader or by a rules file (F3, `docs/client-services.md`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol_schema::{ProtocolVersion, v1};
+use agent_client_protocol_schema::v1;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -44,17 +47,20 @@ use crate::driven::{AgentCapability, DrivenRecord};
 use crate::elicitation::{ElicitationRequest, Outstanding};
 use crate::frame::{Frame, Omission};
 use crate::listing::{Cursor, SessionListing};
-use crate::permission::PermissionRequest;
+use crate::permission::{PermissionPolicy, PermissionRequest};
 use crate::restore::Restore;
 use crate::roots::{self, Roots};
 use crate::rpc::{Incoming, PendingCall, Rpc, answer_id, classify, mistyped, ours};
+use crate::script::{Scripted, Unmatched};
+use crate::service::{AnsweredBy, ServiceReply, ServiceRequest};
+use crate::services::{ClientClaim, ClientServices};
 use crate::session_settings::SessionSettings;
 use crate::store::{Field, locked};
 use crate::timeline::{EntryId, Recorded, Timeline, Unrecognized};
 use crate::turn::{TurnOutcome, TurnState};
 
-/// How many permission and elicitation requests may wait on the reader at
-/// once. Past it a request is refused with an error and recorded, so an agent
+/// How many blocking requests (permission, elicitation and client service)
+/// may wait on the reader at once. Past it a request is refused with an error and recorded, so an agent
 /// cannot pin unbounded entries in the timeline.
 pub(crate) const PENDING_CAPACITY: usize = 100;
 
@@ -75,8 +81,7 @@ pub fn client_info() -> v1::Implementation {
     v1::Implementation::new(CLIENT_NAME, env!("CARGO_PKG_VERSION")).title(CLIENT_TITLE)
 }
 
-/// What this client claims about *itself*, on every connection (§7.3, §7.6,
-/// §7.8).
+/// What this client claims about *itself* by default (§7.3, §7.6, §7.8).
 ///
 /// **The boolean config option is a data shape rather than a service.** It is
 /// gated by a client capability, so an agent that never hears this must not send
@@ -93,35 +98,22 @@ pub fn client_info() -> v1::Implementation {
 /// is what will be honoured, so a mode outside these two is refused on the wire
 /// rather than answered on the reader's behalf.
 ///
-/// **The MVP's empty client capabilities are narrowed here, not abandoned.**
-/// That stance was about *services* the inspector would have to perform on the
-/// agent's behalf and genuinely cannot: `fs/*` has no filesystem mediation to
-/// offer and `terminal/*` no terminal to embed. Both are still declined in this
-/// very value, and a call that arrives anyway is still recorded and still
-/// answered method-not-found (§8). The rule every half shares is unchanged:
-/// **this client claims exactly what it will honour.**
+/// **Session compaction and notices are data shapes too** (schema 1.11): the
+/// timeline draws both, merging a compaction's updates and summary chunks into
+/// one entry, so they are claimed.
 ///
-/// **A function of nothing, which is the whole of "not configurable"** (§7.6).
-/// There is no argument to vary it by, no store behind it and no spawn-form
-/// switch: watching an agent degrade its offer is real behaviour worth seeing,
-/// and the first configuration knob on this tool is a decision of its own that
-/// this ring does not smuggle in. It is public because a screen has to state
-/// what was claimed ([§9](../../../docs/architecture.md)) and reading it off the same
-/// value the wire gets is what keeps the screen from making a claim of its own.
+/// **`fs/*` and `terminal/*` are declined by default, and a launch may claim
+/// them** (F3, [`ClientServices`]): a claimed call is answered by the reader or
+/// by a rules file, never performed — there is still no filesystem mediation
+/// and no terminal (F16). A call that arrives unclaimed is recorded and answered
+/// method-not-found (§8). The rule is unchanged: **this client claims exactly
+/// what it will honour.**
+///
+/// This is the default claim; what a connection actually sent is
+/// [`Inspector::client_claim`](crate::Inspector::client_claim).
 #[must_use]
 pub fn client_capabilities() -> v1::ClientCapabilities {
-    v1::ClientCapabilities::new()
-        .session(
-            v1::ClientSessionCapabilities::new().config_options(
-                v1::SessionConfigOptionsCapabilities::new()
-                    .boolean(v1::BooleanConfigOptionCapabilities::new()),
-            ),
-        )
-        .elicitation(
-            v1::ElicitationCapabilities::new()
-                .form(v1::ElicitationFormCapabilities::new())
-                .url(v1::ElicitationUrlCapabilities::new()),
-        )
+    ClientServices::default().capabilities()
 }
 
 /// Whether this client advertised the mode an elicitation asks in (§7.8).
@@ -209,6 +201,19 @@ pub(crate) struct Stores {
     /// `elicitation/complete` is matched against, and what decides whether an
     /// `elicitationId` was reused while still outstanding.
     pub(crate) outstanding: Outstanding,
+    /// The client-service requests the agent is waiting on (F3): the third
+    /// list, for the same three questions.
+    pub(crate) services: Pending<ServiceRequest>,
+    /// What the next connection claims and how it answers services: the
+    /// launch's choice, read once by each new client.
+    pub(crate) launch: Arc<Mutex<ClientServices>>,
+    /// What this connection's `initialize` claimed, once it went out.
+    pub(crate) claim: Field<Option<ClientClaim>>,
+    /// How permission requests are answered in the open session (F11).
+    pub(crate) policy: Field<PermissionPolicy>,
+    /// Which connection is the newest, so a late teardown of an older one
+    /// leaves the newer one's policy alone.
+    pub(crate) generation: Arc<AtomicU64>,
 }
 
 /// One connection's client: the conversation, and what it writes into.
@@ -311,6 +316,11 @@ pub(crate) struct Client {
     /// answer is read, so updates that follow it are attributed before the
     /// caller has woken to make it live.
     opened_last: Arc<Mutex<Option<v1::SessionId>>>,
+    /// What this connection claims and how it answers client services, as the
+    /// launch chose them when it connected.
+    services: Arc<ClientServices>,
+    /// This connection's place in [`Stores::generation`].
+    generation: u64,
 }
 
 /// A `session/load` on the wire, and what has crossed since it went out.
@@ -420,6 +430,12 @@ enum Setup {
 
 impl Client {
     pub(crate) fn new(outgoing: FrameSink, stores: Stores) -> Self {
+        let services = Arc::new(locked(&stores.launch).clone());
+        let generation = stores.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // A new connection has claimed nothing yet, and answers every
+        // permission request by asking.
+        stores.claim.set(None);
+        stores.policy.set(PermissionPolicy::Ask);
         Self {
             rpc: Rpc::new(outgoing),
             stores,
@@ -432,6 +448,8 @@ impl Client {
             driving: Arc::default(),
             conversed: Arc::default(),
             opened_last: Arc::default(),
+            services,
+            generation,
         }
     }
 
@@ -461,22 +479,30 @@ impl Client {
             .map(|_| ())
     }
 
-    /// `initialize`: protocol version 1, honest client capabilities, and who we
+    /// `initialize`: a protocol version, honest client capabilities, and who we
     /// are (§7.1).
     ///
-    /// **The capabilities are what they are because they are true.** The
-    /// inspector mediates no filesystem and embeds no terminal, so it
-    /// advertises neither — which is the point of driving an agent with this
-    /// tool at all: the agent's behaviour gets tested against what a minimal
-    /// conformant client actually offers, and everything it calls anyway is a
-    /// finding (§7.3). What it *does* claim, it honours: boolean config
-    /// options, which it renders, and both elicitation modes, which it services
-    /// (§7.8). [`client_capabilities`] is those claims and the argument for
-    /// each of them.
+    /// **The capabilities are what they are because they are true.** By
+    /// default the inspector claims no filesystem and no terminal — the agent's
+    /// behaviour gets tested against a minimal conformant client, and
+    /// everything it calls anyway is a finding (§7.3). What it *does* claim, it
+    /// honours: boolean config options, compaction and notices, which it
+    /// renders, and both elicitation modes, which it services (§7.8).
+    /// [`client_capabilities`] is that default claim and the argument for each
+    /// part.
+    ///
+    /// The capabilities and the version are the launch's ([`ClientServices`]):
+    /// version 1 and no services unless the reader chose otherwise. What went
+    /// out is kept ([`Stores::claim`]) for the display to read.
     pub(crate) async fn initialize(&self) -> Result<v1::InitializeResponse, CallError> {
-        let request = v1::InitializeRequest::new(ProtocolVersion::V1)
-            .client_capabilities(client_capabilities())
+        let claim = ClientClaim {
+            capabilities: self.services.capabilities(),
+            protocol_version: self.services.protocol(),
+        };
+        let request = v1::InitializeRequest::new(claim.protocol_version)
+            .client_capabilities(claim.capabilities.clone())
             .client_info(client_info());
+        self.stores.claim.set(Some(claim));
 
         let response: v1::InitializeResponse = self
             .call(v1::AGENT_METHOD_NAMES.initialize, &request)
@@ -878,6 +904,7 @@ impl Client {
         // whose screen is gone cannot be paid.
         self.answer_cancelled(Debt::Everything).await;
         self.forget();
+        self.stores.policy.set(PermissionPolicy::Ask);
         self.stores.timeline.discard();
         // The settings go the way the view does, and for the same reason: they
         // are the *live session's* account of itself (§7.6), and a surface still
@@ -945,6 +972,8 @@ impl Client {
         // for [`ended`](Self::ended)'s reason — the view they are answered from
         // goes with the session.
         self.answer_cancelled(Debt::Everything).await;
+        // The policy was the session's being left.
+        self.stores.policy.set(PermissionPolicy::Ask);
 
         // And the turn is over here, whatever the agent does with it next. Not
         // a stop reason of this client's invention — there is no turn on the
@@ -976,6 +1005,18 @@ impl Client {
         };
         for request in elicitations {
             let _ = request.cancel().await;
+        }
+        // Client-service requests, like elicitations, belong to the turn when
+        // they name a session.
+        let services = match debt {
+            Debt::Everything => self.stores.services.take(),
+            Debt::TheTurns => self
+                .stores
+                .services
+                .take_unless(|request| request.session_id().is_none()),
+        };
+        for request in services {
+            let _ = request.cancelled().await;
         }
     }
 
@@ -1616,6 +1657,18 @@ impl Client {
                             request,
                             Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
                         );
+                        // A session's policy answers before anybody is asked
+                        // (F11), and only with a `*_once` option: the entry is
+                        // made first so the answer lands on a card that says
+                        // the policy chose it.
+                        let policy = self.stores.policy.get();
+                        if policy.pick(request.options()).is_some() {
+                            self.stores
+                                .timeline
+                                .blocked(request.clone(), recorded(frame));
+                            request.answer_by_policy(policy).await;
+                            return;
+                        }
                         // The list before the timeline: a screen woken by the
                         // timeline moving reads a pending list that already
                         // accounts for what woke it.
@@ -1725,14 +1778,12 @@ impl Client {
                 }
             }
 
-            Incoming::Request { id, method, .. } => {
-                self.stores
-                    .timeline
-                    .unrecognized(Unrecognized::NotServiced { method }, recorded(frame));
-                let _ = self
-                    .rpc
-                    .respond(&id, Err(v1::Error::method_not_found()))
-                    .await;
+            // Everything else the agent asks of this client: answered by a
+            // rules file where one matches, by the reader where the service
+            // was claimed or the reader opted in, and method-not-found
+            // otherwise (F3, `docs/client-services.md`).
+            Incoming::Request { id, method, params } => {
+                self.service(id, method, params, recorded(frame)).await;
             }
 
             // Whether the id could be one of ours is the envelope's question,
@@ -1840,7 +1891,13 @@ impl Client {
         // (§7.8), which is the same sentence the outstanding ids answer to.
         self.stores.permissions.abandon();
         self.stores.elicitations.abandon();
+        self.stores.services.abandon();
         self.stores.outstanding.clear();
+        // The policy ends with the connection, unless a newer connection has
+        // already started and owns it.
+        if self.stores.generation.load(Ordering::SeqCst) == self.generation {
+            self.stores.policy.set(PermissionPolicy::Ask);
+        }
         self.end_turn(TurnState::Failed(CallError::Disconnected));
     }
 
@@ -1915,6 +1972,9 @@ impl Client {
         self.stores.permissions.abandon();
         self.stores
             .elicitations
+            .abandon_unless(|request| request.session_id().is_none());
+        self.stores
+            .services
             .abandon_unless(|request| request.session_id().is_none());
     }
 
@@ -2412,9 +2472,80 @@ impl Client {
         !known.is_empty() && !known.contains(session)
     }
 
+    /// A request for a client service, or for anything else this client does
+    /// not service itself (F3).
+    ///
+    /// **A rule first**: the first rule in the launch's rules file that
+    /// matches answers it, and the entry says which. **Then the reader**, where
+    /// the service was claimed or the reader asked to answer unserviced
+    /// requests by hand — unless the rules file says unmatched requests are
+    /// method-not-found. **Otherwise method-not-found**, which is what this
+    /// client always said to a service it never claimed (§7.3).
+    async fn service(&self, id: Value, method: String, params: Value, frame: Recorded) {
+        let claimed = self.services.claims(&method);
+        let script = self.services.script.as_ref();
+        if let Some((rule, matched)) = script.and_then(|script| script.find(&method, &params)) {
+            let request = ServiceRequest::new(
+                RequestId::new(id),
+                method,
+                params,
+                claimed,
+                Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
+            );
+            self.stores.timeline.serviced(request.clone(), frame);
+            let reply = match &matched.answer {
+                Scripted::Result(result) => ServiceReply::Result(result.clone()),
+                Scripted::Error(error) => ServiceReply::Error(error.clone()),
+            };
+            let _ = request.answer(reply, AnsweredBy::Script { rule }).await;
+            return;
+        }
+        let refused_by_script =
+            script.is_some_and(|script| script.unmatched() == Unmatched::MethodNotFound);
+        let by_hand = (claimed || self.services.answer_unserviced) && !refused_by_script;
+        if !by_hand {
+            self.stores
+                .timeline
+                .unrecognized(Unrecognized::NotServiced { method }, frame);
+            let _ = self
+                .rpc
+                .respond(&id, Err(v1::Error::method_not_found()))
+                .await;
+            return;
+        }
+        // Past the cap, refused rather than pinned, like the other two.
+        if self.saturated() {
+            self.stores.timeline.unrecognized(
+                Unrecognized::OverCapacity {
+                    method,
+                    limit: PENDING_CAPACITY,
+                },
+                frame,
+            );
+            let refusal = v1::Error::new(
+                i32::from(v1::ErrorCode::InternalError),
+                format!("the client already has {PENDING_CAPACITY} unanswered requests"),
+            );
+            let _ = self.rpc.respond(&id, Err(refusal)).await;
+            return;
+        }
+        let request = ServiceRequest::new(
+            RequestId::new(id),
+            method,
+            params,
+            claimed,
+            Resolver::new(self.rpc.clone(), self.stores.timeline.ticker()),
+        );
+        // The list before the timeline, for the permission request's reason.
+        self.stores.services.arrived(request.clone());
+        self.stores.timeline.serviced(request, frame);
+    }
+
     /// Whether the reader already has as many blocking requests as it holds.
     fn saturated(&self) -> bool {
-        self.stores.permissions.waiting().len() + self.stores.elicitations.waiting().len()
+        self.stores.permissions.waiting().len()
+            + self.stores.elicitations.waiting().len()
+            + self.stores.services.waiting().len()
             >= PENDING_CAPACITY
     }
 
@@ -2448,10 +2579,17 @@ impl Client {
             .waiting()
             .into_iter()
             .find(|request| request.id() == &id);
-        let entry = match (&permission, &elicitation) {
-            (Some(_), _) => EntryId::Permission(id),
-            (None, Some(_)) => EntryId::Elicitation(id),
-            (None, None) => {
+        let service = self
+            .stores
+            .services
+            .waiting()
+            .into_iter()
+            .find(|request| request.id() == &id);
+        let entry = match (&permission, &elicitation, &service) {
+            (Some(_), _, _) => EntryId::Permission(id),
+            (None, Some(_), _) => EntryId::Elicitation(id),
+            (None, None, Some(_)) => EntryId::Service(id),
+            (None, None, None) => {
                 return self
                     .stores
                     .timeline
@@ -2466,6 +2604,8 @@ impl Client {
         if let Some(request) = permission {
             let _ = request.withdrawn().await;
         } else if let Some(request) = elicitation {
+            let _ = request.withdrawn().await;
+        } else if let Some(request) = service {
             let _ = request.withdrawn().await;
         }
     }

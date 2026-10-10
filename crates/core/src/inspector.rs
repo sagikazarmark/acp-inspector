@@ -1098,6 +1098,57 @@ impl Inspector {
         self.0.stores.elicitations.waiting()
     }
 
+    /// The client-service requests the agent is still waiting on (F3): the
+    /// third half of "the agent is waiting on you".
+    ///
+    /// Answering one is [`ServiceRequest::respond`] or
+    /// [`ServiceRequest::refuse`].
+    ///
+    /// [`ServiceRequest::respond`]: crate::ServiceRequest::respond
+    /// [`ServiceRequest::refuse`]: crate::ServiceRequest::refuse
+    pub fn pending_services(&self) -> Vec<crate::ServiceRequest> {
+        self.0.stores.services.waiting()
+    }
+
+    /// Chooses what the *next* connection claims in `initialize` and how it
+    /// answers client services (F3, F13). The live connection keeps what it
+    /// was launched with; kept across disconnect and reconnect, like the MCP
+    /// draft.
+    pub fn set_client_services(&self, services: crate::ClientServices) {
+        *crate::store::locked(&self.0.stores.launch) = services;
+    }
+
+    /// What the next connection will claim and how it will answer.
+    pub fn client_services(&self) -> crate::ClientServices {
+        crate::store::locked(&self.0.stores.launch).clone()
+    }
+
+    /// What this connection's `initialize` claimed, once it has gone out.
+    pub fn client_claim(&self) -> Option<crate::ClientClaim> {
+        self.0.stores.claim.get()
+    }
+
+    pub fn client_claim_changes(&self) -> Changes<Option<crate::ClientClaim>> {
+        self.0.stores.claim.changes()
+    }
+
+    /// How `session/request_permission` is answered in the open session
+    /// (F11).
+    pub fn permission_policy(&self) -> crate::PermissionPolicy {
+        self.0.stores.policy.get()
+    }
+
+    /// Sets how permission requests that arrive from now on are answered. Goes
+    /// back to [`Ask`](crate::PermissionPolicy::Ask) when the session changes
+    /// or the agent disconnects.
+    pub fn set_permission_policy(&self, policy: crate::PermissionPolicy) {
+        self.0.stores.policy.set(policy);
+    }
+
+    pub fn permission_policy_changes(&self) -> Changes<crate::PermissionPolicy> {
+        self.0.stores.policy.changes()
+    }
+
     /// Where the turn stands — a field the stream drives, never a bracket
     /// around the prompt call (§11 seam 2).
     pub fn turn(&self) -> TurnState {

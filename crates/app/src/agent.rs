@@ -52,9 +52,9 @@
 //! markup, so neither is the other's footnote, and they are kept apart rather
 //! than merged into a single list of "capabilities": who claimed a thing is the
 //! point of showing it. This client's own block does not wait for an agent —
-//! the claim is fixed for every connection and rides the `initialize` *request*
-//! ([`client_capabilities`](acp_inspector_core::client_capabilities)), so it is
-//! knowable before there is an agent and unchanged by anything one answers.
+//! the claim is chosen at launch and rides the `initialize` *request*
+//! ([`ClientClaim`](acp_inspector_core::ClientClaim)), so it is knowable before
+//! there is an agent and unchanged by anything one answers.
 //!
 //! **Authentication is display-only** (§1.1). The panel shows the advertised
 //! methods, sends `authenticate` with the one the user picks, and renders
@@ -194,9 +194,10 @@ pub struct Claims {
     pub on_list: EventHandler<Option<Cursor>>,
     /// The `initialize` result, or `None` until an agent has answered one.
     pub agent: Option<v1::InitializeResponse>,
-    /// What this client claimed about itself, and who it said it was — core's
-    /// own values, so the screen and the wire cannot say different things.
-    pub client: v1::ClientCapabilities,
+    /// What this client claimed about itself and the protocol version it asked
+    /// for, and who it said it was — core's own values, so the screen and the
+    /// wire cannot say different things.
+    pub client: acp_inspector_core::ClientClaim,
     pub client_info: v1::Implementation,
     /// What became of driving each advertisement on this connection (§7.7).
     pub driven: DrivenRecord,
@@ -242,7 +243,7 @@ impl Claims {
     pub fn about(agent: Option<v1::InitializeResponse>) -> Self {
         Self {
             agent,
-            client: acp_inspector_core::client_capabilities(),
+            client: acp_inspector_core::ClientClaim::default(),
             client_info: acp_inspector_core::client_info(),
             driven: DrivenRecord::default(),
             auth: AuthState::default(),
@@ -310,14 +311,24 @@ pub fn AgentClaims(claims: Claims, whose: Advertiser) -> Element {
         div { class: "rail-group claims", "data-slot": "claims",
             match whose {
                 // **This client's own claim does not wait for an agent**,
-                // because it does not depend on one: it is fixed for every
-                // connection and goes out in the request rather than coming back
-                // in the answer (§7.6). Read before a launch, it is what the
-                // next agent will be told before it is told.
+                // because it does not depend on one: it is chosen at launch
+                // and goes out in the request rather than coming back in the
+                // answer (§7.6). Read before a launch, it is what the next
+                // agent will be told before it is told.
                 Advertiser::Client => rsx! {
                     div { class: "rail-group account",
-                        {identity(Advertiser::Client, Some(&client_info), rsx! {}, rsx! {})}
-                        {advertises(Advertiser::Client, claimed(&client), only)}
+                        {identity(
+                            Advertiser::Client,
+                            Some(&client_info),
+                            rsx! {
+                                span { class: "badge badge-sm", "data-slot": "asked-version",
+                                    title: "protocolVersion sent in initialize",
+                                    "asks ACP v{client.protocol_version}"
+                                }
+                            },
+                            rsx! {},
+                        )}
+                        {advertises(Advertiser::Client, claimed(&client.capabilities), only)}
                     }
                 },
                 Advertiser::Agent => match &agent {
@@ -342,7 +353,17 @@ pub fn AgentClaims(claims: Claims, whose: Advertiser) -> Element {
                                 Advertiser::Agent,
                                 agent.agent_info.as_ref(),
                                 rsx! {
-                                    span { class: "badge badge-sm", "ACP v{agent.protocol_version}" }
+                                    span { class: "badge badge-sm", "data-slot": "negotiated-version",
+                                        title: "protocolVersion the agent answered with",
+                                        "ACP v{agent.protocol_version}"
+                                    }
+                                    // The agent answered with a version other
+                                    // than the one this client asked for.
+                                    if agent.protocol_version != client.protocol_version {
+                                        span { class: "badge badge-sm badge-warning", "data-slot": "version-mismatch",
+                                            "asked for v{client.protocol_version}"
+                                        }
+                                    }
                                 },
                                 standing(&auth),
                             )}
@@ -480,9 +501,9 @@ impl Advertiser {
             // against what another client sees is reading an answer to this
             // block.
             Self::Client => rsx! {
-                "In every "
+                "In the "
                 code { "initialize" }
-                " request this tool sends. Fixed. Agents may offer different options to clients with different capabilities."
+                " request. Files and terminal are chosen at launch under Client services and answered by you or a rules file. Agents may offer different options to clients with different capabilities."
             },
         }
     }
@@ -1313,9 +1334,8 @@ fn advertised(
 /// row for.
 fn claimed(capabilities: &v1::ClientCapabilities) -> Vec<(&'static str, Vec<Claimed>)> {
     let fs = &capabilities.fs;
-    let boolean_config_options = capabilities
-        .session
-        .as_ref()
+    let session = capabilities.session.as_ref();
+    let boolean_config_options = session
         .and_then(|session| session.config_options.as_ref())
         .is_some_and(|options| options.boolean.is_some());
 
@@ -1328,6 +1348,24 @@ fn claimed(capabilities: &v1::ClientCapabilities) -> Vec<(&'static str, Vec<Clai
                 shape: Shape::Object,
                 at: "session.configOptions",
                 claims: vec![Claim::self_named("boolean", boolean_config_options)],
+            }],
+        ),
+        // Schema 1.11's two session shapes, which the timeline draws.
+        (
+            "Session",
+            vec![Claimed {
+                shape: Shape::Object,
+                at: "session",
+                claims: vec![
+                    Claim::self_named(
+                        "compaction",
+                        session.is_some_and(|session| session.compaction.is_some()),
+                    ),
+                    Claim::self_named(
+                        "notices",
+                        session.is_some_and(|session| session.notices.is_some()),
+                    ),
+                ],
             }],
         ),
         // The service this client performs, claimed a mode at a time (§7.8) —
@@ -5248,5 +5286,76 @@ mod tests {
             ],
             "and the rest are objects, whose presence is the claim"
         );
+    }
+
+    /// Both accounts, with this client having launched claiming file reads at
+    /// protocol version 2 against an agent that answered version 1.
+    fn launched_at_version_two() -> (String, String) {
+        #[component]
+        fn Host(whose: Advertiser) -> Element {
+            let services = acp_inspector_core::ClientServices {
+                read_text_file: true,
+                protocol_version: 2,
+                ..acp_inspector_core::ClientServices::default()
+            };
+            let client = acp_inspector_core::ClientClaim {
+                capabilities: services.capabilities(),
+                protocol_version: services.protocol(),
+            };
+            rsx! {
+                AgentClaims {
+                    claims: Claims { client, ..Claims::about(Some(everything())) },
+                    whose,
+                }
+            }
+        }
+        let render = |whose| {
+            let mut dom = VirtualDom::new_with_props(Host, HostProps { whose });
+            dom.rebuild_in_place();
+            dioxus_ssr::render(&dom)
+        };
+        (render(Advertiser::Agent), render(Advertiser::Client))
+    }
+
+    #[test]
+    fn a_version_other_than_the_one_asked_for_is_flagged() {
+        let (agent, client) = launched_at_version_two();
+        assert!(
+            agent.contains(r#"data-slot="negotiated-version""#),
+            "{agent}"
+        );
+        assert!(
+            agent.contains(r#"data-slot="version-mismatch""#) && agent.contains("asked for v2"),
+            "{agent}"
+        );
+        assert!(client.contains("asks ACP v2"), "{client}");
+    }
+
+    #[test]
+    fn the_launchs_claims_are_drawn_as_claimed() {
+        let (_, client) = launched_at_version_two();
+        let client = advertisement(&client, "client");
+        for (row, advertised) in [
+            ("fs/read_text_file", true),
+            ("fs/write_text_file", false),
+            ("terminal/*", false),
+            (">compaction<", true),
+            (">notices<", true),
+        ] {
+            let said = client
+                .split_once(row)
+                .unwrap_or_else(|| panic!("{row} has a row: {client}"))
+                .1
+                .split_once(STATE)
+                .expect("the row says its state")
+                .1;
+            assert_eq!(said.starts_with("advertised"), advertised, "{row}: {said}");
+        }
+    }
+
+    #[test]
+    fn the_default_claim_is_not_flagged() {
+        let html = shown(everything(), true);
+        assert!(!html.contains("version-mismatch"), "{html}");
     }
 }
