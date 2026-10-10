@@ -38,6 +38,8 @@
 
       lld
 
+      # `just licenses` and `just bundle-macos`: the third-party notices.
+      cargo-about
       cargo-audit
       cargo-deny
       cargo-dist

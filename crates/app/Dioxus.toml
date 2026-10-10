@@ -41,9 +41,14 @@ where the captured traffic decides them."""
 icon = ["bundle/icon.icns"]
 
 [bundle.macos]
-# WKWebView and Security come from the system SDK; 10.15 is the floor the
-# renderer's own dependencies (wry/tao) support.
-minimum_system_version = "10.15"
+# `LSMinimumSystemVersion`, and the deployment target the binary is built for:
+# `just bundle-macos` exports it as `MACOSX_DEPLOYMENT_TARGET`, and
+# `scripts/check-macos-bundle.sh` fails the bundle if the linker's `minos`
+# differs. 11.0 (Big Sur) because it is the oldest macOS on Apple Silicon, so
+# both architectures get the same floor; wry/tao support older. Building inside
+# the devenv shell stamps its SDK's 14.0 instead, which is why release bundles
+# are built with Xcode's Command Line Tools (README, "Releasing").
+minimum_system_version = "11.0"
 # Required for notarization. Signing itself is not configured here — an
 # identity is a person's, not the project's — and is applied by `codesign` in
 # the `just bundle-macos` recipe when one is passed (ADR 0010).
