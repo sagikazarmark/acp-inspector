@@ -26,7 +26,7 @@ wire side by side.
   stderr as a line-timestamped diagnostic channel; disconnect and relaunch
   without losing the trace. The last ten invocations that answered are
   remembered.
-- **Typed ACP v1 client** (schema crate 1.7). Drives `initialize`,
+- **Typed ACP v1 client** (schema crate 1.11). Drives `initialize`,
   `authenticate`, `logout`, `session/new`, `session/load`, `session/resume`,
   `session/list`, `session/close`, `session/delete`, `session/prompt`,
   `session/cancel`, `session/set_mode` and `session/set_config_option`. Traffic
@@ -55,6 +55,17 @@ wire side by side.
   ([schema](docs/trace-export.md)).
 - **Window.** Light and dark themes following the system or chosen, a command
   palette, keyboard navigation, and a single-region layout for narrow windows.
+- **Client services, answered by hand or by rules.** The launch dialog can claim
+  `fs.readTextFile`, `fs.writeTextFile` and `terminal`; each claimed call, and
+  optionally any other unhandled agent request, becomes a timeline card answered
+  with a result or an error, or by the first matching rule of a JSON rules file
+  ([docs](docs/client-services.md)). Nothing is read, written or run.
+- **Permission policy** for the open session: ask, allow once or reject once
+  automatically; never an `*_always` option.
+- **Protocol-version override** for `initialize`, with the version the agent
+  answered shown and a difference flagged.
+- Tool-call names, session notices and context compactions (schema 1.11) are
+  decoded and shown.
 
 ### Known limitations
 
