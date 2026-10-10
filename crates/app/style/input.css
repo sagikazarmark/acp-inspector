@@ -1479,7 +1479,10 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .wire .pane-head { gap: 4px; padding: 0 12px; }
 .wire .wire-tabs { gap: 12px; margin-right: 8px; }
 .wire .pane-head .btn { padding: 0 8px; }
-.clear-trace { display: inline-flex; flex: none; gap: 4px; }
+/* The two-step deletes: the armed press and its Cancel, side by side. */
+:is(.clear-trace, .session-delete) { display: inline-flex; flex: none; gap: 4px; }
+.claim-refused { color: var(--err); }
+.frame-answers { color: var(--dim2); }
 .btn-filled.btn-bad { --btn-bg: var(--err); --btn-fg: var(--on-hue); }
 .export-stderr {
   display: inline-flex;

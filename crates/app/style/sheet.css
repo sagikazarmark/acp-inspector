@@ -5215,10 +5215,16 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 .wire .pane-head .btn {
   padding: 0 8px;
 }
-.clear-trace {
+:is(.clear-trace, .session-delete) {
   display: inline-flex;
   flex: none;
   gap: 4px;
+}
+.claim-refused {
+  color: var(--err);
+}
+.frame-answers {
+  color: var(--dim2);
 }
 .btn-filled.btn-bad {
   --btn-bg: var(--err);
