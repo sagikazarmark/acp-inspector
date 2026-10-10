@@ -1,11 +1,10 @@
 //! Client services in the window (`docs/client-services.md`): what the next
-//! launch claims (F3, F13), the card a service request is answered from, and
-//! the open session's permission policy (F11).
+//! launch claims, the card a service request is answered from, and the open
+//! session's permission policy.
 //!
-//! **Answered, never performed.** A claimed `fs/*` or `terminal/*` call is a
-//! card with the method, the params and a response editor; nothing here reads
-//! or writes a file or runs a command. A rules file chosen at launch can answer
-//! first, and the card then says which rule did.
+//! Answered, never performed: nothing here reads or writes a file or runs a
+//! command. A rules file chosen at launch can answer first, and the card says
+//! which rule did.
 
 use acp_inspector_core::{
     AnsweredBy, ClientClaim, ClientServices, Inspector, PermissionPolicy, ServiceReply,
@@ -25,9 +24,8 @@ struct Services {
     policy: Signal<PermissionPolicy>,
 }
 
-/// Makes the launch draft and the permission policy available to the spawn
-/// form's control and the timeline's, reading both from core and writing both
-/// back to it.
+/// Provides the launch draft and the permission policy, read from and written
+/// back to core.
 pub fn provide(inspector: Inspector) {
     let draft = use_signal(|| inspector.client_services());
     let mut policy = use_signal(|| inspector.permission_policy());
@@ -78,8 +76,8 @@ pub fn change(value: ClientServices) {
 /// The launch-time client services: which services `initialize` claims, how
 /// other agent requests are answered, a rules file, and the protocol version.
 ///
-/// Collapsed by default under one line that says what is claimed, because the
-/// default — nothing claimed, version 1 — is what most launches want.
+/// Collapsed by default: nothing claimed at version 1 is what most launches
+/// want.
 #[component]
 pub fn ClientServicesControl(
     value: ClientServices,

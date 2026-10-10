@@ -92,11 +92,9 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
 }
 
 /// The note added to a property's description for a `format` the form does
-/// not check.
-///
-/// `date-time` says more, because its picker is wrong rather than merely
-/// unchecked: it yields a local time with no zone, which is not RFC 3339
-/// (U5, #21). Raw is the way to send a conformant value until that lands.
+/// not check. `date-time` says more: its picker yields a local time with no
+/// zone, which is not RFC 3339 (sagikazarmark/schemaform#61), so Raw is the
+/// way to send a conformant value.
 fn format_note(format: &str) -> String {
     match format {
         "date-time" => "Format date-time: the picker gives a local time with no time zone, which is not RFC 3339. Use Raw to send a conformant value, such as 2026-01-31T09:30:00Z.".to_owned(),

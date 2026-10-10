@@ -17,13 +17,8 @@ pub fn chevron() -> Element {
     }
 }
 
-/// The way out of a dialog, as an icon.
-///
-/// **From the icon family and not from the character set.** It was a literal
-/// `✕`, which is a font's idea of a cross rather than this window's: it takes
-/// the text metrics of whatever face renders it, sits off the optical centre of
-/// its button, and is the one glyph in the window that does not come from the
-/// family every other control draws from.
+/// The way out of a dialog, drawn from the icon family rather than as a `✕`
+/// character, whose metrics depend on the font.
 pub fn close() -> Element {
     rsx! {
         span { class: "disclosure-icon", aria_hidden: "true",
@@ -32,11 +27,8 @@ pub fn close() -> Element {
     }
 }
 
-/// What an icon stands for, wherever one is drawn.
-///
-/// **The one place an icon is chosen** (D8). Screens ask for a role and never
-/// name a glyph. The window draws one family, Lucide, at 16px with a 1.5
-/// stroke (the stylesheet's `.icon`), so every icon in it is the same weight.
+/// What an icon stands for. Screens ask for a role and never name a glyph; the
+/// window draws Lucide at 16px with a 1.5 stroke (the stylesheet's `.icon`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Role {
     /// A user's message.

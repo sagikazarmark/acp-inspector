@@ -3,9 +3,9 @@
 
 use schemaform_dioxus::{Localizer, render::MessageDescriptor};
 
-/// The words for findings, and which properties are booleans: a required
-/// boolean that is unset reads as "not set", because an unchecked box is not
-/// `false` until somebody sets it (U11, #21).
+/// The words for findings, and which properties are booleans: an unset
+/// required boolean reads as "not set", since an unchecked box is not `false`
+/// (sagikazarmark/dioxus-daisyui-components#36).
 #[derive(Default)]
 pub struct FindingWords {
     pub booleans: std::collections::BTreeSet<String>,
