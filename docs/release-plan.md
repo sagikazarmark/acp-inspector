@@ -359,7 +359,7 @@ How findings were established:
 
 ## 1.3 Later (roadmap)
 
-- [ ] **F10. Headless CLI over core.** Run, prompt, export, and a permission policy. Combined with F3 mocks, this is a CI conformance smoke tool.
+- [x] **F10. Headless CLI over core.** Run, prompt, export, and a permission policy. Combined with F3 mocks, this is a CI conformance smoke tool. Built as `crates/cli` (`acp-inspector-cli run`, `inspect`); see "Headless CLI" in the README.
 - [ ] **F11. Permission auto-policy.** For long agent runs.
 - [ ] **F12. More prompt content.** ResourceLink prompts and non-PDF binary resources.
 - [ ] **F13. Protocol-version override.** The version is currently hard-wired to 1.

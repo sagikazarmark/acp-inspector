@@ -178,7 +178,7 @@ decision being reversed for all three
 | v2 support and dual-version decoding | Later — v2 remains a draft with no stated timeline and nothing published since 2026-07-28, when upstream instead *removed* its own version-conversion helpers citing unrepresentable states. The seams stay open ([§11](#11-v2-seams-kept-open)) and nothing is decoded as v2. Its folding of modes into config options — `session/set_mode` gone, a `category` on a config option in its place — is one more thing the seams have to survive rather than something built for | host #51, host #75, host #84, map fog |
 | `fs/*` and `terminal/*` client services | Declined by advertising no capability for either, and **still declined** now that the client claims several things about itself ([§7.3](#73-decline-by-capability)): these are *services* the inspector genuinely cannot perform — there is no filesystem mediation to offer and no terminal embedded. Arriving calls are logged and answered method-not-found. `elicitation/*` left this row with the fifth ring ([§7.8](#78-the-fifth-ring-elicitation)): it had been declined in the same sentence on the strength of one clause about what this tool *had built* rather than what it can do, and a schema-driven form is a thing it draws | host #56, host #84, host #133 |
 | Authentication beyond `authenticate` and `logout` | `authMethods` shown, `-32000 auth_required` surfaced as a real state; every practical login runs in the user's own terminal. `logout` leaves this row with the fourth ring ([§7.7](#77-the-fourth-ring-what-was-driven)) — it was a drawn capability row with no method anywhere in the tool, which is the gap the ring's record made impossible to keep quiet | host #51 §2, host #54, host #96 |
-| CLI / TUI surfaces | Out of MVP | host #56 |
+| A TUI surface | Out of MVP. The CLI half of this row was built after it, as a headless surface over core (`crates/cli`, release plan F10): run, prompt, a permission policy, export and an exit code for CI — no interactive screen | host #56 |
 | Observing *third-party* client↔agent pairs (MITM) | **Never in this project** — that is ACP Wiretap's charter; the inspector event-logs only its own traffic | host #55 |
 | Primitive-catalog tabs as the UI's center, HTTP/OAuth/Network stack, per-frame replay, MCP Apps sandbox | **Never** — MCP Inspector features with no ACP analog | host #49, host #56 |
 
@@ -216,7 +216,7 @@ Decided in host #55, and since carried out:
   layer, and the SDK's client machinery sits above exactly the seam the trace decorator needs to own.
 - **License:** MIT OR Apache-2.0 dual, matching the host repo it came from.
 
-Two crates inside the workspace, split by layer and not by renderer
+Crates inside the workspace, split by layer and not by renderer
 ([ADR 0011](adr/0011-one-ui-crate-a-feature-per-renderer.md)):
 
 ```
@@ -226,8 +226,9 @@ acp-inspector/
 ├── docs/architecture.md  # this spec
 └── crates/
     ├── core/             # `acp-inspector-core`: headless, zero Dioxus/UI deps
-    └── app/              # `acp-inspector`: the screens and the one binary,
+    ├── app/              # `acp-inspector`: the screens and the one binary,
                           # a Cargo feature per renderer (`desktop` today, `web` next)
+    └── cli/              # `acp-inspector-cli`: a headless surface over core, for CI
 ```
 
 The `package.json` is at the repository root rather than in `crates/app/`, which is where it was

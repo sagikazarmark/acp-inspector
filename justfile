@@ -21,6 +21,18 @@ default: testy test
 run:
     cargo run -p acp-inspector
 
+# Run the headless CLI: `just cli -- run --prompt hi -- AGENT [ARGS...]`.
+#
+# The same core without a window (README, "Headless CLI"). The leading `--`
+# keeps `just` from reading the CLI's own flags, and is dropped here; the
+# arguments are passed positionally so a prompt with spaces stays one argument.
+[positional-arguments]
+cli *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${1:-}" = "--" ]; then shift; fi
+    exec cargo run -q -p acp-inspector-cli -- "$@"
+
 # Prove the web build of the app crate still compiles.
 #
 # On the native target, because that is the half of the promise this checkout

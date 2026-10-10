@@ -7,6 +7,20 @@ version may change the trace export, the state files or the window.
 
 ## [Unreleased]
 
+### Added
+
+- **Headless CLI** (`acp-inspector-cli`, a new `crates/cli`). `run` spawns an
+  agent (with `--cwd`, `--env`, `--unset`, `--clear-env`), drives `initialize`,
+  `session/new` and each `--prompt`/`--prompt-file` in order, answers
+  permission requests by `--permission ask|allow|reject` (never an
+  `*_always` option when allowing), cancels elicitations, stops the agent
+  gracefully, writes the app's JSONL trace with `--export`, and prints a text
+  or `--json` summary with the agent, capabilities, stop reasons, tool calls,
+  conformance annotations and diagnostics. Exit codes: 0 ok, 1 agent or
+  protocol failure, 2 conformance annotations, 3 `--timeout`, 64 usage, 130
+  Ctrl-C. `inspect` counts an exported trace's frames by direction and
+  method. No renderer and no new dependency; see "Headless CLI" in the README.
+
 ## [0.1.0]
 
 The first release: a desktop tool that spawns one Agent Client Protocol agent
