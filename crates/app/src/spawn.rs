@@ -1,24 +1,9 @@
-//! The spawn form (`docs/architecture.md` §9): four fields, a button that hands
-//! them to core, and the few invocations that worked before.
+//! The spawn form: four fields, a button that hands them to core as text, and
+//! the invocations that worked before. See `docs/architecture.md` §9.
 //!
-//! The fields are text and they leave as text — [`AgentCommand`] is where a
-//! line becomes an argument, so the rules live somewhere they can be tested and
-//! somewhere a second surface would inherit them from.
-//!
-//! **One form, on the registry's field components.** Each field has a visible
-//! label that is also its accessible name, a description it is described by,
-//! and an error region that speaks once the reader has left the field or tried
-//! to launch. The fields sit in a `<form>`, so Enter in a single-line field and
-//! ⌘/Ctrl+Enter in a multi-line one launch, the way any dialog form does.
-//!
-//! **The recent list is the convenience the spec allows and stops at** (§1.1):
-//! a row's label refills the fields, and its play button launches it directly.
-//! Nothing here decides what is remembered or where it is kept — that is
-//! [`RecentCommands`](acp_inspector_core::RecentCommands).
-//!
-//! **A failed launch is said here** (X1): the dialog stays open on the fields
-//! that produced it, with the reason in an alert above them, rather than
-//! closing onto a window that changed tabs behind its backdrop.
+//! [`AgentCommand`] is where a line becomes arguments. Which invocations are
+//! remembered is [`RecentCommands`](acp_inspector_core::RecentCommands)'s call.
+//! A failed launch keeps the dialog open on its fields, with the reason above.
 
 use std::rc::Rc;
 
@@ -58,10 +43,9 @@ pub struct LaunchFailure {
 
 /// What the dialog should say about the last launch, if anything.
 ///
-/// `lines` are the diagnostics recorded since that launch began, oldest first.
-/// `path` is the search path the spawn used. An agent that described itself is
-/// not a failed launch: what went wrong after that is the session's, and is
-/// said on the timeline.
+/// `lines` are the diagnostics since that launch began, oldest first; `path` is
+/// the search path the spawn used. An agent that described itself has not
+/// failed to launch: later failures are said on the timeline.
 pub fn launch_failure(
     status: ConnectionStatus,
     problem: Option<&CallError>,
@@ -155,11 +139,9 @@ pub struct CommandLine {
 /// Whether `command` reads as a command line rather than a program, and how
 /// it would split if so.
 ///
-/// Whitespace in a command is either a command line or a path with a space in
-/// it. A path is read as one when it starts like a path and its last word still
-/// has a `/` in it — `/Applications/My Agent.app/Contents/MacOS/agent` — and is
-/// left alone; anything else with whitespace is offered a split, never split
-/// without asking.
+/// A path that starts like one and whose last word still has a `/` (an `.app`
+/// bundle with a space) is left alone; anything else with whitespace is
+/// offered a split, never split without asking.
 pub fn command_line(command: &str) -> Option<CommandLine> {
     let command = command.trim();
     if !command.contains(char::is_whitespace) {
@@ -261,8 +243,8 @@ fn unset_warning(lines: &[usize]) -> String {
     }
 }
 
-/// `env` with [`AgentCommand::minimal_env`]'s variables put first, for the
-/// ones it does not already set: what the "Minimal environment" preset fills.
+/// `env` with [`AgentCommand::minimal_env`]'s variables it lacks put first:
+/// what the "Minimal environment" preset fills.
 pub fn with_minimal_env(env: &str, minimal: &str) -> String {
     let set: Vec<&str> = env
         .lines()
@@ -288,8 +270,7 @@ fn meta(id: &str, error: Option<&str>) -> FieldMetaValues {
     }
 }
 
-/// The four fields, a button that hands them over as typed, and what has been
-/// launched before.
+/// The launch form and the recent invocations.
 #[component]
 pub fn SpawnForm(
     running: bool,
@@ -298,20 +279,16 @@ pub fn SpawnForm(
     launching: bool,
     /// The invocations that worked, newest first — core's list, rendered.
     recent: Vec<AgentCommand>,
-    /// Why the list will not outlive this window, if it will not. A form that
-    /// half-remembers is worse than one that does not pretend to, so a list that
-    /// could not be written says so where it is shown.
+    /// Why the list will not outlive this window, if it will not.
     unsaved: Option<String>,
     /// Why the last launch did not reach an agent, if it did not.
     #[props(default)]
     failure: Option<LaunchFailure>,
-    /// The invocation the window last launched. The fields follow it, so a
-    /// dialog opened over a running agent shows what is running.
+    /// The invocation the window last launched, which the fields follow.
     #[props(default)]
     launched: Option<AgentCommand>,
-    /// A remembered invocation to fill the fields with, from outside the form
-    /// (the first-run card's recent rows). Numbered so the same entry chosen
-    /// twice refills twice.
+    /// A remembered invocation to fill the fields with, from the first-run
+    /// card. Numbered so the same entry chosen twice refills twice.
     #[props(default)]
     prefill: Option<(u64, AgentCommand)>,
     on_launch: EventHandler<AgentCommand>,
@@ -366,8 +343,7 @@ pub fn SpawnForm(
         remember_env_values: remember(),
     });
 
-    // Selecting a remembered invocation's label is a *refill*: the fields are
-    // where a run is decided. Its play button is the direct way, beside it.
+    // A remembered invocation's label refills; its play button launches.
     let mut refill = move |entry: &AgentCommand| {
         let invocation = invocation(entry);
         fill(entry);
@@ -474,8 +450,8 @@ pub fn SpawnForm(
                         on_change: move |_| clear_recall_confirmation(),
                         on_focus_exit: move |()| left_command.set(true),
                         // String keys: `autofocus` and `spellcheck` are on both
-                        // attribute sets the component extends (U9, #21).
-                        // **The platform focuses it, once per opening.**
+                        // attribute sets the component extends, so the typed
+                        // names are ambiguous.
                         attributes: attributes!(input {
                             "autofocus": true,
                             "spellcheck": "false",
@@ -685,9 +661,7 @@ pub fn SpawnForm(
                     }
                 }
 
-                // Under the form and not on a row of the list, because it is about
-                // the launch that just worked rather than about any one invocation
-                // in it.
+                // About the launch that just worked, not any one row.
                 if let Some(reason) = &unsaved {
                     p { class: "alert alert-warning", "data-slot": "unsaved", role: "status",
                         "Launched, but not remembered for next time: {reason}."
@@ -714,9 +688,8 @@ pub fn SpawnForm(
                     "data-slot": "launch",
                     r#type: "submit",
                     aria_describedby: "launch-reason",
-                    // Launching: the handshake is in flight and a second one
-                    // would race it. Otherwise the button always answers, with
-                    // the reason in the line beside it when it cannot launch.
+                    // Disabled only while a handshake is in flight; otherwise it
+                    // answers, with the reason beside it when it cannot launch.
                     aria_disabled: launching.then_some("true"),
                     tabindex: launching.then_some("-1"),
                     if launching { "Launching" } else if running { "Restart with these settings" } else { "Launch" }
@@ -726,12 +699,10 @@ pub fn SpawnForm(
     }
 }
 
-/// The invocations that worked, newest first: each row refills the form from
-/// its label and launches from its play button, and can be removed. A row
-/// whose variable values were not kept refills instead of launching, because
-/// launching it would set each of its variables to nothing.
-///
-/// Shared by the spawn form and the first-run card (D10, X10).
+/// The invocations that worked, newest first: a row's label refills the form,
+/// its play button launches, and it can be removed. A row whose variable values
+/// were not kept refills instead of launching, which would set them to nothing.
+/// Shared by the spawn form and the first-run card.
 #[component]
 pub fn RecentList(
     entries: Vec<AgentCommand>,
@@ -749,8 +720,7 @@ pub fn RecentList(
             aria_label: labelled_by.is_none().then_some("Recent commands"),
             aria_labelledby: labelled_by,
             for (nth , entry) in entries.iter().enumerate() {
-                // By position, because the list *is* an order: the same
-                // invocation relaunched moves to the front.
+                // By position: a relaunched invocation moves to the front.
                 div { class: "recent-row", key: "{nth}", role: "listitem",
                     button {
                         class: "recent-label recall",
@@ -846,11 +816,8 @@ fn focus(id: &'static str) {
     ));
 }
 
-/// The program a path names, without the directories that led to it.
-///
-/// **The end of a command path is the identifying part of it**, and the end is
-/// what a line that runs out of room loses. The whole of it is on the row's
-/// tooltip, which is where a label keeps what it does not show.
+/// The program a path names, without its directories, since the end is what a
+/// truncated line would lose. The whole path is on the row's tooltip.
 fn program(command: &str) -> &str {
     let command = command.trim();
     command
@@ -858,11 +825,8 @@ fn program(command: &str) -> &str {
         .map_or(command, |(_, program)| program)
 }
 
-/// The last of a path, kept when the whole of it will not fit.
-///
-/// Two segments and an ellipsis: enough to tell `…/phoenix/inspector` from
-/// `…/phoenix/bridge`, which is the question a working directory is read to
-/// answer.
+/// The last two segments of a path behind an ellipsis, enough to tell
+/// `…/phoenix/inspector` from `…/phoenix/bridge`.
 fn tail(path: &str, segments: usize) -> String {
     let parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
     if parts.len() <= segments + 1 {
@@ -872,8 +836,7 @@ fn tail(path: &str, segments: usize) -> String {
     format!("…/{}", parts[parts.len() - segments..].join("/"))
 }
 
-/// A remembered invocation on one line: the program and its arguments, the way
-/// it would read if it had been typed at a shell.
+/// A remembered invocation on one line, as typed at a shell.
 pub(crate) fn invocation(command: &AgentCommand) -> String {
     std::iter::once(command.command.trim())
         .chain(command.arguments())
@@ -890,15 +853,10 @@ fn running_label(command: &AgentCommand) -> String {
         .join(" ")
 }
 
-/// The rest of what makes it a different invocation: where it ran, how many
-/// variables it carried (and whether their values were kept), and how its
-/// environment was trimmed.
-///
-/// The environment is counted rather than shown. Its values are where a token
-/// would be, and a list of invocations under a form is not the place to put one
-/// on screen. Counted by core's reading of the field
-/// ([`AgentCommand::variables`]), so what the row says is how many the agent
-/// would be given.
+/// The rest of what distinguishes an invocation: its cwd, how many variables
+/// it carried (and whether their values were kept), and how its environment was
+/// trimmed. Variables are counted, never shown, since values may be tokens; the
+/// count is core's ([`AgentCommand::variables`]).
 fn under(command: &AgentCommand) -> Option<String> {
     let variables = command.variables().count();
     let mut said = Vec::new();
@@ -935,8 +893,7 @@ mod tests {
 
     use super::*;
 
-    /// The form, rendered — the screen itself rather than a value on the way to
-    /// it, because what it draws is markup.
+    /// The form, rendered.
     fn shown() -> String {
         #[component]
         fn Host() -> Element {
