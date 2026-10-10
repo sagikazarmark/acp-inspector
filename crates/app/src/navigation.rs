@@ -44,6 +44,8 @@ pub(crate) enum Destination {
     },
     /// The composer's prompt field, once it is enabled.
     Prompt,
+    /// The Console's Clear, armed for its confirming second press.
+    ArmClear,
 }
 
 impl Destination {
@@ -121,6 +123,15 @@ impl Navigation {
         self.spine.set(Spine::Split);
         self.region.set(Focus::Turn);
         Destination::Prompt.focus();
+    }
+
+    /// Clear asked for from anywhere but the Console's own button (the
+    /// palette, the menu, the shortcut): the Trace is shown and its Clear is
+    /// armed and focused, so the same second press confirms it (I2, F9).
+    pub fn clear(mut self) {
+        self.region.set(Focus::Wire);
+        self.console.set(Tab::Trace);
+        Destination::ArmClear.focus();
     }
 
     pub fn seek(mut self, ordinal: u64) {
