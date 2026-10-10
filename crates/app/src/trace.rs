@@ -33,18 +33,34 @@
 //! **The buttons are buttons.** What an export contains, where it is written,
 //! what clearing means for one already taken and how many frames a trace keeps
 //! are all core's, asserted in `crates/core/tests/export.rs`.
+//!
+//! **A request and its answer point at each other** (F1). Which frame answers
+//! which is core's (`Trace::counterpart`), read here and never worked out
+//! again: an answer row says how long it took, the pane says where the other
+//! half is and goes there, and a call nobody has answered says so — with the
+//! time it has been waiting, ticking only while it is.
+//!
+//! **And the traffic the trace holds that is not an ordinary frame says what
+//! it is**: a frame that was not UTF-8 is drawn decoded with a badge, a frame
+//! the transport dropped for its length is a placeholder that says how long it
+//! was, and a frame a person sent by hand is tagged as one.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
-use acp_inspector_core::{Direction, Frame, FrameKind, Indentation, TracedFrame};
+use acp_inspector_core::{
+    Counterpart, Diagnostic, DiagnosticKind, Direction, Frame, FrameKind, Indentation, Omission,
+    Trace, TracedFrame,
+};
 use dioxus::prelude::*;
 
 use crate::console::{Directions, contains_folded, narrowed};
 use crate::copy::Copy;
 use crate::disclosure::{Role, icon};
+use crate::export::Outcome;
 use crate::json;
 use crate::time::stamp;
+use crate::wire::{Elapsed, Wire, elapsed};
 
 /// The frame list, by the name the scroll watcher and its control know it under
 /// (`tail.rs`).
@@ -148,6 +164,124 @@ fn kind_tone(kind: FrameKind) -> &'static str {
     }
 }
 
+/// A size, as a reader compares it: bytes below a kibibyte, else one decimal.
+pub fn size(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes < 1024 {
+        format!("{bytes} bytes")
+    } else if bytes_f < KIB * KIB {
+        format!("{:.1} KiB", bytes_f / KIB)
+    } else {
+        format!("{:.1} MiB", bytes_f / (KIB * KIB))
+    }
+}
+
+/// What a dropped frame's placeholder says in place of the frame.
+pub fn omitted(omission: Omission) -> String {
+    format!(
+        "Frame of {} dropped (limit {})",
+        size(omission.length),
+        size(omission.limit)
+    )
+}
+
+/// Whether a frame is an answer: a result or an error, carrying no method.
+fn is_answer(frame: &Frame) -> bool {
+    let summary = frame.summary();
+    matches!(summary.kind, FrameKind::Result | FrameKind::Error) && summary.method.is_none()
+}
+
+/// Which frames pair with which, read off the trace on screen.
+struct Pairs<'a> {
+    trace: Option<Trace>,
+    frames: &'a [TracedFrame],
+    dropped: usize,
+}
+
+impl<'a> Pairs<'a> {
+    fn counterpart(&self, ordinal: u64) -> Option<Counterpart> {
+        self.trace.as_ref()?.counterpart(ordinal)
+    }
+
+    /// The frame captured under `ordinal`, where the trace still holds it.
+    fn frame(&self, ordinal: u64) -> Option<&'a TracedFrame> {
+        let position = usize::try_from(ordinal).ok()?.checked_sub(self.dropped)?;
+        self.frames.get(position)
+    }
+
+    /// For an answer, the method of the call it answers, where that call is
+    /// still held.
+    fn answering(&self, ordinal: u64, traced: &TracedFrame) -> Option<&'a str> {
+        if !is_answer(&traced.frame) {
+            return None;
+        }
+        let request = self.counterpart(ordinal)?;
+        self.frame(request.ordinal)?
+            .frame
+            .summary()
+            .method
+            .as_deref()
+    }
+
+    /// Whether a request has no answer in the trace.
+    fn unanswered(&self, ordinal: u64, traced: &TracedFrame) -> bool {
+        self.trace.is_some()
+            && traced.frame.summary().kind == FrameKind::Call
+            && self.counterpart(ordinal).is_none()
+    }
+}
+
+/// One row of the merged view (F14): a frame, or a line of the agent's stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    /// By position in the frames held.
+    Frame(usize),
+    /// By position in the diagnostic lines held.
+    Line(usize),
+}
+
+/// Frames and stderr lines in one order, by when each was read, each with a
+/// key that stays the same as either list ages out: the number of frames and
+/// lines captured before it, which counts up by one along the merged list.
+///
+/// The frames keep the trace's order (it is authoritative); a line goes in
+/// before the first frame read after it.
+fn merge(
+    frames: &[TracedFrame],
+    dropped: usize,
+    lines: &[Diagnostic],
+    dropped_lines: usize,
+) -> Vec<(u64, Row)> {
+    let stderr: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(line.kind, DiagnosticKind::Stderr(_)))
+        .map(|(position, _)| position)
+        .collect();
+    let mut merged = Vec::with_capacity(frames.len() + stderr.len());
+    let (mut frame, mut line) = (0, 0);
+    while frame < frames.len() || line < stderr.len() {
+        let take_line = match (frames.get(frame), stderr.get(line)) {
+            (Some(traced), Some(&position)) => lines[position].at < traced.at,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        // Every line before this one counts, stderr or not, so the key is the
+        // same whichever kinds of line age out.
+        let lines_before = stderr.get(line).copied().unwrap_or(lines.len());
+        let key = (dropped + frame + dropped_lines + lines_before) as u64;
+        if take_line {
+            merged.push((key, Row::Line(stderr[line])));
+            line += 1;
+        } else {
+            merged.push((key, Row::Frame(frame)));
+            frame += 1;
+        }
+    }
+    merged
+}
+
 /// The frames, oldest at the top, following the newest as they arrive — and the
 /// selected one, whole, underneath.
 #[component]
@@ -159,7 +293,10 @@ pub fn TraceView(
     /// in this body is number the rows.
     dropped: usize,
     /// What became of the last export: the file it wrote, or why it did not.
-    saved: Option<Result<PathBuf, String>>,
+    saved: Option<Outcome>,
+    /// Puts that notice away.
+    #[props(default)]
+    on_dismiss_saved: Option<EventHandler<()>>,
     /// What the Console's bar is narrowing this surface to. Presentation only:
     /// the Trace goes on capturing, counting and exporting everything.
     /// `method:NAME` and `id:N` match those envelope fields; the rest is text.
@@ -191,6 +328,14 @@ pub fn TraceView(
     /// its way to the Console's filter box.
     #[props(default)]
     on_filter: Option<EventHandler<String>>,
+    /// The connection's tools: pairing, pending calls, cancelling and sending
+    /// by hand. Without one the rows are drawn unpaired.
+    #[props(default)]
+    wire: Option<Wire>,
+    /// The diagnostic lines, for the merged view (F14).
+    #[props(default)]
+    lines: Option<ReadSignal<Vec<Diagnostic>>>,
+    #[props(default)] dropped_lines: usize,
 ) -> Element {
     let mut anchor = use_signal(|| revealed.read().first().copied());
     use_effect(move || {
@@ -198,71 +343,125 @@ pub fn TraceView(
             anchor.set(Some(first));
         }
     });
-    // What every render would otherwise work out again from every frame: which
-    // call each answer answers, and which frames match the filter (L1). Grown
-    // as frames arrive rather than rebuilt.
+    // Which frames match the filter's text, remembered between renders (L1).
     let index = use_hook(|| std::rc::Rc::new(std::cell::RefCell::new(Index::default())));
     let held_frames = frames.read();
     let empty = held_frames.is_empty();
     let held = held_frames.len();
     let query = Query::parse(&filter);
+    let pairs = Pairs {
+        trace: wire.map(|wire| wire.trace()),
+        frames: &held_frames,
+        dropped,
+    };
+    let pending_only = wire.is_some_and(|wire| (wire.pending_only)());
+    let merged_on = wire.is_some_and(|wire| (wire.merged)()) && lines.is_some();
     let mut indexed = index.borrow_mut();
-    indexed.update(&held_frames, dropped, &query);
-    // Which rows survive the three narrowings, by their place in the list.
-    // Computed once: the list pages them, and the pane reads the newest on that
-    // page — a pane reading a frame the reader has hidden would be the one
-    // surface answering a narrowing with the row it just took away.
+    indexed.update(dropped, &query);
+    // Which rows survive the narrowings, by their place in the list. Computed
+    // once: the list pages them, and the pane reads the newest on that page —
+    // a pane reading a frame the reader has hidden would be the one surface
+    // answering a narrowing with the row it just took away.
+    let survives = |position: usize, traced: &TracedFrame, indexed: &mut Index| {
+        let ordinal = (dropped + position) as u64;
+        kinds.shows(traced.frame.summary().kind)
+            && directions.shows(traced.direction)
+            && (!pending_only || pairs.unanswered(ordinal, traced))
+            && indexed.matches((ordinal, traced), &query, &pairs)
+    };
     let visible: Vec<usize> = held_frames
         .iter()
         .enumerate()
-        .filter(|(_, traced)| kinds.shows(traced.frame.summary().kind))
-        .filter(|(_, traced)| directions.shows(traced.direction))
-        .filter(|(position, traced)| indexed.matches(((dropped + position) as u64, traced), &query))
+        .filter(|(position, traced)| survives(*position, traced, &mut indexed))
         .map(|(position, _)| position)
         .collect();
     drop(indexed);
-    let indexed = index.borrow();
     let shown = visible.len();
-    let ordinals: Vec<_> = visible.iter().map(|p| (dropped + p) as u64).collect();
+
+    // The rows the list draws: the visible frames, or — merged — those and the
+    // agent's stderr lines that match the text, in the order they were read.
+    let held_lines = match lines {
+        Some(lines) if merged_on => lines.read().clone(),
+        _ => Vec::new(),
+    };
+    let rows: Vec<(u64, Row)> = if merged_on {
+        let kept: HashSet<usize> = visible.iter().copied().collect();
+        merge(&held_frames, dropped, &held_lines, dropped_lines)
+            .into_iter()
+            .filter(|(_, row)| match row {
+                Row::Frame(position) => kept.contains(position),
+                Row::Line(position) => {
+                    query.method.is_none()
+                        && query.id.is_none()
+                        && !pending_only
+                        && contains_folded(&held_lines[*position].to_string(), &query.text)
+                }
+            })
+            .collect()
+    } else {
+        visible
+            .iter()
+            .map(|&position| ((dropped + position) as u64, Row::Frame(position)))
+            .collect()
+    };
+    let ordinals: Vec<u64> = rows.iter().map(|(key, _)| *key).collect();
     let range = crate::page::range(&ordinals, anchor());
     // What the surface is hiding, said where the rows it hid would have been —
     // whether the narrowing was typed or pressed, because a chip that is off
     // takes rows away exactly as a filter does.
     let narrowing = !filter.trim().is_empty()
         || kinds != Kinds::default()
-        || directions != Directions::default();
+        || directions != Directions::default()
+        || pending_only;
     // Connection ordinals only count from one agent to the next, so a trace of
     // one agent has nothing to tell its rows apart by (D11).
     let several = held_frames
         .first()
         .zip(held_frames.last())
         .is_some_and(|(first, last)| first.connection != last.connection);
-    let page = &visible[range.clone()];
+    let page = &rows[range.clone()];
+    let page_frames: Vec<usize> = page
+        .iter()
+        .filter_map(|(_, row)| match row {
+            Row::Frame(position) => Some(*position),
+            Row::Line(_) => None,
+        })
+        .collect();
     // The list's one Tab stop (A4): the row the reader last focused while it
     // is on the page, then the one the pane reads, then the newest.
     let focused = use_signal(|| None::<u64>);
     let on_page = |ordinal: u64| {
-        page.iter()
+        page_frames
+            .iter()
             .any(|position| (dropped + position) as u64 == ordinal)
     };
     let current = focused()
         .filter(|ordinal| on_page(*ordinal))
         .or(selected.filter(|ordinal| on_page(*ordinal)))
-        .or_else(|| page.last().map(|position| (dropped + position) as u64));
+        .or_else(|| {
+            page_frames
+                .last()
+                .map(|position| (dropped + position) as u64)
+        });
+    let waiting = wire.map(|wire| wire.waiting_calls()).unwrap_or_default();
 
     rsx! {
-        div { class: "trace", "data-slot": "trace",
+        div { class: "trace", "data-slot": "trace", "data-merged": "{merged_on}",
             {narrowed(shown, held, "frames", narrowing)}
             {crate::page::controls(&ordinals, range.clone(), anchor, FRAMES)}
             if let Some(saved) = saved {
-                match saved {
-                    Ok(path) => rsx! {
-                        crate::export::Saved { key: "{path.display()}", path }
-                    },
-                    Err(problem) => rsx! {
-                        p { class: "saved bad", role: "status", "The export was not written: {problem}" }
+                crate::export::Notice {
+                    key: "{saved.id}",
+                    outcome: saved,
+                    on_dismiss: move |()| {
+                        if let Some(dismiss) = on_dismiss_saved {
+                            dismiss.call(());
+                        }
                     },
                 }
+            }
+            if let Some(wire) = wire {
+                {pending_calls(wire, &waiting, on_choose, anchor)}
             }
 
             if empty {
@@ -288,23 +487,35 @@ pub fn TraceView(
                     // shifts every position by one, and a row keyed by position
                     // would hand whatever the reader had selected to whichever
                     // frame landed there next.
-                    for position in page.iter().copied().rev() {
-                        {frame_row(
-                            &held_frames[position],
-                            Shown {
-                                ordinal: (dropped + position) as u64,
-                                starts: position > 0 && held_frames[position - 1].connection != held_frames[position].connection,
-                                several,
-                                answering: indexed.answering(&held_frames[position]),
-                                current: current == Some((dropped + position) as u64),
-                            },
-                            revealed,
-                            decoded,
-                            selected,
-                            focused,
-                            on_choose,
-                            on_seek,
-                        )}
+                    for (key, row) in page.iter().copied().rev() {
+                        match row {
+                            Row::Frame(position) => {
+                                let traced = &held_frames[position];
+                                let ordinal = (dropped + position) as u64;
+                                let pair = pairs.counterpart(ordinal);
+                                frame_row(
+                                    traced,
+                                    Shown {
+                                        ordinal,
+                                        starts: position > 0 && held_frames[position - 1].connection != traced.connection,
+                                        several,
+                                        answering: pairs.answering(ordinal, traced),
+                                        current: current == Some(ordinal),
+                                        took: pair.filter(|_| is_answer(&traced.frame)).map(|pair| pair.elapsed),
+                                        mistyped: pair.is_some_and(|pair| pair.mistyped),
+                                        unanswered: pairs.unanswered(ordinal, traced),
+                                        resend: wire.filter(|wire| !wire.view.is_open() && crate::raw::resendable(traced)),
+                                    },
+                                    revealed,
+                                    decoded,
+                                    selected,
+                                    focused,
+                                    on_choose,
+                                    on_seek,
+                                )
+                            }
+                            Row::Line(position) => stderr_row(key, &held_lines[position]),
+                        }
                     }
                 }
                 {crate::tail::to_latest(FRAMES, "frame", Some(anchor))}
@@ -312,7 +523,112 @@ pub fn TraceView(
                 // And the one the reader is reading. Always drawn while there
                 // are frames, because a pane that came and went would move the
                 // list under the click that selected a row in it.
-                {reading(&held_frames, page, dropped, selected, &indexed, on_filter)}
+                {reading(&pairs, &page_frames, selected, on_filter, on_choose, anchor, wire)}
+            }
+        }
+    }
+}
+
+/// The calls this client is still waiting on, with how long each has waited
+/// and a way to give one up (F1, F4).
+fn pending_calls(
+    wire: Wire,
+    waiting: &[acp_inspector_core::PendingCall],
+    on_choose: EventHandler<u64>,
+    mut anchor: Signal<Option<u64>>,
+) -> Element {
+    // Said while the call it was about is still waiting, or where it failed:
+    // once the agent answers, the call leaves the list and the answer says
+    // the rest.
+    let cancelled = (wire.cancelled)().filter(|cancelled| {
+        cancelled.outcome.is_err() || waiting.iter().any(|call| call.id == cancelled.id)
+    });
+    if waiting.is_empty() && cancelled.is_none() {
+        return rsx! {};
+    }
+    let live = wire.live();
+    let said = match waiting.len() {
+        0 => String::new(),
+        1 => "Waiting for 1 response".to_owned(),
+        count => format!("Waiting for {count} responses"),
+    };
+    rsx! {
+        section { class: "pending-calls", "data-slot": "pending-calls", aria_label: "Calls waiting for a response",
+            if !waiting.is_empty() {
+                p { class: "pending-head", "{said}" }
+                ul {
+                    for call in waiting.iter().cloned() {
+                        li { key: "{call.id}", "data-slot": "pending-call",
+                            span { class: "frame-method", "{crate::page::prefix(&call.method, 120)}" }
+                            span { class: "frame-id", " #{call.id}" }
+                            if call.hand_sent {
+                                span { class: "frame-tag", "data-slot": "hand-sent", "hand-sent" }
+                            }
+                            " · "
+                            Elapsed { since: SystemTime::now() - call.since.elapsed() }
+                            if let Some(ordinal) = call.captured {
+                                button {
+                                    class: "btn btn-xs btn-quiet",
+                                    r#type: "button",
+                                    "data-slot": "show-pending",
+                                    onclick: move |_| {
+                                        anchor.set(None);
+                                        on_choose.call(ordinal);
+                                    },
+                                    "Show"
+                                }
+                            }
+                            if live {
+                                button {
+                                    class: "btn btn-xs btn-quiet btn-bad",
+                                    r#type: "button",
+                                    "data-slot": "cancel-call",
+                                    title: "Send $/cancel_request for call {call.id}. The call stays pending until the agent answers it.",
+                                    onclick: move |_| wire.cancel(call.id),
+                                    "Cancel request"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(cancelled) = cancelled {
+                {cancel_feedback(&cancelled)}
+            }
+        }
+    }
+}
+
+/// What came of asking the agent to give up a call.
+fn cancel_feedback(cancelled: &crate::wire::Cancelled) -> Element {
+    match &cancelled.outcome {
+        Ok(()) => rsx! {
+            p { class: "hint", "data-slot": "cancel-sent", role: "status",
+                "Sent $/cancel_request for #{cancelled.id}. The call ends when the agent answers it."
+            }
+        },
+        Err(problem) => rsx! {
+            p { class: "bad", "data-slot": "cancel-failed", role: "status",
+                "Could not cancel #{cancelled.id}: {problem}"
+            }
+        },
+    }
+}
+
+/// One line of the agent's stderr, between the frames (F14).
+fn stderr_row(key: u64, line: &Diagnostic) -> Element {
+    let text = line.to_string();
+    let preview = crate::page::prefix(&text, 512).to_owned();
+    let cut = preview.len() < text.len();
+    rsx! {
+        li { key: "line-{key}", class: "stderr-row", "data-slot": "stderr-line",
+            div { class: "frame-line",
+                span { class: "frame-at", "{stamp(line.at)}" }
+                span { class: "frame-tag", "data-slot": "stderr", "stderr" }
+                span { class: "stderr-text", "{preview}" }
+                if cut {
+                    span { class: "hint", " (preview; {text.len()} bytes in Diagnostics)" }
+                }
             }
         }
     }
@@ -332,6 +648,14 @@ struct Shown<'a> {
     answering: Option<&'a str>,
     /// Whether this row is the list's Tab stop.
     current: bool,
+    /// For an answer, how long after its request it crossed.
+    took: Option<Duration>,
+    /// An answer whose id matches its call's only with its type changed.
+    mistyped: bool,
+    /// A request nothing in the trace answers.
+    unanswered: bool,
+    /// Where "Edit and resend" sends this frame, for one this client sent.
+    resend: Option<Wire>,
 }
 
 /// One frame, as the row that selects it.
@@ -352,6 +676,10 @@ fn frame_row(
         several,
         answering,
         current,
+        took,
+        mistyped,
+        unanswered,
+        resend,
     } = shown;
     let way = way(entry.direction);
     let summary = entry.frame.summary();
@@ -359,6 +687,8 @@ fn frame_row(
     let marked = revealed().contains(&ordinal);
     let chosen = selected == Some(ordinal);
     let tabindex = if current { "0" } else { "-1" };
+    let omission = entry.frame.omission();
+    let copy = entry.frame.clone();
 
     rsx! {
         li {
@@ -366,6 +696,8 @@ fn frame_row(
             "data-frame": "{ordinal}",
             "data-kind": kind_tone(kind),
             "data-direction": way.tone,
+            "data-hand-sent": entry.frame.is_hand_sent().then_some("true"),
+            "data-dropped": omission.is_some().then_some("true"),
             // The row where an agent gave way to the next one draws the
             // boundary: the ordinal on every row says whose traffic each is,
             // and this says where the conversation changed.
@@ -398,16 +730,27 @@ fn frame_row(
                     // What the envelope says this frame is, in front of the
                     // bytes and never instead of them (`Frame::summary`).
                     {summarised(&entry.frame, answering)}
+                    {tags(&entry.frame, mistyped, unanswered)}
                     // One line of the frame, as the frame has it. The wire's own
                     // line whatever the indentation switch says: a preview is one
                     // line by construction, and the first line of an indented
                     // document is `{`.
-                    span { class: "frame-peek", "{crate::page::prefix(entry.frame.as_str(), 512)}" }
+                    match omission {
+                        Some(omission) => rsx! {
+                            span { class: "frame-peek", "data-slot": "omitted", "{omitted(omission)}" }
+                        },
+                        None => rsx! {
+                            span { class: "frame-peek", "{crate::page::prefix(entry.frame.as_str(), 512)}" }
+                        },
+                    }
+                    if let Some(took) = took {
+                        span { class: "frame-took", "data-slot": "took", title: "Time since the request", "+{elapsed(took)}" }
+                    }
                     span { class: "frame-kind {kind_tone(kind)}", "{named_kind(kind)}" }
                 }
-                // The row's own control sits beside it and never inside it, so
-                // either has one unambiguous job. A Tab stop only on the
-                // list's current row, which is where Tab from the row lands.
+                // The row's own controls sit beside it and never inside it, so
+                // each has one unambiguous job. A Tab stop only on the list's
+                // current row, which is where Tab from the row lands.
                 span { class: "controls",
                     if decoded().contains(&ordinal) {
                         button {
@@ -421,8 +764,44 @@ fn frame_row(
                             "Timeline"
                         }
                     }
+                    if let Some(wire) = resend {
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            "data-slot": "resend",
+                            r#type: "button",
+                            tabindex,
+                            title: "Copy this frame into the raw composer to edit and send again",
+                            aria_label: "Edit and resend Frame {ordinal}",
+                            onclick: move |_| wire.resend(&copy),
+                            "Edit and resend"
+                        }
+                    }
                 }
             }
+        }
+    }
+}
+
+/// The marks a frame carries besides its shape: who wrote it, whether its
+/// bytes were UTF-8, whether its id is the right type, whether it is answered.
+fn tags(frame: &Frame, mistyped: bool, unanswered: bool) -> Element {
+    rsx! {
+        if frame.is_hand_sent() {
+            span { class: "frame-tag", "data-slot": "hand-sent", title: "Sent by hand from the raw composer", "hand-sent" }
+        }
+        if frame.is_lossy() {
+            span {
+                class: "frame-tag bad",
+                "data-slot": "lossy",
+                title: "These bytes were not valid UTF-8; they are shown decoded, and the export carries the original bytes",
+                "not UTF-8"
+            }
+        }
+        if mistyped {
+            span { class: "frame-tag bad", "data-slot": "mistyped", title: "The id's JSON type differs from the request's", "wrong id type" }
+        }
+        if unanswered {
+            span { class: "frame-tag", "data-slot": "unanswered", title: "Nothing in the trace answers this request", "no response" }
         }
     }
 }
@@ -434,24 +813,23 @@ fn frame_row(
 /// something is clicked spends two fifths of the Console saying *click
 /// something*.
 fn reading(
-    frames: &[TracedFrame],
+    pairs: &Pairs<'_>,
     visible: &[usize],
-    dropped: usize,
     selected: Option<u64>,
-    index: &Index,
     on_filter: Option<EventHandler<String>>,
+    on_choose: EventHandler<u64>,
+    anchor: Signal<Option<u64>>,
+    wire: Option<Wire>,
 ) -> Element {
+    let dropped = pairs.dropped;
     let found = selected
-        .and_then(|ordinal| {
-            let position = usize::try_from(ordinal).ok()?.checked_sub(dropped)?;
-            frames.get(position).map(|entry| (ordinal, entry))
-        })
+        .and_then(|ordinal| pairs.frame(ordinal).map(|entry| (ordinal, entry)))
         .or_else(|| {
             // The newest frame the reader can *see*: a pane reading one they
             // narrowed away would be the surface answering the chip with the
             // row it just hid.
             let position = visible.last().copied()?;
-            Some(((dropped + position) as u64, frames.get(position)?))
+            Some(((dropped + position) as u64, pairs.frames.get(position)?))
         });
 
     let Some((ordinal, entry)) = found else {
@@ -459,19 +837,22 @@ fn reading(
     };
     let way = way(entry.direction);
     let summary = entry.frame.summary();
-    let answering = index.answering(entry);
+    let answering = pairs.answering(ordinal, entry);
     let label = match answering {
         Some(method) => envelope_preview(method).into_owned(),
         None => envelope_preview(summary.label().unwrap_or("unreadable envelope")).into_owned(),
     };
-    let outside_page = selected == Some(ordinal)
-        && !visible
+    let on_this_page = |ordinal: u64| {
+        visible
             .iter()
-            .any(|position| (dropped + position) as u64 == ordinal);
+            .any(|position| (dropped + position) as u64 == ordinal)
+    };
+    let outside_page = selected == Some(ordinal) && !on_this_page(ordinal);
+    let omission = entry.frame.omission();
     // Laid out, always, and this is the surface that says why (see the module
     // note): one selected document, on the one screen whose subject it is.
     let large = entry.frame.as_str().len() > 16 * 1024;
-    let payload = if large {
+    let payload = if large || omission.is_some() {
         String::new()
     } else {
         Indentation::Indented
@@ -485,6 +866,21 @@ fn reading(
         .or(answering.map(str::to_owned))
         .filter(|method| method.len() <= 512);
     let id = summary.id.clone().filter(|id| id.len() <= 512);
+    let pairing = pairing(pairs, ordinal, entry, wire);
+    let page: Vec<u64> = visible
+        .iter()
+        .map(|position| (dropped + position) as u64)
+        .collect();
+    let go: std::rc::Rc<dyn Fn(u64)> = std::rc::Rc::new(move |target: u64| {
+        if !page.contains(&target) {
+            let mut anchor = anchor;
+            anchor.set(Some(target));
+        }
+        on_choose.call(target);
+    });
+    let resend = wire
+        .filter(|wire| !wire.view.is_open() && crate::raw::resendable(entry))
+        .map(|wire| (wire, entry.frame.clone()));
 
     rsx! {
         aside {
@@ -497,6 +893,7 @@ fn reading(
                     if answering.is_some() { span { aria_hidden: "true", "↳ " } span { class: "sr-only", "response to " } }
                     "{label}"
                 }
+                {tags(&entry.frame, false, false)}
                 span { class: "frame-pane-meta",
                     "{named_kind(summary.kind)} · #{ordinal} · {stamp(entry.at)}"
                 }
@@ -522,18 +919,179 @@ fn reading(
                         }
                     }
                 }
-                Copy { frame: entry.frame.clone(), what: "this frame" }
+                if let Some((wire, frame)) = resend {
+                    button {
+                        class: "btn btn-xs btn-quiet",
+                        "data-slot": "resend",
+                        r#type: "button",
+                        title: "Copy this frame into the raw composer to edit and send again",
+                        onclick: move |_| wire.resend(&frame),
+                        "Edit and resend"
+                    }
+                }
+                if omission.is_none() {
+                    Copy { frame: entry.frame.clone(), what: "this frame" }
+                }
             }
+            {pairing.render(go, wire)}
             if outside_page {
                 p { class: "narrowed", "Selected frame (outside this page)" }
             }
-            if large {
+            if entry.frame.is_lossy() {
+                p { class: "hint", "data-slot": "lossy-note",
+                    "These bytes were not valid UTF-8. Invalid bytes are shown as \u{FFFD}; Copy takes the decoded text, and the export carries the original bytes."
+                }
+            }
+            if let Some(omission) = omission {
+                p { class: "frame-omitted", "data-slot": "omitted",
+                    "{omitted(omission)}. The transport could not carry it; only its length is known."
+                }
+            } else if large {
                 crate::page::RawFrame { key: "{ordinal}", frame: entry.frame.clone() }
             } else { pre { class: "frame-json", "data-slot": "frame-payload",
                 for (position, (token, text)) in json::tokens(&payload).into_iter().enumerate() {
                     span { key: "{position}", class: token.class(), "{text}" }
                 }
             } }
+        }
+    }
+}
+
+/// What the pane says about the other half of a request/response pair.
+enum Pairing {
+    Nothing,
+    /// A request, and the answer at this ordinal.
+    Answered(Counterpart),
+    /// An answer, and the request at this ordinal.
+    Answers {
+        request: Counterpart,
+        /// Set where the id's type differs from the request's.
+        mistyped: Option<String>,
+    },
+    /// A request nothing has answered yet, waiting since then — and the call
+    /// to cancel, where this client can still give it up.
+    Waiting {
+        since: SystemTime,
+        cancel: Option<i64>,
+    },
+    /// A request nothing in the trace answers, and nothing is waiting on.
+    Unanswered,
+}
+
+fn pairing(pairs: &Pairs<'_>, ordinal: u64, entry: &TracedFrame, wire: Option<Wire>) -> Pairing {
+    let Some(wire) = wire else {
+        return Pairing::Nothing;
+    };
+    let summary = entry.frame.summary();
+    match pairs.counterpart(ordinal) {
+        Some(other) if is_answer(&entry.frame) => Pairing::Answers {
+            request: other,
+            mistyped: other
+                .mistyped
+                .then(|| mistyped(&entry.frame, pairs.frame(other.ordinal))),
+        },
+        Some(other) if summary.kind == FrameKind::Call => Pairing::Answered(other),
+        None if summary.kind == FrameKind::Call => {
+            if let Some(call) = wire.waiting(ordinal) {
+                Pairing::Waiting {
+                    since: entry.at,
+                    cancel: wire.live().then_some(call.id),
+                }
+            } else if entry.direction == Direction::FromAgent
+                && wire.live()
+                && pairs
+                    .frames
+                    .last()
+                    .is_some_and(|last| last.connection == entry.connection)
+            {
+                // The agent is waiting on this client.
+                Pairing::Waiting {
+                    since: entry.at,
+                    cancel: None,
+                }
+            } else {
+                Pairing::Unanswered
+            }
+        }
+        _ => Pairing::Nothing,
+    }
+}
+
+/// "id has the wrong type (string "3" for call 3)".
+fn mistyped(answer: &Frame, request: Option<&TracedFrame>) -> String {
+    let id = serde_json::from_str::<serde_json::Value>(answer.as_str())
+        .ok()
+        .and_then(|message| message.get("id").cloned());
+    let said = match &id {
+        Some(serde_json::Value::String(text)) => {
+            format!("string {}", serde_json::Value::from(text.as_str()))
+        }
+        Some(other) => format!("number {other}"),
+        None => "a different type".to_owned(),
+    };
+    let call = request
+        .and_then(|request| request.frame.summary().id.clone())
+        .unwrap_or_else(|| "?".to_owned());
+    format!("id has the wrong type ({said} for call {call})")
+}
+
+impl Pairing {
+    fn render(self, go: std::rc::Rc<dyn Fn(u64)>, wire: Option<Wire>) -> Element {
+        match self {
+            Self::Nothing => rsx! {},
+            Self::Answered(answer) => {
+                let target = answer.ordinal;
+                rsx! {
+                    p { class: "frame-pair", "data-slot": "pairing",
+                        "Response #{target} · +{elapsed(answer.elapsed)} "
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            r#type: "button",
+                            "data-slot": "go-response",
+                            onclick: move |_| go(target),
+                            "Go to response"
+                        }
+                    }
+                }
+            }
+            Self::Answers { request, mistyped } => {
+                let target = request.ordinal;
+                rsx! {
+                    p { class: "frame-pair", "data-slot": "pairing",
+                        "Request #{target} · +{elapsed(request.elapsed)} "
+                        button {
+                            class: "btn btn-xs btn-quiet",
+                            r#type: "button",
+                            "data-slot": "go-request",
+                            onclick: move |_| go(target),
+                            "Go to request"
+                        }
+                    }
+                    if let Some(said) = mistyped {
+                        p { class: "bad", "data-slot": "mistyped", "{said}. JSON-RPC does not match it, so the request is still waiting." }
+                    }
+                }
+            }
+            Self::Waiting { since, cancel } => rsx! {
+                p { class: "frame-pair", "data-slot": "pairing",
+                    "No response yet · "
+                    Elapsed { since }
+                    if let (Some(wire), Some(id)) = (wire, cancel) {
+                        " "
+                        button {
+                            class: "btn btn-xs btn-quiet btn-bad",
+                            r#type: "button",
+                            "data-slot": "cancel-call",
+                            title: "Send $/cancel_request for call {id}. The call stays pending until the agent answers it.",
+                            onclick: move |_| wire.cancel(id),
+                            "Cancel request"
+                        }
+                    }
+                }
+            },
+            Self::Unanswered => rsx! {
+                p { class: "frame-pair", "data-slot": "pairing", "No response in the trace" }
+            },
         }
     }
 }
@@ -617,84 +1175,40 @@ impl Query {
     }
 }
 
-/// What the Trace remembers between renders (L1): which method each call
-/// carried, so an answer can name its call, and which frames matched the text
-/// of the current filter.
+/// What the Trace remembers between renders (L1): which frames matched the
+/// text of the current filter.
 #[derive(Default)]
 struct Index {
-    /// The first ordinal not yet read for calls.
-    next: u64,
-    /// Calls by (connection, whether it was sent to the agent, id).
-    calls: std::collections::HashMap<(u64, bool, String), String>,
     /// The filter text the matches below are for.
     text: String,
     matches: std::collections::HashMap<u64, bool>,
 }
 
 impl Index {
-    /// Reads the frames that arrived since the last render, and forgets what
-    /// the filter matched when the filter changed or frames aged out.
-    fn update(&mut self, frames: &[TracedFrame], dropped: usize, query: &Query) {
+    /// Forgets what the filter matched when the filter changed or frames aged
+    /// out.
+    fn update(&mut self, dropped: usize, query: &Query) {
         let first = dropped as u64;
-        if self.next < first {
-            // Cleared or aged out past what was read: start again from what is
-            // held. Calls already read stay known, since an answer still held
-            // can outlive its call.
-            self.next = first;
-            self.matches.retain(|ordinal, _| *ordinal >= first);
-        }
-        for (position, traced) in frames.iter().enumerate() {
-            let ordinal = first + position as u64;
-            if ordinal < self.next {
-                continue;
-            }
-            let summary = traced.frame.summary();
-            if let (FrameKind::Call, Some(method), Some(id)) =
-                (summary.kind, summary.method.as_ref(), summary.id.as_ref())
-            {
-                self.calls.insert(
-                    (
-                        traced.connection,
-                        traced.direction == Direction::ToAgent,
-                        id.clone(),
-                    ),
-                    method.clone(),
-                );
-            }
-        }
-        self.next = first + frames.len() as u64;
+        self.matches.retain(|ordinal, _| *ordinal >= first);
         if self.text != query.text {
             self.text.clone_from(&query.text);
             self.matches.clear();
         }
     }
 
-    /// The method of the call an answer answers, where that call was seen.
-    fn answering(&self, traced: &TracedFrame) -> Option<&str> {
-        let summary = traced.frame.summary();
-        if !matches!(summary.kind, FrameKind::Result | FrameKind::Error) || summary.method.is_some()
-        {
-            return None;
-        }
-        let id = summary.id.as_ref()?;
-        // An answer crosses the other way from its call.
-        self.calls
-            .get(&(
-                traced.connection,
-                traced.direction != Direction::ToAgent,
-                id.clone(),
-            ))
-            .map(String::as_str)
-    }
-
     /// Whether a frame survives the query, remembering the text match.
-    fn matches(&mut self, (ordinal, traced): (u64, &TracedFrame), query: &Query) -> bool {
+    fn matches(
+        &mut self,
+        (ordinal, traced): (u64, &TracedFrame),
+        query: &Query,
+        pairs: &Pairs<'_>,
+    ) -> bool {
         let summary = traced.frame.summary();
         if let Some(method) = &query.method {
             let named = summary
                 .method
                 .as_deref()
-                .or_else(|| self.answering(traced))
+                .or_else(|| pairs.answering(ordinal, traced))
                 .unwrap_or_default();
             if !contains_folded(named, method) {
                 return false;
@@ -747,6 +1261,7 @@ fn frame_name(frame: &TracedFrame, answering: Option<&str>, several: bool) -> St
     let what = match (summary.method.as_deref(), answering) {
         (Some(method), _) => format!("{} {kind}", spoken(method)),
         (None, Some(call)) => format!("{kind} to {}", spoken(call)),
+        (None, None) if frame.frame.omission().is_some() => "dropped frame".to_owned(),
         (None, None) if summary.kind == FrameKind::Unreadable => "unreadable frame".to_owned(),
         (None, None) => kind.to_owned(),
     };
@@ -760,8 +1275,13 @@ fn frame_name(frame: &TracedFrame, answering: Option<&str>, several: bool) -> St
     } else {
         String::new()
     };
+    let hand = if frame.frame.is_hand_sent() {
+        ", sent by hand"
+    } else {
+        ""
+    };
     format!(
-        "{what}{id}, {}{connection}, {}",
+        "{what}{id}, {}{hand}{connection}, {}",
         way(frame.direction).whence,
         stamp(frame.at),
     )
@@ -917,6 +1437,8 @@ mod tests {
         connection: u64,
         direction: Direction,
         json: String,
+        /// Milliseconds after the connection's second it crossed at.
+        later: u64,
     }
 
     fn crossed(connection: u64, direction: Direction, json: &str) -> Crossed {
@@ -924,16 +1446,42 @@ mod tests {
             connection,
             direction,
             json: json.to_owned(),
+            later: 0,
         }
     }
 
     impl Crossed {
+        /// The same frame, crossing `millis` later.
+        fn later(mut self, millis: u64) -> Self {
+            self.later = millis;
+            self
+        }
+
+        /// `HAND:` marks a frame sent by hand, `LOSSY:` one whose bytes end in
+        /// one that is not UTF-8, and `DROPPED:N` a placeholder for N bytes.
         fn traced(&self) -> TracedFrame {
+            let frame = if let Some(text) = self.json.strip_prefix("HAND:") {
+                Frame::by_hand(text)
+            } else if let Some(text) = self.json.strip_prefix("LOSSY:") {
+                let mut bytes = text.as_bytes().to_vec();
+                bytes.push(0xff);
+                Frame::read(bytes)
+            } else if let Some(length) = self.json.strip_prefix("DROPPED:") {
+                Frame::omitted(
+                    b"{",
+                    Omission {
+                        length: length.parse().unwrap(),
+                        limit: 10 * 1024 * 1024,
+                    },
+                )
+            } else {
+                Frame::new(self.json.as_str())
+            };
             TracedFrame {
-                at: at(self.connection),
+                at: at(self.connection) + Duration::from_millis(self.later),
                 connection: self.connection,
                 direction: self.direction,
-                frame: Frame::new(self.json.as_str()),
+                frame,
             }
         }
     }
@@ -972,6 +1520,11 @@ mod tests {
         revealed: Vec<u64>,
         decoded: Vec<u64>,
         selected: Option<u64>,
+        pending_only: bool,
+        /// Calls the client is still waiting on: id, and the ordinal it went
+        /// out under.
+        waiting: Vec<(i64, u64)>,
+        connected: bool,
     }
 
     impl Default for Screen {
@@ -985,6 +1538,9 @@ mod tests {
                 revealed: Vec::new(),
                 decoded: Vec::new(),
                 selected: None,
+                pending_only: false,
+                waiting: Vec::new(),
+                connected: false,
             }
         }
     }
@@ -1001,11 +1557,35 @@ mod tests {
             });
             let revealed = use_signal(|| screen.revealed.clone());
             let decoded = use_signal(|| screen.decoded.iter().copied().collect::<HashSet<u64>>());
+            let wire = use_hook(|| {
+                let mut wire =
+                    Wire::detached(Trace::from_records(frames.peek().clone(), screen.dropped));
+                wire.pending_only.set(screen.pending_only);
+                if screen.connected {
+                    wire.status
+                        .set(acp_inspector_core::ConnectionStatus::Connected);
+                }
+                wire.pending.set(
+                    screen
+                        .waiting
+                        .iter()
+                        .map(|&(id, ordinal)| acp_inspector_core::PendingCall {
+                            id,
+                            method: "session/prompt".to_owned(),
+                            since: std::time::Instant::now(),
+                            captured: Some(ordinal),
+                            hand_sent: true,
+                        })
+                        .collect(),
+                );
+                wire
+            });
             rsx! {
                 TraceView {
                     frames,
                     dropped: screen.dropped,
                     saved: None,
+                    wire,
                     filter: screen.filter.clone(),
                     kinds: screen.kinds,
                     directions: screen.directions,
@@ -1154,7 +1734,309 @@ mod tests {
             1,
             "one row is the list's Tab stop: {html}"
         );
-        assert_eq!(html.matches(r#"tabindex="-1""#).count(), 2, "{html}");
+        // Two rows that are not the stop, and the sent call's own control.
+        assert_eq!(html.matches(r#"tabindex="-1""#).count(), 3, "{html}");
+    }
+
+    #[test]
+    fn an_answer_says_how_long_it_took_and_the_pane_points_at_the_other_half() {
+        let frames = vec![
+            crossed(
+                1,
+                Direction::ToAgent,
+                r#"{"jsonrpc":"2.0","id":1,"method":"session/list"}"#,
+            ),
+            crossed(
+                1,
+                Direction::FromAgent,
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+            )
+            .later(412),
+        ];
+        let html = shown(Screen {
+            frames: frames.clone(),
+            selected: Some(0),
+            ..Screen::default()
+        });
+        let answer = rows_of(&html)
+            .into_iter()
+            .find(|row| row.contains(r#"data-frame="1""#))
+            .expect("the answer row");
+        assert!(
+            answer.contains(r#"data-slot="took""#) && answer.contains("+412 ms"),
+            "{answer}"
+        );
+        let request = pane(&html).unwrap();
+        assert!(
+            request.contains("Response #1 · +412 ms")
+                && request.contains(r#"data-slot="go-response""#),
+            "{request}"
+        );
+        let answered = pane(&shown(Screen {
+            frames,
+            selected: Some(1),
+            ..Screen::default()
+        }))
+        .unwrap();
+        assert!(
+            answered.contains("Request #0 · +412 ms")
+                && answered.contains(r#"data-slot="go-request""#),
+            "{answered}"
+        );
+    }
+
+    #[test]
+    fn a_request_nobody_answered_says_so_and_the_pending_chip_keeps_only_those() {
+        let frames = vec![
+            crossed(
+                1,
+                Direction::ToAgent,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            ),
+            crossed(
+                1,
+                Direction::FromAgent,
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+            ),
+            crossed(
+                1,
+                Direction::ToAgent,
+                r#"{"jsonrpc":"2.0","id":2,"method":"session/prompt"}"#,
+            ),
+            crossed(
+                1,
+                Direction::FromAgent,
+                r#"{"jsonrpc":"2.0","method":"session/update"}"#,
+            ),
+        ];
+        let all = shown(Screen {
+            frames: frames.clone(),
+            selected: Some(2),
+            ..Screen::default()
+        });
+        assert_eq!(all.matches(r#"data-slot="unanswered""#).count(), 1, "{all}");
+        assert!(
+            pane(&all).unwrap().contains("No response in the trace"),
+            "{all}"
+        );
+        let pending = shown(Screen {
+            frames,
+            pending_only: true,
+            ..Screen::default()
+        });
+        assert!(pending.contains("1 of 4 frames"), "{pending}");
+        assert_eq!(rows_of(&pending).len(), 1);
+        assert!(rows_of(&pending)[0].contains("session/prompt"));
+    }
+
+    #[test]
+    fn a_call_still_waiting_says_for_how_long_and_is_listed() {
+        let html = shown(Screen {
+            frames: vec![crossed(
+                1,
+                Direction::ToAgent,
+                r#"HAND:{"jsonrpc":"2.0","id":2,"method":"session/prompt"}"#,
+            )],
+            selected: Some(0),
+            waiting: vec![(2, 0)],
+            ..Screen::default()
+        });
+        let detail = pane(&html).unwrap();
+        assert!(
+            detail.contains("No response yet · ") && detail.contains(r#"data-slot="elapsed""#),
+            "{detail}"
+        );
+        assert!(
+            html.contains(r#"data-slot="pending-calls""#)
+                && html.contains("Waiting for 1 response"),
+            "{html}"
+        );
+        // Not connected, so nothing to cancel with.
+        assert!(!html.contains(r#"data-slot="cancel-call""#), "{html}");
+
+        // Connected: the pane and the list both offer to give it up.
+        let live = shown(Screen {
+            frames: vec![crossed(
+                1,
+                Direction::ToAgent,
+                r#"{"jsonrpc":"2.0","id":2,"method":"session/prompt"}"#,
+            )],
+            selected: Some(0),
+            waiting: vec![(2, 0)],
+            connected: true,
+            ..Screen::default()
+        });
+        assert_eq!(
+            live.matches(r#"data-slot="cancel-call""#).count(),
+            2,
+            "{live}"
+        );
+        assert!(live.contains(">Cancel request<"), "{live}");
+        assert!(
+            live.contains(r#"data-slot="resend""#),
+            "a sent call can be edited and sent again: {live}"
+        );
+    }
+
+    #[test]
+    fn an_answer_with_the_wrong_id_type_is_annotated() {
+        let html = shown(Screen {
+            frames: vec![
+                crossed(
+                    1,
+                    Direction::ToAgent,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"session/list"}"#,
+                ),
+                crossed(
+                    1,
+                    Direction::FromAgent,
+                    r#"{"jsonrpc":"2.0","id":"3","result":{}}"#,
+                ),
+            ],
+            selected: Some(1),
+            ..Screen::default()
+        });
+        assert!(html.contains(r#"data-slot="mistyped""#), "{html}");
+        let detail = pane(&html).unwrap();
+        assert!(
+            detail.contains("id has the wrong type (string ")
+                && detail.contains("3")
+                && detail.contains(" for call 3)"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn lossy_dropped_and_hand_sent_frames_say_what_they_are() {
+        let html = shown(Screen {
+            frames: vec![
+                crossed(
+                    1,
+                    Direction::ToAgent,
+                    r#"HAND:{"jsonrpc":"2.0","id":9,"method":"x/poke"}"#,
+                ),
+                crossed(
+                    1,
+                    Direction::FromAgent,
+                    r#"LOSSY:{"jsonrpc":"2.0","method":"x/bytes","params":"#,
+                ),
+                crossed(1, Direction::FromAgent, "DROPPED:20971520"),
+            ],
+            selected: Some(2),
+            ..Screen::default()
+        });
+        assert!(
+            html.contains(r#"data-slot="hand-sent""#) && html.contains(">hand-sent<"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"data-slot="lossy""#) && html.contains(">not UTF-8<"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Frame of 20.0 MiB dropped (limit 10.0 MiB)"),
+            "a placeholder says how long the frame was: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="dropped frame, received from the agent"#),
+            "{html}"
+        );
+        assert!(html.contains(", sent by hand, "), "{html}");
+        assert!(
+            !pane(&html).unwrap().contains(r#"data-slot="copy""#),
+            "there is nothing of a dropped frame to copy"
+        );
+    }
+
+    #[test]
+    fn merged_rows_interleave_stderr_by_read_time_with_keys_that_survive_ageing() {
+        let frame = |second: u64| TracedFrame {
+            at: at(second),
+            connection: 1,
+            direction: Direction::FromAgent,
+            frame: Frame::new("{}"),
+        };
+        let line = |second: u64, kind: DiagnosticKind| Diagnostic {
+            at: at(second),
+            kind,
+        };
+        let stderr = |text: &str| DiagnosticKind::Stderr(text.to_owned());
+        let frames = vec![frame(1), frame(3), frame(5)];
+        let lines = vec![
+            line(2, stderr("a")),
+            line(2, DiagnosticKind::StderrLineLossy),
+            line(4, stderr("b")),
+            line(6, stderr("c")),
+        ];
+        let merged = merge(&frames, 0, &lines, 0);
+        assert_eq!(
+            merged.iter().map(|(_, row)| *row).collect::<Vec<_>>(),
+            vec![
+                Row::Frame(0),
+                Row::Line(0),
+                Row::Frame(1),
+                Row::Line(2),
+                Row::Frame(2),
+                Row::Line(3),
+            ],
+            "each line between the frames read either side of it; transport remarks left out"
+        );
+        assert!(
+            merged.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "{merged:?}"
+        );
+        // The oldest frame and line age out: what is left keeps its keys.
+        let aged = merge(&frames[1..], 1, &lines[1..], 1);
+        let keys = |rows: &[(u64, Row)]| rows.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        assert_eq!(keys(&merged[2..]), keys(&aged), "{aged:?}");
+        // A frame and a line read at the same moment: the frame first.
+        let tied = merge(&[frame(2)], 0, &[line(2, stderr("x"))], 0);
+        assert_eq!(tied[0].1, Row::Frame(0));
+    }
+
+    #[test]
+    fn the_merged_view_draws_stderr_lines_among_the_frames() {
+        fn host() -> Element {
+            let frames = use_signal(|| {
+                traffic()
+                    .iter()
+                    .enumerate()
+                    .map(|(nth, crossed)| crossed.clone().later(nth as u64 * 100).traced())
+                    .collect::<Vec<_>>()
+            });
+            let lines = use_signal(|| {
+                vec![Diagnostic {
+                    at: at(1) + Duration::from_millis(50),
+                    kind: DiagnosticKind::Stderr("agent says hello".to_owned()),
+                }]
+            });
+            let revealed = use_signal(Vec::<u64>::new);
+            let decoded = use_signal(HashSet::<u64>::new);
+            let wire = use_hook(|| {
+                let mut wire = Wire::detached(Trace::from_records(frames.peek().clone(), 0));
+                wire.merged.set(true);
+                wire
+            });
+            rsx! {
+                TraceView {
+                    frames, dropped: 0, saved: None, filter: String::new(), kinds: Kinds::default(),
+                    revealed, decoded, selected: None, on_choose: move |_: u64| {}, on_seek: move |_: u64| {},
+                    wire, lines: Some(lines.into()),
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        let rows = rows_of(&html);
+        assert_eq!(rows.len(), 4, "{html}");
+        // Newest first in the DOM: the line read between the first two frames
+        // is third from the top.
+        assert!(
+            rows[2].contains(r#"data-slot="stderr-line""#) && rows[2].contains("agent says hello"),
+            "{rows:?}"
+        );
+        assert!(rows[3].contains(r#"data-frame="0""#), "{rows:?}");
     }
 
     #[test]
