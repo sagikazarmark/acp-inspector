@@ -514,7 +514,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 
 /* **The bar is the title bar on macOS** (D17): the window's title bar is
    transparent over the content, so the bar leaves the traffic lights their
-   room at its leading edge, and its empty pieces move the window (`main.rs`).
+   room at its leading edge, and its empty pieces move the window (`app/bar.rs`).
    Elsewhere the platform's frame is above it and none of this applies. */
 .bar-lights { width: 72px; height: 100%; flex: none; margin-right: -16px; }
 /* The button that opens the rail as a drawer, drawn only where the rail is
