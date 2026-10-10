@@ -25,8 +25,7 @@ pub(crate) fn use_quit(
     export_work: Signal<export::Work>,
     stopping: Signal<bool>,
 ) -> Quit {
-    // What a reader would lose by quitting now: frames recorded since the last
-    // export finished, that are still in the trace (F9).
+    // Frames recorded since the last finished export that the trace still holds.
     #[cfg(feature = "desktop")]
     let unexported = {
         let Stores {
@@ -39,10 +38,8 @@ pub(crate) fn use_quit(
                     .unexported(dropped() + frames.read().len())
         })
     };
-    // Quitting for good: the agent is asked to stop, given a moment to, and
-    // then the window closes — whose teardown kills whatever is left
-    // (`shell::use_shutdown`). Stopped here rather than left to a teardown the
-    // event loop may not reach.
+    // Ask the agent to stop, give it `QUIT_GRACE`, then close; the window's
+    // teardown (`shell::use_shutdown`) kills whatever is left.
     let quitting = inspector.clone();
     let quit_now = EventHandler::new(move |()| {
         quitting.disconnect_gracefully();
@@ -77,9 +74,8 @@ pub(crate) fn use_quit(
     }
 }
 
-/// The question a close or a quit asks while the trace holds frames nobody has
-/// exported (F9). Opened by `open`; answered by exporting,
-/// quitting anyway, or staying.
+/// Asks before quitting while the trace holds frames nobody exported: export,
+/// quit anyway, or stay.
 #[component]
 pub(crate) fn QuitDialog(on_export: EventHandler<()>, on_quit: EventHandler<()>) -> Element {
     rsx! {
@@ -135,7 +131,6 @@ pub(crate) fn QuitDialog(on_export: EventHandler<()>, on_quit: EventHandler<()>)
     }
 }
 
-/// The quit question's two scripts.
 const DIALOG: &str = "quit-dialog";
 
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]

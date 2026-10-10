@@ -1,12 +1,12 @@
-//! The Trace filter box (F8): what it asked for, and what it matched.
+//! The Trace filter box: what it asked for, and what it matched.
 
 use acp_inspector_core::TracedFrame;
 
 use super::pairing::Pairs;
 use crate::console::contains_folded;
 
-/// What the Trace filter box asked for (F8): `method:NAME` and `id:N` match
-/// those envelope fields, and every other word is text the frame must contain.
+/// What the filter box asked for: `method:NAME` and `id:N` match those envelope
+/// fields, and every other word is text the frame must contain.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Query {
     pub(super) method: Option<String>,
@@ -33,8 +33,7 @@ impl Query {
     }
 }
 
-/// What the Trace remembers between renders (L1): which frames matched the
-/// text of the current filter.
+/// Which frames matched the current filter's text, remembered between renders.
 #[derive(Default)]
 pub(super) struct Index {
     /// The filter text the matches below are for.
@@ -43,8 +42,7 @@ pub(super) struct Index {
 }
 
 impl Index {
-    /// Forgets what the filter matched when the filter changed or frames aged
-    /// out.
+    /// Forgets the matches when the filter text changed or frames aged out.
     pub(super) fn update(&mut self, dropped: usize, query: &Query) {
         let first = dropped as u64;
         self.matches.retain(|ordinal, _| *ordinal >= first);

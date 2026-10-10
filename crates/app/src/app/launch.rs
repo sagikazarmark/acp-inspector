@@ -13,37 +13,25 @@ use crate::{connect, mcp, navigation, rail};
 /// The launch's own state, and the three ways a connection starts or ends.
 #[derive(Clone, Copy)]
 pub(crate) struct Launch {
-    // The invocation the live agent was launched from, kept for the one thing
-    // that needs it after the launch: a session created on demand is opened in
-    // the same working directory the handshake's was (§7.5), and that is the
-    // form's answer rather than this window's. The launched command and not the
-    // form's current contents — the fields are editable while an agent runs,
-    // and the agent that is running is the one being asked.
+    /// The invocation the live agent was launched from, not the form's current
+    /// contents: new sessions open with it.
     pub launched: Signal<Option<AgentCommand>>,
-    // The launch handshake is longer than the Connection transition: core says
-    // Connected as soon as the transport exists, while initialize and
-    // session/new may still be in flight. Keep that interval explicit in the
-    // launch control rather than calling it Running before the launch returns.
+    /// Whether a launch is in flight. Core says Connected once the transport
+    /// exists, while `initialize` and `session/new` may still be running.
     pub launching: Signal<bool>,
-    // Why the list will not survive this window, if it will not. Empty on every
-    // machine with a home directory, which is why it is a note under the form
-    // rather than a screen.
+    /// Why the recent list will not survive this window, if it will not.
     pub unsaved: Signal<Option<String>>,
-    // A remembered invocation the first-run card asked the launch form to be
-    // filled with, numbered so choosing the same one twice refills twice.
+    /// An invocation the first-run card asked the launch form to be filled with,
+    /// numbered so choosing the same one twice refills twice.
     pub prefill: Signal<Option<(u64, AgentCommand)>>,
-    // Whether an agent this window let go of gracefully is still stopping
-    // (F6): the rail says so, and a relaunch waits for it.
+    /// Whether a gracefully disconnected agent is still stopping; a relaunch
+    /// waits for it.
     pub stopping: Signal<bool>,
-    // Where the diagnostics stood when the last launch began, so a failed
-    // launch is told from what that launch wrote and nothing older (X1).
+    // Where the diagnostics stood when the last launch began, so a failure is
+    // told from what that launch wrote.
     launch_mark: Signal<usize>,
-    // And the invocation the form folds *around*: the launched command, once
-    // the agent it started has described itself. Not `Connected` on its own —
-    // that status is set optimistically, before the child is known to exist, so
-    // a typo would fold the form and re-open it a frame later. This is the same
-    // mark the launch handler already uses to decide an invocation is worth
-    // remembering.
+    /// The launched command once its agent has described itself. Not `Connected`
+    /// alone: that is set optimistically, before the child is known to exist.
     pub live: Memo<Option<AgentCommand>>,
     pub launch: Callback<AgentCommand>,
     pub on_restart: EventHandler<()>,
@@ -51,8 +39,7 @@ pub(crate) struct Launch {
 }
 
 impl Launch {
-    // Why the last launch did not reach an agent, from what that launch wrote
-    // (X1). Said inside the Connect dialog, which stays open for it.
+    /// Why the last launch did not reach an agent, from what that launch wrote.
     pub fn failure(
         &self,
         stores: Stores,
@@ -103,10 +90,8 @@ pub(crate) fn use_launch(
         }
     });
 
-    // Ending the connection, from wherever it is asked for: the agent is asked
-    // to stop (stdin closed, then SIGTERM, then SIGKILL — F6) rather than
-    // killed, and the rail says "Stopping…" until it has. Focus goes to the
-    // way back, Restart, rather than to the document (X6).
+    // Asks the agent to stop (stdin closed, then SIGTERM, then SIGKILL) and
+    // moves focus to Restart.
     let stopping = inspector.clone();
     let on_disconnect = EventHandler::new(move |()| {
         stopping.disconnect_gracefully();
@@ -114,11 +99,8 @@ pub(crate) fn use_launch(
         navigation::Destination::Control { id: rail::RESTART }.focus();
     });
 
-    // The one way an agent is launched: the dialog's Launch, a recent row's
-    // play button, Restart and "Restart with these settings" all come here
-    // (X1, X4). Spawn, `initialize`, `session/new` — one call, because the
-    // order of the three is core's business and not a window's (§5). Starting
-    // over a live agent replaces it; the trace is kept.
+    // Every launch comes here: the dialog, a recent row, Restart. Spawn,
+    // `initialize` and `session/new` are one core call; the trace is kept.
     let starting = inspector.clone();
     let lines = stores.lines;
     let dropped_lines = stores.dropped_lines;
@@ -139,18 +121,14 @@ pub(crate) fn use_launch(
         launch_mark.set(*dropped_lines.peek() + lines.peek().len());
         launched.set(Some(agent.clone()));
         spawn(async move {
-            // An agent this window disconnected is gone before the next one
-            // starts (F6): Restart right after Disconnect waits for the stop.
+            // Restart right after Disconnect waits for the graceful stop.
             inspector.stopped().await;
             let spawned = with_login_path(agent.clone()).await;
             let failure = inspector.start(&spawned).await.err();
             launching.set(false);
-            // Remembered because an agent answered for itself — the command
-            // exists, it ran, and it speaks ACP — even if the handshake failed
-            // after that: an agent that will not open a session until somebody
-            // logs in (§7.1) is exactly the case. A command that never started
-            // never said anything; that is a typo, and it is still in the
-            // fields, with the reason above them.
+            // Remembered once an agent answered, even if the handshake then
+            // failed (e.g. it wants a login). A command that never started is a
+            // typo and is not remembered.
             if inspector.agent().is_some() {
                 let remembering = recent.peek().clone();
                 if let Some(remembering) = remembering {
@@ -168,13 +146,11 @@ pub(crate) fn use_launch(
                         remembered.set(entries);
                     }
                 }
-                // The one thing that shuts the dialog which is not the reader:
-                // an agent answered, so the task it was open for is done.
+                // An agent answered, so the dialog's task is done.
                 connect::close();
                 if matches!(failure, Some(CallError::InvalidMcp(_))) {
                     mcp::correct_in_sessions();
                 } else {
-                    // And the keyboard goes where the next thing is typed (X6).
                     navigation::Destination::Prompt.focus();
                 }
             } else {
@@ -203,7 +179,7 @@ pub(crate) fn use_launch(
     }
 }
 
-/// Marks `stopping` until the inspector's graceful stop is over (F6).
+/// Marks `stopping` until the inspector's graceful stop is over.
 pub(crate) fn watch_stop(inspector: Inspector, mut stopping: Signal<bool>) {
     if !inspector.is_stopping() {
         return;
@@ -215,9 +191,9 @@ pub(crate) fn watch_stop(inspector: Inspector, mut stopping: Signal<bool>) {
     });
 }
 
-/// The invocation as it is spawned: with the login shell's `PATH` where the
-/// app's own is the minimal one a Finder launch gets and the reader did not
-/// set one (X2). What is remembered and shown is the invocation as typed.
+/// The invocation as spawned: with the login shell's `PATH` where the reader
+/// set none, since a Finder launch gets a minimal one. What is remembered is the
+/// invocation as typed.
 async fn with_login_path(agent: AgentCommand) -> AgentCommand {
     #[cfg(feature = "desktop")]
     {

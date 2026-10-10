@@ -8,9 +8,8 @@ use super::stores::Stores;
 use crate::agent::{self, AuthenticationCall, Failed, Opening};
 use crate::{client_services, session};
 
-// Authentication has no protocol-level loading state. This is only the
-// Connection-scoped presentation fact; core's AuthState remains the one
-// account of whether the Agent accepted or refused the request.
+/// Authentication calls in flight, scoped to the connection. Presentation only:
+/// core's `AuthState` is the account of what the agent answered.
 #[derive(Clone, Default)]
 pub(crate) struct AuthenticationWork {
     connection: u64,
@@ -52,16 +51,12 @@ pub(crate) fn use_gates(
     inspector: &Inspector,
     described: Signal<Option<v1::InitializeResponse>>,
 ) -> Gates {
-    // One core-owned answer drives both the listing claim and its Affordance in
-    // the Agent panel. Reading the description subscribes this memo to the next
-    // agent even though the protocol interpretation remains core's (§5).
+    // Reading the description subscribes each gate to the next agent; the
+    // protocol answer itself stays core's.
     let gated = inspector.clone();
     let lists_sessions = use_memo(move || described.read().is_some() && gated.lists_sessions());
 
-    // And which way into a session it already has, if any — the same question
-    // asked of the same store, with the preference between the two calls core's
-    // as well (§7.5): a window that picked between `session/load` and
-    // `session/resume` would be a window deciding protocol.
+    // Core also picks between `session/load` and `session/resume`.
     let restoring = inspector.clone();
     let restores = use_memo(move || {
         described
@@ -71,27 +66,19 @@ pub(crate) fn use_gates(
             .flatten()
     });
 
-    // And the two ways out of one, each its own claim in its own field (§7.5).
-    // Same shape as the listing gate for the same reason: reading the signal is
-    // the subscription and the condition at once.
     let closing = inspector.clone();
     let closes = use_memo(move || described.read().is_some() && closing.closes_sessions());
     let deleting = inspector.clone();
     let deletes = use_memo(move || described.read().is_some() && deleting.deletes_sessions());
 
-    // And whether a session can be opened with roots the user supplies (§7.7),
-    // which is the same question again about the one advertisement here that
-    // gates a field on a request rather than a method. It gates the control and
-    // nothing else: a reopen hands the agent back the roots it reported whatever
-    // this says, which is core's rule and not a thing this window decides.
+    // Gates the roots control only: a reopen sends the reported roots whatever
+    // this says.
     let rooting = inspector.clone();
     let opens_with_roots =
         use_memo(move || described.read().is_some() && rooting.opens_with_roots());
 
-    // And the way out of a login, claimed in the same shape under `auth` rather
-    // than under `sessionCapabilities` (§7.7). Gated on the advertisement and on
-    // nothing else — never on where authentication stands, because a logout with
-    // nobody logged in is the corner worth driving.
+    // Never gated on where authentication stands: logout with nobody logged in
+    // is worth driving.
     let advertising_logout = inspector.clone();
     let logs_out = use_memo(move || described.read().is_some() && advertising_logout.logs_out());
 
@@ -133,21 +120,14 @@ pub(crate) fn open_session(
 #[derive(Clone, Copy)]
 pub(crate) struct Lifecycle {
     pub auth_work: Signal<AuthenticationWork>,
-    // Presentation state for listing requests, scoped to the Connection that
-    // started them. Multiple asks remain possible because the Affordance is
-    // gated only by the Advertisement; the count keeps the notice visible until
-    // every ask on this Connection has answered.
+    /// Connection generation and listing asks in flight; the notice stays up
+    /// until every ask on this connection has answered.
     pub listing_work: Signal<(u64, usize)>,
-    // Which lifecycle call last failed, and what it said — `session/new`, a
-    // listed session reopened, closed or deleted. Its own signal rather than
-    // `problem`: that one is the handshake's, and a refusal here leaves whatever
-    // was live still live. One signal for all four because it is one sentence in
-    // one place: the affordances sit together and the latest answer is the one
-    // worth reading — and it carries the method, because which of the four
-    // refused is the finding (§7.5).
+    /// The last lifecycle call that failed, with its method. Separate from
+    /// `problem`, which is the handshake's: a refusal here leaves the live
+    /// session live.
     pub failed: Signal<Option<Failed>>,
-    // Why the last launch never got as far as a session, if it did not. Core
-    // answers the handshake once; the stores carry everything else.
+    /// Why the last launch never reached a session, if it did not.
     pub problem: Signal<Option<CallError>>,
 }
 
@@ -160,10 +140,8 @@ pub(crate) fn use_lifecycle() -> Lifecycle {
     }
 }
 
-// Everything about the agent that two surfaces draw: the Agent screen,
-// which says what it claimed, and the Sessions dialog, which acts on what
-// it has. One value built once — two literals would be two places for the
-// same fact to be wrong.
+/// The agent's claims and the handlers acting on them, shared by the Agent
+/// screen and the Sessions dialog.
 pub(crate) fn claims(
     inspector: &Inspector,
     stores: Stores,
@@ -188,8 +166,7 @@ pub(crate) fn claims(
 
     agent::Claims {
         agent: (stores.described)(),
-        // What this connection's `initialize` claimed, or what the next
-        // launch will (F3, F13).
+        // What this connection's `initialize` claimed, or what the next launch will.
         client: client_services::claim(inspector),
         client_info: acp_inspector_core::client_info(),
         driven: (stores.driven)(),
@@ -207,8 +184,7 @@ pub(crate) fn claims(
         connected: stores.connected(),
         failed: failed(),
         logs_out: (gates.logs_out)(),
-        // Neither answer is waited for here either: both land in a
-        // store on their way past, and this window renders stores.
+        // Not waited for: the answers land in stores.
         on_authenticate: EventHandler::new(move |method: v1::AuthMethodId| {
             let inspector = authenticating.clone();
             let call = AuthenticationCall::Authenticate(method.clone());
@@ -218,12 +194,8 @@ pub(crate) fn claims(
                 auth_work.with_mut(|work| work.finish(connection, &call));
             });
         }),
-        // And the way back out of one. Nothing is waited for here
-        // either, and nothing else is sent: the live session is left
-        // strictly alone, because what the agent does to a session it
-        // has logged out of is the finding (§7.7). What came of the
-        // call is on the `logout` row above, where the record draws
-        // it.
+        // Nothing else is sent: what the agent does to the live session after a
+        // logout is the finding.
         on_logout: EventHandler::new(move |()| {
             let inspector = logging_out.clone();
             let call = AuthenticationCall::Logout;
@@ -233,29 +205,14 @@ pub(crate) fn claims(
                 auth_work.with_mut(|work| work.finish(connection, &call));
             });
         }),
-        // A second session on the agent that is already running.
-        // Everything the switch costs — the turn cancelled, the
-        // requests answered `cancelled`, the timeline discarded and
-        // rebuilt — is core's, in the one call, because a sequence
-        // in an event handler is a sequence each surface would have
-        // to get right again (§5). What comes back is why there is
-        // no new session, if there is none.
-        // The roots ride with it, because they are part of the ask
-        // rather than a setting: what the control beside the button
-        // holds is what this session is opened with, and `None` is
-        // an agent that advertised no control at all (§7.7).
+        // The switch's costs (cancelled turn and requests, rebuilt timeline) are
+        // core's, in one call. `None` roots means the agent advertised no control.
         on_new_session: EventHandler::new(move |roots: Option<Roots>| {
             if !crate::mcp::ready_to_open() {
                 return;
             }
             let inspector = opening.clone();
-            // The invocation, not a directory: which command is
-            // running is this window's to remember, and what
-            // session a command opens is core's to decide (§7.1).
-            // There is no agent here that was not launched from the
-            // form, and the button is only drawn once one has
-            // described itself, so the empty case is a shape rather
-            // than a path.
+            // The button is only drawn once a launched agent described itself.
             let Some(command) = launched() else {
                 return;
             };
@@ -274,12 +231,7 @@ pub(crate) fn claims(
                 });
             });
         }),
-        // A session the agent listed, opened. Which call that takes
-        // is core's answer read back out of the same memo the rows
-        // were drawn from, so the button and the call cannot say
-        // different things; the switch it costs is core's too, in
-        // the one call (§5). What comes back is why there is no new
-        // live session, if there is none.
+        // Which call reopens it is the same memo the rows were drawn from.
         on_open: EventHandler::new(move |opening: Opening| {
             if !crate::mcp::ready_to_open() {
                 return;
@@ -300,12 +252,7 @@ pub(crate) fn claims(
                 failed.set(outcome.err().map(Failed::of(how.method())));
             });
         }),
-        // The two ways a session ends, and the same shape as every
-        // other affordance here: one call into core, nothing waited
-        // for, and what comes back is why it did not happen. The
-        // listing is asked for again by core rather than from here,
-        // because a call and the question it makes worth asking are
-        // one sequence and sequences are core's (§5).
+        // Core asks for the listing again afterwards.
         on_close: EventHandler::new(move |session: v1::SessionId| {
             let inspector = closing_session.clone();
             failed.set(None);

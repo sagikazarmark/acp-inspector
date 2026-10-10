@@ -2,10 +2,8 @@
 
 use dioxus::prelude::*;
 
-/// Where a panic is written down (C8): the directory core keeps its state in
-/// (`dirs::state_dir()`, else the data directory — `kept.rs`), under the
-/// inspector's own folder. Resolved from the environment here because the app
-/// crate does not depend on `dirs`; the rules are the same.
+/// Where panics are logged: core's state directory, resolved from the
+/// environment because this crate does not depend on `dirs`.
 fn crash_log() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let base = if cfg!(target_os = "macos") {
@@ -73,9 +71,8 @@ pub(crate) fn install_crash_log() {
     }));
 }
 
-/// What the window draws when a screen fails to render: the error, where the
-/// crash log is, and a way to draw the screens again. The connection and the
-/// stores are above the boundary and survive it.
+/// What the window draws when a screen fails to render, with the way to draw it
+/// again. The connection and stores sit above the boundary and survive.
 pub(crate) fn recovery(errors: ErrorContext) -> Element {
     let said = errors
         .error()
@@ -110,8 +107,7 @@ mod tests {
             crash_log().is_none_or(|path| path.ends_with("acp-inspector/crash.log")),
             "the log is under the inspector's own state folder"
         );
-        // The hook itself is process-wide and is not swapped in a test that
-        // runs beside others; what it writes is.
+        // The hook is process-wide, so the test checks what it writes.
         let entry = crash_text(
             jiff::Timestamp::UNIX_EPOCH,
             "main",

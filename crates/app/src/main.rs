@@ -1,22 +1,11 @@
 //! The ACP Inspector's screens: a window onto an [`Inspector`].
 //!
-//! **Strictly presentational** (`docs/architecture.md` §5). Everything here
-//! subscribes to a store and renders it, or takes a click and calls core back.
-//! There is no protocol logic, no connection lifecycle and nothing to decide: a
-//! failed spawn opens the console because the *status* says the agent never
-//! started, and frames appear because the *trace* grew — both of them facts
-//! core's tests assert without a window (`crates/core/tests/inspector.rs`).
+//! Strictly presentational: everything here renders a store or calls core back,
+//! with no protocol logic or connection lifecycle. See `docs/architecture.md` §5.
 //!
-//! **One crate, a feature per renderer**
-//! (`docs/adr/0011-one-ui-crate-a-feature-per-renderer.md`). The screens are
-//! the same program whichever window draws them; what differs is the shell
-//! around them — the frame, the title bar, the menu strip — and that is
-//! `shell.rs`, the one module that imports `dioxus::desktop`, gated on the
-//! `desktop` feature along with the three places this file calls into it.
-//!
-//! This is also the repo's first desktop artifact (§15 q1), so what it proves
-//! beyond the screens is the ground itself: a WebView shell over an async child
-//! process, built and run by plain `cargo run`.
+//! One crate, a feature per renderer
+//! (`docs/adr/0011-one-ui-crate-a-feature-per-renderer.md`): only `shell.rs`
+//! imports `dioxus::desktop`, gated on the `desktop` feature.
 
 #[cfg(not(any(feature = "desktop", feature = "web")))]
 compile_error!(
@@ -26,6 +15,7 @@ compile_error!(
 mod agent;
 mod app;
 mod appearance;
+mod attachment;
 mod attachment_draft;
 mod client_services;
 mod clipboard;
@@ -43,10 +33,7 @@ mod export;
 mod indent;
 mod json;
 mod page;
-// The window's own mark, drawn into its icon: reached only through the shell,
-// so it goes where the shell goes. The bundle's icon includes the same file by
-// path and does not pass through here (`examples/bundle-icon.rs`).
-mod attachment;
+// The window icon's mark is reached only through the shell.
 #[cfg(feature = "desktop")]
 mod mark;
 mod mcp;
@@ -56,6 +43,7 @@ mod navigation;
 mod palette;
 mod permission;
 mod rail;
+mod raw;
 mod session;
 mod session_settings;
 #[cfg(feature = "desktop")]
@@ -68,8 +56,6 @@ mod timeline;
 mod toast;
 mod trace;
 mod update;
-// The Console's tools beyond the frames (F1, F2, F4, F5).
-mod raw;
 mod view;
 mod wire;
 
@@ -92,22 +78,17 @@ use toast::Toast;
 
 fn main() {
     app::crash::install_crash_log();
-    // Which window draws the screens is the build's to say, not this file's:
-    // the desktop shell is a frame, a title bar, a menu and an icon around them
-    // (`shell.rs`), and any other renderer gets the screens and nothing around.
     #[cfg(feature = "desktop")]
     shell::launch(App);
     #[cfg(not(feature = "desktop"))]
     dioxus::launch(App);
 }
 
-/// The window: a spawn form, the turn timeline, and the Console — the trace and
-/// the agent's stderr as tabs — under both.
+/// The window: the rail, the timeline and the Console, with their dialogs.
 #[component]
 fn App() -> Element {
-    // One inspector for the window's lifetime. One connection at a time is
-    // core's rule (`CONTEXT.md`, *Connection*), so the window has nothing to
-    // arbitrate.
+    // One inspector for the window's lifetime; core holds one connection at a
+    // time.
     let inspector = use_hook(Inspector::new);
     use_drop({
         let inspector = inspector.clone();
@@ -118,52 +99,30 @@ fn App() -> Element {
     mcp::provide(inspector.clone());
     client_services::provide(inspector.clone());
 
-    // And the one thing the window says about *itself* rather than about the
-    // agent: that a copy took, or that one of its own files was set aside
-    // (`toast.rs`). Provided here because the controls it answers for are on
-    // three screens, and takes itself away on a clock this call starts — the
-    // window's, so no row can carry it off.
+    // The window's own feedback (a copy took, a file was set aside), on a
+    // clock owned by the window so no row can carry it off.
     let announcer = toast::provide();
     let kept = app::kept::use_kept(announcer);
-    // One listener for every tailing list in the window, installed once. Which
-    // lists exist changes as tabs are selected and surfaces empty, so it
-    // captures rather than being attached per element (`tail.rs`).
+    // One capturing listener for every tailing list, since which lists exist
+    // changes as tabs switch (`tail.rs`).
     use_effect(|| {
         document::eval(tail::WATCH);
     });
-    // And the one keystroke that is not a menu accelerator, because it has to
-    // work wherever the reader's focus is (`palette.rs`).
+    // The palette's keystroke works wherever focus is (`palette.rs`).
     use_effect(|| {
         document::eval(&palette::watch());
     });
 
-    // Both screens from the start: the Console's promise is that the wire and
-    // the agent's diagnostics sit *beside* the turn instead of in a separate
-    // terminal (§9), and a live view behind a click is a click away from being
-    // the terminal it replaced.
+    // Window-session navigation: never persisted, so a new window opens on the
+    // defaults. A status change can switch the Console tab, so it lives here.
     let navigation = navigation::use_navigation();
     let spine = navigation.spine;
-    // And which of the Console's two surfaces is on screen. The window's rather
-    // than the panel's, because the one thing that changes it without a click is
-    // a connection status, and statuses arrive here. Not persisted, and the
-    // default is stated by the type (`console::Tab`).
     let tab = navigation.console;
-    // Which lookup the rail is on. The window's, like the two above and for the
-    // same reason: it is never written to `settings.json`, because what somebody
-    // was reading yesterday is not what this window opens onto.
     let rail_tab = navigation.rail;
-    // Which region a narrow window shows. Destination navigation coordinates
-    // it with the wide layout; CSS alone decides the breakpoint.
+    // Which region a narrow window shows; CSS alone decides the breakpoint.
     let focus = navigation.region;
-    // What each screen has been asked to show of the other's (§9: the turn and
-    // the wire, at once). Both are the window's rather than either screen's,
-    // because pointing at the other screen is not a thing a screen can do to
-    // itself — and reaching the trace also opens the panel it is in, which is
-    // this window's state and nobody else's.
     let revealed = navigation.revealed;
     let sought = navigation.sought;
-    // The rail as a drawer, its width, and its two accounts open wide: the
-    // narrow layout's three pieces of state (D18).
     let drawer = navigation.drawer;
     let rail_width = use_signal(|| rail::RAIL_DEFAULT);
     rail::use_remembered_width(rail_width);
@@ -189,12 +148,8 @@ fn App() -> Element {
         auth,
         ..
     } = stores;
-    // The failure is a string because a rendered failure is a sentence: an
-    // `io::Error` is neither cloneable nor comparable, and what the panel does
-    // with one is print it.
     let mut export_work = use_signal(export::Work::default);
-    // Pairing, pending calls, sending by hand, and a trace opened from a file
-    // shown in place of the live one (`wire.rs`, `view.rs`).
+    // Pairing, pending calls, sending by hand, and an opened trace file.
     let wire = wire::use_wire(inspector.clone(), status);
     let lifecycle = app::claims::use_lifecycle();
     let Lifecycle {
@@ -214,14 +169,9 @@ fn App() -> Element {
     } = launch;
     let gates = app::claims::use_gates(&inspector, described);
 
-    // The one thing that shuts the Sessions dialog which is not the reader: a
-    // session that opened. That is what every control in it which opens one was
-    // pressed for, and the screen it opened onto is behind the dialog. A session
-    // *ending* leaves it open on purpose — closing or deleting one is managing
-    // the list, and a window that walked away in the middle would be answering a
-    // click nobody made. `peek` rather than a read, because what this compares
-    // against is the last render's value and subscribing to it would make the
-    // effect its own cause.
+    // A session that opened shuts the Sessions dialog; one that ended leaves it
+    // open, since that is managing the list. `peek`, because subscribing to the
+    // previous value would make the effect its own cause.
     let mut opened_before = use_signal(|| None::<v1::SessionId>);
     use_effect(move || {
         let live = session();
@@ -235,11 +185,8 @@ fn App() -> Element {
     #[cfg(feature = "desktop")]
     app::bar::use_title(described, launched);
 
-    // Which captured frames the typed layer made an entry of — the answer a
-    // trace row needs to offer the way back to the turn. A memo off the
-    // timeline rather than a store of its own: it is a question about entries
-    // this window already has, and the timeline announcing a revision is
-    // exactly when the answer changes (§11 seam 3).
+    // Which captured frames became timeline entries, so a trace row can offer
+    // the way back to the turn. Recomputed on each timeline revision.
     let decoded = use_memo(move || {
         wire.view
             .entries_or(entries)
@@ -293,8 +240,7 @@ fn App() -> Element {
         },
     );
 
-    // The newest request the agent is waiting on the reader for, by the frame
-    // that asked it — what "Go to waiting request" goes to.
+    // The frame of the newest request waiting on the reader.
     let waiting_request = use_memo(move || {
         blocked()
             .then(|| {
@@ -316,8 +262,8 @@ fn App() -> Element {
     rsx! {
         style { {style::SHEET} }
 
-        // A screen that fails to draw is caught here rather than leaving a blank
-        // window; the stores and the connection are above it and survive (C8).
+        // A screen that fails to draw is caught here; the stores and the
+        // connection live above the boundary and survive it.
         ErrorBoundary {
             handle_error: app::crash::recovery,
 
@@ -337,18 +283,11 @@ fn App() -> Element {
             on_indent: move |chosen| kept.choose_indentation(chosen),
         }
 
-        // A trace opened from a file, said, with the way back (`view.rs`).
         view::Banner { view: wire.view }
 
-        // Where a session is opened, switched or ended, over the screen it
-        // changes: the Timeline's own header is what opens it (`session.rs`).
         session::Sessions { claims: claims.clone() }
-        // The two accounts, open wide over the screens (D18).
         rail::CapabilitiesSheet { claims: claims.clone() }
 
-        // Where an agent is started, over the window rather than beside it: a
-        // task done once per connection does not earn a column of every screen
-        // (`connect.rs`). A launch that fails is said in it, and it stays open.
         connect::Connect {
             running: connected,
             launching: launching(),
@@ -362,12 +301,10 @@ fn App() -> Element {
             on_forget: kept.on_forget_recent,
         }
 
-        // Quitting with frames nobody exported asks first (F9).
         QuitDialog { on_export, on_quit: quit.quit_now }
 
-        // Everything a command in the palette can ask for is a control that is
-        // also on screen (`palette.rs`), and every one of them is built from a
-        // handler this window already has.
+        // Every palette command is a control also on screen, built from the
+        // same handler.
         palette::Palette { commands: wire::with_commands(wire, EventHandler::new(move |()| navigation.console(Tab::Trace)), commands_with(PaletteWiring {
             connected,
             described: described.read().is_some(),
@@ -444,9 +381,8 @@ fn App() -> Element {
                 on_set_mode: app::settings::set_mode(inspector.clone(), settings_work),
                 on_set_config_option: app::settings::set_config_option(inspector.clone(), settings_work),
             }
-            // The rail's edge, which a reader drags to resize it, and the
-            // shade behind it where it is a drawer (D18). Both are drawn by
-            // the stylesheet only where they apply.
+            // The resize edge and the drawer's shade; the stylesheet draws each
+            // only where it applies.
             rail::RailHandle { width: rail_width }
             div {
                 class: "rail-backdrop",
@@ -470,13 +406,8 @@ fn App() -> Element {
                 held_frames: wire.view.held_or(dropped() as u64..(dropped() + frames().len()) as u64),
                 blocked: blocked(),
                 problem: problem(),
-                // The same call the Agent screen makes, offered on the screen
-                // that says there is no session — and only while there is an
-                // agent that has described itself, which is what `live` means
-                // and what that screen's own button is drawn behind. No roots ride
-                // with it: the control that supplies them is on the rail, and
-                // for a session that does not exist yet *none were asked for*
-                // is the true answer rather than *an empty control was*.
+                // Offered only once an agent has described itself (`live`). No
+                // roots: none were asked for, which is not an empty control.
                 on_new_session: live().map(|command| {
                     let inspector = opening_from_timeline.clone();
                     EventHandler::new(move |()| {
@@ -484,10 +415,8 @@ fn App() -> Element {
                         app::claims::open_session(inspector.clone(), command.clone(), None, failed, problem);
                     })
                 }),
-                // Both of these answer with what the agent said, and neither
-                // answer is waited for: the turn's state is the stream's to
-                // tell, and it has already told the store by the time a call
-                // returns (§11 seam 2).
+                // Not waited for: the stream has updated the store by the time
+                // a call returns.
                 mode: app::settings::cycle(&configured(), connected),
                 on_set_mode: app::settings::set_mode(inspector.clone(), settings_work),
                 on_prompt: move |content: Vec<v1::ContentBlock>| {
@@ -499,20 +428,13 @@ fn App() -> Element {
                         let _ = inspector.cancel().await;
                     });
                 },
-                // The request answers itself: it arrived carrying its own
-                // resolver (§5), so what a click needs is the request and the
-                // option, and nothing here has to find the connection it came
-                // from. Not waited for, like the rest: what the panel then
-                // shows is what the store says became of it.
+                // The request carries its own resolver; what became of it is
+                // read back from the store.
                 on_answer: move |answer: permission::Answer| {
                     spawn(async move {
                         let _ = answer.request.select(&answer.option).await;
                     });
                 },
-                // The same shape for the other blocking request (§7.8), and the
-                // same reason it needs nothing else: three answers rather than
-                // an option id, each of them a claim about what the reader did,
-                // and the request knows how to send whichever it was.
                 on_elicit: move |answer: elicitation::Answer| {
                     spawn(async move {
                         let _ = match answer.reply {
@@ -524,21 +446,11 @@ fn App() -> Element {
                         };
                     });
                 },
-                // A row the reader asked for from the Console, and an entry's
-                // frames on their way there. Reaching the trace opens the
-                // Console and selects the tab it is on: an affordance that
-                // scrolled a panel nobody can see would be a control that does
-                // nothing, and this is the same escalation a failed spawn makes
-                // for the same reason (§9).
                 turns: wire.view.turns_or(turns()),
-                // Whether there is an agent that could open a session, which is
-                // what the header's session control is drawn behind. The two
-                // accounts it used to draw are the rail's now.
                 described: described.read().is_some(),
                 sought: sought(),
                 on_reveal: move |frames| navigation.reveal(frames),
-                // The login the agent asked for, where the session would be
-                // (X5): the Capabilities surface's own guidance and actions.
+                // The login the agent asked for, where the session would be.
                 login: agent::login_guidance(
                     described.read().as_ref().map(|agent| agent.auth_methods.as_slice()).unwrap_or_default(),
                     &auth(),
@@ -546,9 +458,8 @@ fn App() -> Element {
                     connected,
                     claims.on_authenticate,
                 ),
-                // The first-run card's recent invocations (D10, X10): the
-                // launch form's own rows, launching directly; a row whose
-                // variable values were not kept opens the form filled in.
+                // The first-run card's recent invocations. A row whose values
+                // were not kept opens the launch form filled in instead.
                 recent: (!kept.remembered.read().is_empty()).then(|| rsx! {
                     spawn::RecentList {
                         entries: (kept.remembered)(),
@@ -571,8 +482,6 @@ fn App() -> Element {
             }
             },
 
-            // The wire and the agent's diagnostics, beside the turn: two tabs,
-            // one at a time (§9, ADR 0009).
             console: rsx! { Console {
                 frames: wire.view.frames_or(frames),
                 dropped_frames: wire.view.dropped_or(dropped()),
@@ -592,13 +501,11 @@ fn App() -> Element {
             }
         }
 
-        // The way between the three regions on a window too narrow for them,
-        // drawn by the stylesheet only below the width where they stop fitting.
+        // Drawn by the stylesheet only on windows too narrow for three regions.
         RegionBar { selected: focus(), waiting: blocked(), on_select: move |chosen| navigation.region(chosen) }
 
         ConsoleAnnouncement { status: status() }
 
-        // Feedback belongs to the window rather than any one region.
         Toast { said: announcer.said() }
         }
     }

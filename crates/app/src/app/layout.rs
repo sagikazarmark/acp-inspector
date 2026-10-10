@@ -6,21 +6,12 @@ use dioxus::prelude::*;
 
 use crate::console;
 
-/// Which of the two screens the window is spending its width on.
-///
-/// **Two states, as drawn**: both side by side, or the wire alone — the second
-/// for reading a frame that is mostly payload. It is a segmented control
-/// because the two are exclusive and one of them is always true, which is the
-/// one thing a toggle cannot say.
-///
-/// Window-session state, like the Console's tab and the rail's: what somebody
-/// was reading yesterday is not what this window should open onto.
+/// Which screens the window spends its width on: both, or the wire alone.
+/// Window-session state, never persisted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Spine {
-    /// Both, which is what this tool is for.
     #[default]
     Split,
-    /// The wire, whole.
     Wire,
 }
 
@@ -48,8 +39,7 @@ impl Spine {
         }
     }
 
-    /// The other one, for the menu item that was a collapse — and so only where
-    /// there is a menu bar to put the item in.
+    /// The other layout, for the desktop menu's toggle.
     #[cfg(feature = "desktop")]
     pub(crate) fn other(self) -> Self {
         match self {
@@ -59,20 +49,13 @@ impl Spine {
     }
 }
 
-/// Which region a window too narrow for three columns is showing.
-///
-/// The drawing shows one at a time below 760px (a width only the web build reaches; between 760 and 1180 the rail is a drawer instead, D18) and puts a bar at the foot to
-/// choose between them. Nothing above that width reads this; the stylesheet
-/// decides where the threshold is, and this decides which one wins when it is
-/// crossed.
+/// Which region a window too narrow for three columns shows (below 760px, a
+/// width only the web build reaches). The stylesheet decides the threshold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Focus {
-    /// The turn, which is what the window is for.
     #[default]
     Turn,
-    /// The wire.
     Wire,
-    /// The rail: the connection, the session, the claims.
     Rail,
 }
 
@@ -99,8 +82,8 @@ impl Focus {
 #[component]
 pub(crate) fn RegionBar(
     selected: Focus,
-    /// Whether the agent is waiting on the reader. The timeline is where the
-    /// request is, so while another region is showing, its item says so (X7).
+    /// Whether the agent is waiting on the reader; the timeline's item says so
+    /// while another region is showing.
     #[props(default)]
     waiting: bool,
     on_select: EventHandler<Focus>,
@@ -146,9 +129,9 @@ pub(crate) fn Screens(spine: Spine, timeline: Element, console: Element) -> Elem
     }
 }
 
-/// Announces the one automatic surface change in the window without making
-/// either evidence list live or taking focus from what the reader was doing.
-/// The region is persistent so a status transition changes text inside it.
+/// Announces the one automatic surface change without making either evidence
+/// list live or moving focus. Persistent, so a status change only changes its
+/// text.
 #[component]
 pub(crate) fn ConsoleAnnouncement(status: ConnectionStatus) -> Element {
     let said = console::diagnostics_announcement(status);
@@ -238,9 +221,7 @@ mod tests {
             "{html}"
         );
 
-        // Waiting, while the timeline is the region on screen: it is in view.
         assert!(!bar(Focus::Turn, true).contains("waiting-badge"));
-        // Waiting, while another region is: the timeline's item says so.
         let hidden = bar(Focus::Wire, true);
         assert!(
             hidden.contains(r#"data-slot="waiting-badge""#)

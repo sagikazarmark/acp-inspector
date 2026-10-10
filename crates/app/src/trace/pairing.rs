@@ -1,4 +1,5 @@
-//! Which frame answers which, as the list and the pane say it (F1).
+//! Which frame answers which, as the list and the pane say it. Pairing is
+//! core's (`Trace::counterpart`); this only reads it.
 
 use std::time::SystemTime;
 
@@ -65,8 +66,8 @@ pub(super) enum Pairing {
         /// Set where the id's type differs from the request's.
         mistyped: Option<String>,
     },
-    /// A request nothing has answered yet, waiting since then — and the call
-    /// to cancel, where this client can still give it up.
+    /// A request nothing has answered yet, waiting since then, and the id to
+    /// cancel where this client can still give it up.
     Waiting {
         since: SystemTime,
         cancel: Option<i64>,

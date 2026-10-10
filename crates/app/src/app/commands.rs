@@ -8,11 +8,7 @@ use crate::console::Tab;
 use crate::{agent, connect, palette, rail, session};
 
 /// What the palette needs of the window: the state that decides which commands
-/// there are, and the handlers they call.
-///
-/// A *wiring* rather than a state: nothing here is stored, and every field is
-/// either something the window already renders from or a handler a control
-/// already calls.
+/// exist, and the handlers they call. Nothing here is stored.
 pub(crate) struct PaletteWiring {
     pub(crate) connected: bool,
     pub(crate) described: bool,
@@ -29,17 +25,15 @@ pub(crate) struct PaletteWiring {
     pub(crate) on_appearance: EventHandler<Appearance>,
 }
 
-/// The rest of what the palette offers (X9): the commands that came after the
-/// first wiring, kept apart so a fixture that draws the palette without them
-/// still builds the same list (`mock.rs`).
+/// The rest of the palette's inputs, kept apart so `mock.rs` can draw the
+/// palette without them.
 pub(crate) struct PaletteExtras {
     /// Whether there is an invocation to run again, and no launch in flight.
     pub(crate) launched: bool,
     pub(crate) turn_running: bool,
     pub(crate) session: Option<v1::SessionId>,
     pub(crate) lists_sessions: bool,
-    /// The agent's advertised authentication methods, by id and name, while it
-    /// is connected.
+    /// The agent's auth methods, by id and name, while it is connected.
     pub(crate) auth_methods: Vec<(v1::AuthMethodId, String)>,
     /// The frame of the newest request waiting on the reader.
     pub(crate) waiting: Option<u64>,
@@ -86,14 +80,9 @@ pub(crate) fn commands(wiring: PaletteWiring) -> Vec<palette::Command> {
     commands_with(wiring, PaletteExtras::idle())
 }
 
-/// Every command the palette offers (`palette.rs`).
-///
-/// **Gated exactly as the controls are.** A command that needs an agent is not
-/// offered without one, for the reason a button that cannot be pressed is not
-/// drawn. What is *never* gated on state the protocol leaves to the agent — a
-/// session that cannot be opened, a setting that will be refused — stays
-/// exactly where §7.3's rule puts it: on the affordance, offered, and answered
-/// by the agent.
+/// Every command the palette offers, gated as the controls are: a command that
+/// needs an agent is not offered without one, but nothing is gated on what the
+/// protocol leaves to the agent to refuse (§7.3).
 pub(crate) fn commands_with(wiring: PaletteWiring, extras: PaletteExtras) -> Vec<palette::Command> {
     use palette::{Command, shortcut};
 

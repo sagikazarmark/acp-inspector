@@ -22,8 +22,7 @@ pub(crate) struct Menu {
     pub on_quit: EventHandler<()>,
 }
 
-// Each arm here does exactly what the control does and decides nothing
-// of its own. Items that cannot do anything now are disabled below.
+/// Answers the menu bar. Each arm does what its on-screen control does.
 pub(crate) fn use_menu(inspector: &Inspector, menu: Menu) {
     let Menu {
         stores,
@@ -45,13 +44,11 @@ pub(crate) fn use_menu(inspector: &Inspector, menu: Menu) {
     let spine = navigation.spine;
     let menu_open = inspector.clone();
     shell::use_menu(move |command| match command {
-        // The Console's Open…: a file, read-only, over the live window.
         shell::command::OPEN_TRACE => wire.view.choose(wire.live()),
-        // The Console's Export…, which asks where with Save As.
         shell::command::SAVE_TRACE => {
             on_export.call(());
         }
-        // The Console's own two-step Clear, armed (I2).
+        // Arms the Console's two-step Clear.
         shell::command::CLEAR_TRACE => navigation.clear(),
         shell::command::DISCONNECT => on_disconnect.call(()),
         shell::command::RESTART => on_restart.call(()),
@@ -79,12 +76,10 @@ pub(crate) fn use_menu(inspector: &Inspector, menu: Menu) {
         shell::command::SHOW_DIAGNOSTICS => {
             navigation.console(Tab::Diagnostics);
         }
-        // The item that was a collapse, answering the control that replaced it.
         shell::command::TOGGLE_CONSOLE => navigation.layout(spine().other()),
         _ => {}
     });
-    // A menu item that would do nothing is drawn disabled rather than
-    // left to do nothing silently (X13).
+    // An item that would do nothing is disabled rather than silent.
     let Stores {
         frames,
         turn,

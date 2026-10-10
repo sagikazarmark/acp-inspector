@@ -20,9 +20,8 @@ pub(crate) struct Kept {
 }
 
 impl Kept {
-    // The choice applies now and is written off the UI thread. A write
-    // that fails is not reported: an appearance is one click to redo,
-    // and the window is already in it either way.
+    // Applied now and written off the UI thread; a failed write is not
+    // reported, since the window is already in the chosen state.
     pub fn choose_appearance(mut self, chosen: Appearance) {
         appearance::paint(chosen);
         self.appearance.set(chosen);
@@ -41,17 +40,13 @@ impl Kept {
 
 /// Reads both files and provides the window's preferences.
 pub(crate) fn use_kept(announcer: Announcer) -> Kept {
-    // What the spawn form remembers (§9) and how the window should look. Both
-    // files are read once, at the window's start, and **off the UI thread**
-    // (L6): until they arrive the window is the defaults, which is what a first
-    // run looks like anyway. Every write goes back through `persist`, which is
-    // off the UI thread too.
+    // Both files are read once, off the UI thread; until then the window shows
+    // the defaults, as on a first run.
     let mut recent = use_signal(|| None::<RecentCommands>);
     let mut settings = use_signal(|| None::<Settings>);
     let mut remembered = use_signal(Vec::<AgentCommand>::new);
     let mut appearance = use_signal(Appearance::default);
-    // And how a payload is drawn (§8). Put where every surface that draws bytes
-    // can find it rather than threaded to each of them (`indent.rs`).
+    // Provided as context to every surface that draws payloads (`indent.rs`).
     let mut indentation = indent::provide(Indentation::default());
     use_future(move || async move {
         let Ok((stored, remembered_list)) =
@@ -59,12 +54,10 @@ pub(crate) fn use_kept(announcer: Announcer) -> Kept {
         else {
             return;
         };
-        // A file that could not be read was moved aside rather than
-        // overwritten (L2); say where, once, so it can be looked at (I13).
+        // An unreadable file was moved aside rather than overwritten; say where.
         if let Some(notice) = set_aside(remembered_list.backup(), stored.backup()) {
             announcer.notice(notice);
         }
-        // The stored choice takes the same path a chosen one does.
         let chosen = stored.appearance();
         if chosen != Appearance::default() {
             appearance::paint(chosen);
@@ -76,8 +69,7 @@ pub(crate) fn use_kept(announcer: Announcer) -> Kept {
         recent.set(Some(remembered_list));
     });
 
-    // Forgetting a remembered invocation, or the values it kept (X10, S2).
-    // Off the UI thread like every other write to the list (L6).
+    // Forgetting an invocation, or only its kept values, off the UI thread.
     let edit_recent = use_callback(move |(entry, forget): (AgentCommand, bool)| {
         let Some(list) = recent.peek().clone() else {
             return;
@@ -116,8 +108,8 @@ pub(crate) fn use_kept(announcer: Announcer) -> Kept {
     }
 }
 
-/// What the window says when a state file could not be read at startup and
-/// was moved aside (I13), or `None` when both were read.
+/// The notice for state files moved aside at startup, or `None` when both were
+/// read.
 fn set_aside(
     recent: Option<&std::path::Path>,
     settings: Option<&std::path::Path>,
@@ -136,9 +128,8 @@ fn set_aside(
     (!said.is_empty()).then(|| said.join(" "))
 }
 
-/// Writes a preference off the UI thread (L6). Nothing is said about a write
-/// that fails: the window is already in the chosen state, and the choice is one
-/// click to redo.
+/// Writes a preference off the UI thread. A failed write is not reported: the
+/// window is already in the chosen state.
 fn persist(
     settings: Option<Settings>,
     write: impl FnOnce(&Settings) -> std::io::Result<()> + Send + 'static,

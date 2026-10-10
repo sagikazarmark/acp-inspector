@@ -6,8 +6,8 @@ use dioxus::prelude::*;
 
 use crate::{composer, session_settings};
 
-// The protocol stores say what the Agent answered; these counts say only
-// that this presentation is still waiting for those answers.
+/// Setter calls still awaiting answers. Presentation only: the stores say what
+/// the agent answered.
 #[derive(Clone, Default)]
 pub(crate) struct SessionSettingsWork {
     pub generation: u64,
@@ -52,12 +52,8 @@ impl SessionSettingsWork {
     }
 }
 
-/// The mode the composer's own control cycles through (`composer::Cycle`).
-///
-/// **Read from the Session Settings store and nowhere else** (§7.6): what is
-/// shown is the mode the agent last stated, and what the control asks for is
-/// the next mode *the agent published*. An agent that published none gets no
-/// control, which is the same gate the rail's rows are drawn behind.
+/// The composer's mode control, read from the Session Settings store: the mode
+/// the agent last stated, and the next mode it published (§7.6).
 pub(crate) fn cycle(settings: &SessionSettings, connected: bool) -> Option<composer::Cycle> {
     let modes = settings.modes.as_ref()?;
     let offered = &modes.available_modes;
@@ -68,9 +64,7 @@ pub(crate) fn cycle(settings: &SessionSettings, connected: bool) -> Option<compo
         .and_then(|at| offered.get((at + 1) % offered.len().max(1)))
         .or_else(|| offered.first())
         .map(|mode| mode.id.clone())
-        // One published mode is a control with nowhere to go, and the row on
-        // the rail is where a reader sets it to itself if they want to watch
-        // the agent answer that.
+        // A single published mode has nowhere to cycle to.
         .filter(|_| offered.len() > 1);
 
     Some(composer::Cycle {
@@ -80,10 +74,8 @@ pub(crate) fn cycle(settings: &SessionSettings, connected: bool) -> Option<compo
     })
 }
 
-// Nothing is waited for here: what the Agent answered — an
-// acknowledgement it never restated, or a refusal — is written
-// into the Session Settings store by the task reading the
-// Connection, and this window renders stores (§7.6).
+/// Sends `session/set_mode`. Not waited for: the answer lands in the Session
+/// Settings store.
 pub(crate) fn set_mode(
     inspector: Inspector,
     mut settings_work: Signal<SessionSettingsWork>,
@@ -98,9 +90,8 @@ pub(crate) fn set_mode(
     })
 }
 
-// This setter answers with the complete replacement option set,
-// which the Connection reader has put in the store before this
-// call returns (§7.6).
+/// Sends `session/set_config_option`. The reader stores the replacement option
+/// set before the call returns.
 pub(crate) fn set_config_option(
     inspector: Inspector,
     mut settings_work: Signal<SessionSettingsWork>,
