@@ -25,6 +25,14 @@ installed modules. Reinstall deliberately with `--force` when updating the regis
 The host selects `Density::Compact` alongside `Appearance::None`; its explicit
 CSS lays out the registry's compact markers without modifying the installed source.
 
+## Textarea
+
+`textarea/` is the registry's `textarea` component, copied unchanged from
+registry commit `affc7af` (the merge of the rev above) for the launch form's
+multi-line fields (FM1). Reinstall it with
+`dx components add textarea --git https://github.com/sagikazarmark/dioxus-daisyui-components --rev affc7af --force`
+when the other components are reinstalled.
+
 ## Host dependency feature selection
 
 The installer enables `dioxus-primitives/router`; this host deliberately disables
