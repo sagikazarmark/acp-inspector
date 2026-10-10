@@ -10,7 +10,7 @@
 //! about a connection. The one that spawns one is the rule the window records
 //! by — an invocation is remembered because an agent *answered* — and it
 //! asserts the rule rather than the wiring: the launch handler in
-//! `crates/app/src/main.rs` is the caller, and this is the same two answers it
+//! `crates/app/src/app/launch.rs` is the caller, and this is the same two answers it
 //! reads, made in the same order, without a window to read them in.
 
 use std::path::PathBuf;
@@ -372,7 +372,7 @@ async fn an_invocation_is_remembered_because_an_agent_answered() {
     let path = scratch("launched").join("recent.json");
     let recent = RecentCommands::load_from(&path);
 
-    // The launch handler's rule, in the order it has it (`crates/app/src/main.rs`):
+    // The launch handler's rule, in the order it has it (`crates/app/src/app/launch.rs`):
     // start the agent, then record if an agent described itself — which a
     // handshake that failed afterwards, at `session/new`, does not undo.
     //

@@ -88,7 +88,7 @@ async fn the_listing_affordance_is_gated_on_the_advertisement() {
 /// restating it, and the set stays two hand-written lists rather than three.
 ///
 /// The display's own copy — the rows, their order and the field each is read
-/// from — is pinned beside it, in `crates/app/src/agent.rs`'s
+/// from — is pinned beside it, in `crates/app/src/agent/accounts.rs`'s
 /// `every_session_capability_v1_defines_is_a_row` and
 /// `the_two_gating_shapes_are_not_flattened_into_one`. It is not shared with
 /// this one: core carries no rendering and the desktop crate carries no runtime
@@ -214,7 +214,7 @@ fn the_capability_set_the_display_names_is_the_whole_stable_set_v1_defines() {
     // **The one question no agent can be driven to answer.** Every other test
     // here asks an agent what it claimed; this one asks the protocol what there
     // is to claim. The display names its capabilities in a hand-written list
-    // (`crates/app/src/agent.rs`'s `advertised`) and this one restates it — two
+    // (`crates/app/src/agent/accounts.rs`'s `advertised`) and this one restates it — two
     // seams stating the same set separately (§5), which catches either of them
     // dropping a row but neither of them *missing* one, because a capability
     // upstream adds is absent from both by construction.
@@ -309,7 +309,7 @@ fn the_record_is_keyed_on_the_session_lifecycle_and_logout_and_nothing_else() {
 fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_defines() {
     // The same question as the one above, asked about the *other* party (§7.6).
     // The display now audits both, and this client's own rows are a hand-written
-    // list too (`crates/app/src/agent.rs`'s `claimed`) — so a client capability the
+    // list too (`crates/app/src/agent/accounts.rs`'s `claimed`) — so a client capability the
     // protocol adds is one this tool would be silently declining with nothing on
     // screen saying so, which for the party that is *this tool* is worse than
     // the agent case: the claim is ours to make.

@@ -407,7 +407,7 @@ Deviations from the plan's wording, each deliberate:
 - [x] **D18. Better narrow layout.** Two columns plus a rail drawer below about 1180px, a resizable rail, and Capabilities as a wide sheet.
 - [x] **D19. Spacing and radius scale.** Four radii and a 4px spacing grid.
 - [x] **L3. Release profile.** Add `[profile.release]` with `strip`, `lto = "thin"` and `codegen-units = 1`. The binary is 25 MB today.
-- [ ] **L4. Split the large files and trim comments.**
+- [x] **L4. Split the large files and trim comments.**
   - Split `agent.rs` (4,991 lines) and `client.rs`.
   - Move tests out where it helps.
   - Keep rationale in ADRs and the spec, and limit call-site comments to 1–3 lines.

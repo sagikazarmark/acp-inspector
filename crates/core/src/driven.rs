@@ -22,7 +22,7 @@ use crate::call::CallError;
 /// One thing the agent claimed about itself in its `initialize` result
 /// (`CONTEXT.md`, *Agent Capability*), named so a record can be keyed on it.
 ///
-/// The capability display keeps its own list (`crates/app/src/agent.rs`); both
+/// The capability display keeps its own list (`crates/app/src/agent/accounts.rs`); both
 /// are checked against the schema in `crates/core/tests/capability.rs`. Rows look
 /// records up by variant, never by string, so a new upstream capability breaks
 /// the build instead of rendering as unknown.
