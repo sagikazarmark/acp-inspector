@@ -176,7 +176,7 @@ pub fn SessionSettings(
                     {mode_values(modes, settings_epoch, connected && !changing_mode, on_set_mode)}
                     if changing_mode {
                         p { class: "hint", "data-slot": "setting-loading", role: "status",
-                            "Changing Mode with "
+                            "Changing mode with "
                             code { "{v1::AGENT_METHOD_NAMES.session_set_mode}" }
                             "..."
                         }
@@ -274,8 +274,10 @@ pub fn SessionSettings(
             // answers take it was a second identical card under the first, which
             // on an empty surface is two boxes at the top of an empty rail with
             // nothing saying which of them is the finding.
-            p { class: "hint", "data-slot": "decoded",
-                "Decoded view. Complete frames remain in Trace."
+            if count > 0 {
+                p { class: "hint", "data-slot": "decoded",
+                    "Changes are sent to the agent immediately."
+                }
             }
         }
     }
@@ -367,12 +369,18 @@ fn mode_segment(
 ) -> Element {
     let id = mode.id.to_string();
     let picked = mode.id.clone();
+    // The name once (D13): `chat` beside `Chat` was one word read twice. The
+    // id the set sends stays on the row as a caption where it says something
+    // the name does not, and as the tooltip always.
+    let distinct = !id.eq_ignore_ascii_case(mode.name.trim());
 
     rsx! {
         button {
             key: "{id}",
             class: "mode-row",
             r#type: "button",
+            title: "{id}",
+            "data-mode": "{id}",
             "data-current": "{current}",
             aria_pressed: current,
             aria_disabled: (!connected).then_some("true"),
@@ -382,8 +390,10 @@ fn mode_segment(
                     on_set_mode.call(picked.clone());
                 }
             },
-            span { class: "mode-id", "{id}" }
             span { class: "mode-name", "{mode.name}" }
+            if distinct {
+                span { class: "mode-id", "{id}" }
+            }
             if current {
                 span { class: "sr-only", " — current" }
             }
@@ -1202,17 +1212,29 @@ mod tests {
             "the modes form one keyboard-accessible group: {html}"
         );
         for mode in ["chat", "plan"] {
-            let named = format!(r#"class="mode-id">{mode}<"#);
             assert!(
-                html.contains(&named),
+                html.contains(&format!(r#"title="{mode}""#)),
                 "the id is on the row — it is what the set sends, and what a reader checks this \
                  screen against the trace by: {html}"
             );
         }
         assert!(
             html.contains(r#"class="mode-name">Chat<"#)
-                && html.contains(r#"class="mode-name">Plan<"#),
-            "and the agent's own name for it is beside the id: {html}"
+                && html.contains(r#"class="mode-name">Plan<"#)
+                && !html.contains(r#"class="mode-id""#),
+            "a name that is its id is said once: {html}"
+        );
+        let renamed = shown(published(
+            Some(v1::SessionModeState::new(
+                "code",
+                vec![v1::SessionMode::new("code", "Write code")],
+            )),
+            None,
+        ));
+        assert!(
+            renamed.contains(r#"class="mode-name">Write code<"#)
+                && renamed.contains(r#"class="mode-id">code<"#),
+            "and an id that says something else is a caption: {renamed}"
         );
 
         let many = shown(published(
@@ -1390,7 +1412,7 @@ mod tests {
         let html = rendered_with_work(settings, true, true, Some(v1::SessionConfigId::new("fast")));
 
         assert!(
-            html.contains("Changing Mode with")
+            html.contains("Changing mode with")
                 && html.contains("Changing Fast with")
                 && html.matches(r#"aria-busy=true"#).count() == 2,
             "each pending setter is stated on the row it belongs to: {html}"
@@ -1789,17 +1811,14 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_says_it_is_a_decoded_view_and_where_the_whole_record_is() {
-        // The limit is named rather than implied (§7.6): the schema skips
-        // invalid entries in an option list, so a surface that claimed
-        // completeness would be claiming something the typed layer cannot
-        // deliver.
+    fn the_surface_says_its_controls_act_at_once() {
+        // There is no Apply: every control here sends its call when pressed.
         let html = shown(published(Some(modes()), Some(vec![verbosity()])));
 
-        assert!(html.contains("Decoded view"), "{html}");
         assert!(
-            html.contains("Complete frames remain in Trace"),
-            "and where the complete record is: {html}"
+            html.contains("Changes are sent to the agent immediately."),
+            "{html}"
         );
+        assert!(!html.contains("Decoded view"), "{html}");
     }
 }
