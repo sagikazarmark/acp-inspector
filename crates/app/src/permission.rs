@@ -1,45 +1,25 @@
-//! The inline permission panel (`docs/architecture.md` §7.2, §9): the request
-//! the turn stopped for, rendered where it stopped.
+//! The inline permission panel: the request the turn stopped for, rendered in
+//! the timeline where it stopped. See `docs/architecture.md` §7.2.
 //!
-//! **Inline, and nothing else.** No modal, no toast, nothing to dismiss: in ACP
-//! a permission request is the main traffic of a turn rather than an
-//! exceptional alert, so it sits in the timeline in wire order like every other
-//! entry, and the trace beside it stays readable while it waits. Where the turn
-//! blocked is where the reader is looking.
-//!
-//! **The options are the agent's.** Every button here is one the agent sent —
-//! its id, its name and its kind, in the order it offered them — and there is
-//! never a button for an option it did not offer. The kind decides only how a
-//! button reads; what it *does* is send back the id, unchanged, because that id
-//! is the agent's own word and this window has no opinion about it.
-//!
-//! **Whether the buttons are live is read, never worked out here.** Core says
-//! where a request stands ([`PermissionState`]) — waiting, being answered,
-//! answered, or given up on because the turn ended or the agent went away — and
-//! this file renders that answer. A panel that decided for itself, out of a
-//! turn state and a connection status, would be a second answer to a question
-//! that already has one, wrong in exactly the moments that matter.
+//! Every button is an option the agent sent, in its order, and sends back the
+//! option id unchanged. Whether the buttons are live is core's
+//! [`PermissionState`], never worked out here.
 
 use acp_inspector_core::{PermissionPolicy, PermissionRequest, PermissionState, v1};
 use dioxus::prelude::*;
 
 use crate::update;
 
-/// The user's answer to a blocking request: the request, and the option they
-/// picked.
-///
-/// The request travels with the choice because the request is what knows how to
-/// be answered — it carries its own resolver — so a handler holding one of
-/// these needs nothing else to finish the job.
+/// The user's answer to a blocking request: the request, which carries its own
+/// resolver, and the option they picked.
 #[derive(Clone, PartialEq)]
 pub struct Answer {
     pub request: PermissionRequest,
     pub option: v1::PermissionOptionId,
 }
 
-/// The request, the tool call under question, and the options — as the card the
-/// drawing gives a question the turn stopped on: a header naming the method in
-/// its own colour, the ask, and the agent's options as the row of answers.
+/// The card for a permission request: the method, the tool call in question,
+/// and the agent's options.
 pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> Element {
     let state = request.state();
     let waiting = state == PermissionState::Waiting;
@@ -55,9 +35,8 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
         div {
             class: if waiting { "evidence blocking" } else { "evidence blocking answered" },
             "data-slot": "permission",
-            // Everything in the card is about answering, including the tool
-            // call's own disclosures: none of it is a press of the Timeline
-            // row, whose click reveals frames and moves focus (B1).
+            // Nothing in the card is a press of the Timeline row, whose click
+            // reveals frames and moves focus.
             onclick: move |event| event.stop_propagation(),
             div { class: "blocking-head",
                 span { class: "wire-name", "{v1::CLIENT_METHOD_NAMES.session_request_permission}" }
@@ -66,10 +45,7 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
                 }
             }
             div { class: "blocking-body",
-                // The tool call the agent named, rendered as a tool call is
-                // rendered anywhere else: what is being asked about is the
-                // question, and a second way of drawing it would be a second
-                // thing to read.
+                // Drawn as a tool call is drawn anywhere else.
                 {update::tool_call_update(request.tool_call())}
                 span { class: "blocking-meta", "{request.id()}" }
 
@@ -81,9 +57,8 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
                 }
 
                 if request.options().is_empty() {
-                    // A request with nothing to answer it with. It is a finding,
-                    // not an empty list: the agent blocked its own turn on a
-                    // question nobody can answer.
+                    // A finding: the agent blocked its turn on a question nobody
+                    // can answer.
                     p { class: "unnamed",
                         "The agent offered no options. Cancel the turn to end this."
                     }
@@ -95,13 +70,8 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
     }
 }
 
-/// Every option the Agent supplied, in the order it supplied them.
-///
-/// **None of them is drawn as the default** (B7). The row is the agent's, in
-/// the agent's order, and the tone tells allow from reject. Filling the first
-/// allow made the window recommend it, and a filled `allow_always` recommended
-/// a standing grant. What sets an `*_always` apart is a tag saying so, because
-/// it is the one that outlives the click.
+/// Every option the agent supplied, in its order. None is drawn as the
+/// default; an `*_always` option is tagged because it outlives the click.
 fn choices(
     options: &[v1::PermissionOption],
     state: &PermissionState,
@@ -133,8 +103,7 @@ fn choice(
             if selected.option_id == option.option_id
     );
     let classes = match (tone, picked) {
-        // Only the option that was sent is ever filled: a record of what
-        // happened, never a suggestion.
+        // Only the option that was sent is filled: a record, not a suggestion.
         (_, true) => "btn btn-filled option picked",
         ("allow", false) => "btn btn-quiet btn-go option",
         ("reject", false) => "btn btn-quiet btn-bad option",
@@ -173,18 +142,14 @@ fn choice(
             onclick: {
                 let option = option.option_id.clone();
                 move |event: Event<MouseData>| {
-                    // An answer, not a press of the row it sits in: the row's
-                    // own click reveals its frames and moves focus (B1).
+                    // Not a press of the row, whose click reveals its frames.
                     event.stop_propagation();
                     if available {
                         on_choose.call(option.clone());
                     }
                 }
             },
-            // The agent's name for it, and the id that will go on the wire
-            // beside it — the kind is what the accessible name carries, because
-            // a row of four buttons each saying its kind twice is the drawing's
-            // own reason for keeping one of them.
+            // The kind is carried by the accessible name, not drawn.
             "{option.name}"
             if always {
                 span { class: "option-always", "data-slot": "always", aria_hidden: "true", "always" }
@@ -194,12 +159,8 @@ fn choice(
     }
 }
 
-/// Where the request stands, in a line.
-///
-/// Every state has one, including the two that are nobody's choice: a request
-/// the turn ended without answering says so rather than looking like it is
-/// still waiting for a click, and one answered `cancelled` says who cancelled
-/// it.
+/// Where the request stands, in a line. Every state has one, including a
+/// request the turn ended without answering.
 fn said(state: &PermissionState) -> Element {
     match state {
         PermissionState::Waiting => rsx! {
@@ -224,9 +185,7 @@ fn said(state: &PermissionState) -> Element {
                 "."
             }
         },
-        // Nobody answered it and nobody can: the turn it blocked ended, or the
-        // agent went away holding it. Saying it plainly is the alternative to a
-        // row of dead buttons explaining nothing.
+        // The turn it blocked ended, or the agent went away holding it.
         PermissionState::Abandoned => rsx! {
             p { class: "detail detail-warn",
                 "Can no longer be answered: the turn ended or the agent disconnected."
@@ -239,8 +198,8 @@ fn said(state: &PermissionState) -> Element {
                 "The agent withdrew this request."
             }
         },
-        // Both enums are non-exhaustive, and a state this window has not been
-        // taught must not be rendered as one it has.
+        // Both enums are non-exhaustive; an unknown state is not drawn as a
+        // known one.
         _ => rsx! {
             p { class: "detail", "A state this window has no rendering for." }
         },
@@ -256,22 +215,14 @@ pub fn policy_named(policy: PermissionPolicy) -> &'static str {
     }
 }
 
-/// What an option kind is called, and the tone it reads in.
-///
-/// The protocol's own words: the reader of an inspector is reading ACP, and a
-/// panel that renamed `reject_always` to "never ask again" would be a
-/// translation they did not ask for.
+/// An option kind's protocol name, and the tone it reads in.
 fn kind(kind: v1::PermissionOptionKind) -> (&'static str, &'static str) {
     match kind {
         v1::PermissionOptionKind::AllowOnce => ("allow_once", "allow"),
         v1::PermissionOptionKind::AllowAlways => ("allow_always", "allow"),
         v1::PermissionOptionKind::RejectOnce => ("reject_once", "reject"),
         v1::PermissionOptionKind::RejectAlways => ("reject_always", "reject"),
-        // `PermissionOptionKind` is non-exhaustive. A kind this window has not
-        // been taught must not read as one it has — an unknown option rendered
-        // as "allow" would be a guess with a green button's worth of confidence
-        // behind it — and the option is still offered, because the agent
-        // offered it.
+        // Non-exhaustive: an unknown kind gets no tone, and is still offered.
         _ => ("a kind this window has no name for", "unnamed"),
     }
 }
@@ -331,10 +282,8 @@ mod tests {
 
     #[test]
     fn every_kind_the_spec_names_reads_as_itself() {
-        // The four kinds §7.2 requires the panel to show, each named by the
-        // protocol's word for it and toned by what it does. Allowing and
-        // rejecting must never read alike: the two buttons that differ only in
-        // `once`/`always` are the ones a reader picks between at speed.
+        // The four kinds §7.2 requires, by protocol name; allow and reject
+        // must never read alike.
         let named: Vec<_> = [
             v1::PermissionOptionKind::AllowOnce,
             v1::PermissionOptionKind::AllowAlways,
@@ -463,10 +412,8 @@ mod tests {
 
     #[test]
     fn answering_an_option_does_not_press_the_row_it_sits_in() {
-        // B1: the Timeline row around a request reveals its frames on click,
-        // which steals focus and clears the Console filter. An answer is not a
-        // press of the row. The plain span is the control: a click there
-        // reaches the row, so the harness does bubble.
+        // The row around a request reveals its frames on click; an answer must
+        // not. The plain span is the control showing the harness bubbles.
         use std::{any::Any, rc::Rc};
 
         use dioxus::core::{AttributeValue, Mutation};
