@@ -690,22 +690,33 @@ now four rings stale. Retaking them needs a display and a running
 
 ## Redesign
 
-The window as ADR 0009 arranges it, rendered from the fixtures in
-`crates/app/src/mock.rs` at the same two supported sizes:
+The window as ADR 0009 arranges it, held to the release plan's design floor
+(D1–D19), rendered from the fixtures in `crates/app/src/mock.rs` at the two
+supported sizes, in both schemes, with motion off:
 
 ```text
 INSPECTOR_MOCK=target/mock cargo test -p acp-inspector mock::writes
 ```
 
-- [Populated, 1440 x 880, light](redesign/populated-1440-light.png)
-- [Populated, 1440 x 880, dark](redesign/populated-1440-dark.png)
-- [Capabilities, 1440 x 880, dark](redesign/capabilities-1440-dark.png)
-- [First run, 1440 x 880, light](redesign/first-run-1440-light.png)
-- [Populated, 960 x 640, light](redesign/populated-960-light.png)
-- [Populated, 960 x 640, dark](redesign/populated-960-dark.png)
-- [Command palette, 1440 x 880, dark](redesign/palette-1440-dark.png)
+Each page was captured with headless Chromium at a window 87px taller than the
+viewport (`--headless=new` reserves that much) and cropped to the viewport.
 
-The two narrow captures are the arrangement at the window's own minimum, which
+- Populated, 1440 x 880: [light](redesign/populated-1440-light.png), [dark](redesign/populated-1440-dark.png)
+- First run, 1440 x 880: [light](redesign/first-run-1440-light.png), [dark](redesign/first-run-1440-dark.png)
+- Capabilities, 1440 x 880: [light](redesign/capabilities-1440-light.png), [dark](redesign/capabilities-1440-dark.png)
+- Permission request waiting, 1440 x 880: [light](redesign/permission-1440-light.png), [dark](redesign/permission-1440-dark.png)
+- Elicitation form waiting, 1440 x 880: [light](redesign/elicitation-1440-light.png), [dark](redesign/elicitation-1440-dark.png)
+- Plan, diff, failed tool call, refused turn, 1440 x 880: [light](redesign/evidence-1440-light.png), [dark](redesign/evidence-1440-dark.png)
+- Turn streaming, 1440 x 880: [light](redesign/streaming-1440-light.png), [dark](redesign/streaming-1440-dark.png)
+- Connect dialog, 1440 x 880: [light](redesign/connect-1440-light.png), [dark](redesign/connect-1440-dark.png)
+- Sessions dialog, 1440 x 880: [light](redesign/sessions-1440-light.png), [dark](redesign/sessions-1440-dark.png)
+- Command palette, 1440 x 880: [light](redesign/palette-1440-light.png), [dark](redesign/palette-1440-dark.png)
+- Populated, 960 x 640: [light](redesign/populated-960-light.png), [dark](redesign/populated-960-dark.png)
+- First run, 960 x 640: [light](redesign/first-run-960-light.png), [dark](redesign/first-run-960-dark.png)
+- Permission request waiting, 960 x 640: [light](redesign/permission-960-light.png), [dark](redesign/permission-960-dark.png)
+- Plan, diff, failed tool call, refused turn, 960 x 640: [light](redesign/evidence-960-light.png), [dark](redesign/evidence-960-dark.png)
+
+The narrow captures are the arrangement at the window's own minimum, which
 is the one the drawing gives a window too narrow for three columns: one region
 at a time, with a **Details | Session | Messages** bar at the foot to choose
 between them, and a toolbar that drops the protocol facts it can no longer fit.
