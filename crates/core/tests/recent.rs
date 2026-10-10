@@ -273,6 +273,13 @@ fn values_written_before_are_kept_until_the_reader_forgets_them() {
     let entry = recent.entries().remove(0);
     assert_eq!(entry.env, "TOKEN=sk-old", "nothing is silently deleted");
     assert!(entry.has_env_values() && !entry.env_values_missing());
+    assert!(
+        entry.remember_env_values,
+        "a relaunch from it keeps them too, until the reader says otherwise"
+    );
+    recent.record(&entry).unwrap();
+    let entry = RecentCommands::load_from(&path).entries().remove(0);
+    assert_eq!(entry.env, "TOKEN=sk-old");
 
     recent.forget_values(&entry).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();

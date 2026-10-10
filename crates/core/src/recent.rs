@@ -263,7 +263,18 @@ fn read(path: &Path) -> (Option<Vec<AgentCommand>>, Option<PathBuf>) {
 fn parse(document: &str) -> Option<Vec<AgentCommand>> {
     let file: Stored = serde_json::from_str(document).ok()?;
     (file.format == FORMAT && file.version == VERSION).then(|| {
-        let mut commands: Vec<_> = file.commands.iter().map(AgentCommand::normalized).collect();
+        let mut commands: Vec<_> = file
+            .commands
+            .iter()
+            .map(|command| {
+                let mut command = command.normalized();
+                // An entry that holds values keeps them: the flag says so, so a
+                // relaunch from it does not drop them unasked. Only files written
+                // before values stopped being kept by default have this shape.
+                command.remember_env_values |= command.has_env_values();
+                command
+            })
+            .collect();
         commands.truncate(RecentCommands::CAPACITY);
         commands
     })
