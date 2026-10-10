@@ -674,13 +674,15 @@ fn page(theme: &str, scene: Scene, asked: &Asked) -> String {
     dom.rebuild_in_place();
     let mut body = dioxus_ssr::render(&dom);
     // A dialog drawn open, as `showModal` leaves it: the attribute the
-    // platform sets, and daisyUI's own class for a modal that is showing.
+    // platform sets, which daisyUI's modal answers to. Only the attribute,
+    // because a class named here would be one Tailwind's scan of this crate
+    // compiles into the window's stylesheet.
     if let Some(id) = scene.dialog() {
         let closed = format!("<dialog id=\"{id}\" class=\"modal ");
         assert!(body.contains(&closed), "the window draws #{id}");
         body = body.replacen(
             &closed,
-            &format!("<dialog open id=\"{id}\" class=\"modal modal-open "),
+            &format!("<dialog open id=\"{id}\" class=\"modal "),
             1,
         );
     }
