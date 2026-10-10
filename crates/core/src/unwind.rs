@@ -1,10 +1,9 @@
-//! What a background task's panic becomes (C8).
+//! What a background task's panic becomes.
 //!
-//! The pumps and the inspector's reader run as detached tasks. A panic in one
-//! would otherwise end only that task: the status would stay Connected while
-//! every call waited on a reader that is gone. Each task is run through
-//! [`caught`], and a panic is reported the way a transport failure is — a
-//! diagnostic that moves the connection to Lost and fails the pending calls.
+//! The pumps and the inspector's reader are detached tasks; a panic would
+//! otherwise leave the status Connected over a dead reader. Each runs through
+//! [`caught`], and a panic is reported as a transport failure, which moves the
+//! connection to Lost and fails the pending calls.
 
 use std::any::Any;
 use std::future::Future;

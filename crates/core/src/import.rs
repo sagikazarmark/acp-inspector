@@ -1,19 +1,15 @@
-//! Reading an export back in (F5): a JSONL trace this inspector wrote, opened
-//! again as a trace and — by replaying its frames through the typed layer — as
-//! a timeline.
+//! Reading an export back in: a JSONL trace this inspector wrote, opened again
+//! as a trace and, by replaying its frames through the typed layer, as a
+//! timeline.
 //!
-//! **The file is the contract** (`docs/trace-export.md`), so this reads exactly
-//! what that document pins and refuses what it does not: a header first, of
-//! this format and a version it knows; then `frame`, `dropped` and `stderr`
-//! records, with records of a type it does not know skipped and counted.
+//! The format is pinned by `docs/trace-export.md`: a header of this format and
+//! version, then `frame`, `dropped` and `stderr` records; unknown record types
+//! are skipped and counted.
 //!
-//! **Nothing here is live.** The trace that comes back has no connection
-//! behind it, and the replay drives a client whose pipe goes nowhere: what the
-//! typed layer would answer on its own is written into a channel nobody reads,
-//! and a request the file shows being answered is resolved with the answer the
-//! file shows. What the agent was asked by the inspector's own calls is read off
-//! the frames rather than re-asked — a prompt opens a turn and its answer closes
-//! it — so no frame in the rebuilt timeline is one the file does not hold.
+//! Nothing here is live. The replay drives a client whose pipe goes nowhere,
+//! resolves requests with the answers the file holds, and reads the
+//! inspector's own calls off the frames, so the rebuilt timeline holds only
+//! frames from the file.
 
 use std::collections::HashMap;
 use std::fmt;

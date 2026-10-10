@@ -1,17 +1,9 @@
 //! The connection contract (`docs/architecture.md` §6.1): a factory yields an
 //! outgoing frame sink, an incoming frame stream, and a diagnostic side-channel.
 //!
-//! **Framing is the transport's job.** Everything above this seam deals in whole
-//! JSON messages, which is why the WebSocket factory the spec defers is a second
-//! factory rather than a redesign: WS is natively message-framed, and stdio's
-//! newline framing stays stdio's business.
-//!
-//! **A connection is a running thing, not a result.** [`ConnectionFactory::connect`]
-//! cannot fail, because a transport that cannot start is not an error to return
-//! to a caller who may not be waiting for one — it is evidence, and evidence
-//! goes in the diagnostic channel while the frame stream ends. That is the
-//! difference between an inspector that says "no such command" and one that
-//! hangs on an agent that was never there.
+//! Framing is the transport's job; everything above this seam deals in whole
+//! JSON messages. [`ConnectionFactory::connect`] cannot fail: a transport that
+//! cannot start reports it on the diagnostic channel and ends the frame stream.
 
 use std::io;
 use std::process::ExitStatus;
@@ -24,19 +16,15 @@ use tokio_util::sync::CancellationToken;
 use crate::frame::{Direction, Frame};
 use crate::trace::Tap;
 
-/// In-flight frames per direction before the slow end pushes back.
-///
-/// Bounded, so a UI that stops draining slows the agent down instead of growing
-/// until something dies. 256 frames is roughly a chatty turn's worth — enough
-/// that ordinary bursts never touch the limit.
+/// In-flight frames per direction before the slow end pushes back. Bounded so
+/// a consumer that stops draining slows the agent instead of growing memory.
 const FRAME_CAPACITY: usize = 256;
 
-/// Buffered diagnostic lines. A chatty agent's stderr is the usual producer, and
-/// it is bounded for the same reason — the console is a view, not an archive.
+/// Buffered diagnostic lines, bounded for the same reason.
 const DIAGNOSTIC_CAPACITY: usize = 256;
 
-/// Makes connections. The MVP ships one implementation, [`StdioSpawn`]; the seam
-/// exists so the second one is additive (§6.1).
+/// Makes connections. [`StdioSpawn`] is the one implementation; the seam keeps
+/// a second one additive (§6.1).
 ///
 /// [`StdioSpawn`]: crate::StdioSpawn
 pub trait ConnectionFactory {
@@ -70,17 +58,10 @@ pub struct FrameStream {
     _guard: Arc<Guard>,
 }
 
-/// One frame in from the agent, and where the trace put it.
+/// One frame in from the agent, and the ordinal the trace captured it under
+/// (the same number [`Trace::snapshot`](crate::Trace::snapshot) reports).
 ///
-/// **Two things a reader pairs, so they are paired here.** The frame is what
-/// crossed; the ordinal is the row it crossed as, and a Timeline entry keeps it
-/// so that what this window decoded can be read against what it decoded it from
-/// ([`Trace::snapshot`](crate::Trace::snapshot) is where the same number is read
-/// back off the log).
-///
-/// `captured` is `None` for a connection nobody tapped — no trace, so no row.
-/// That is a shape tests make and the inspector never does: every connection it
-/// opens is recorded (§6.2).
+/// `captured` is `None` only for an untapped connection, which only tests make.
 pub struct Received {
     pub frame: Frame,
     pub captured: Option<u64>,
@@ -95,22 +76,15 @@ pub struct DiagnosticStream {
 }
 
 /// Something the transport observed that is not a frame, and when.
-///
-/// Everything on this channel is timestamped, so the time is the struct's and
-/// only the *what* varies — which is also what lets a console render a line
-/// without asking each kind for its clock.
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub at: SystemTime,
     pub kind: DiagnosticKind,
 }
 
-/// What the transport saw.
-///
-/// Typed rather than a stream of strings: a failed spawn is the flow the desktop
-/// shell auto-surfaces (§9), so it has to be recognizable as one without reading
-/// the text — and the agent's own stderr must stay distinguishable from the
-/// inspector's remarks about it.
+/// What the transport saw. Typed so a failed spawn can be recognized without
+/// reading text, and the agent's stderr stays distinct from the inspector's
+/// remarks.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum DiagnosticKind {
@@ -125,16 +99,13 @@ pub enum DiagnosticKind {
     /// The agent process ended, on its own or because the connection was
     /// dropped.
     ///
-    /// Stdio emits this after all pipe pumps finish. Frames may
-    /// still be queued: consumers must drain the incoming stream before using
-    /// this diagnostic to tear down the Connection.
+    /// Stdio emits this after all pipe pumps finish. Frames may still be
+    /// queued: consumers must drain the incoming stream before using this
+    /// diagnostic to tear down the Connection.
     AgentExited(ExitStatus),
-    /// A frame past the transport's length limit was dropped. A placeholder
-    /// takes its place in the trace ([`Frame::omission`](crate::Frame::omission)).
-    ///
-    /// The connection continues: an agent that emits a 10 MB line is the
-    /// misbehaviour this tool exists to show (§7.3, evidence over silence), not
-    /// a reason to stop showing the rest of what it does.
+    /// A frame past the transport's length limit was dropped and replaced by a
+    /// placeholder ([`Frame::omission`](crate::Frame::omission)). The
+    /// connection continues.
     FrameDropped { limit: usize, length: usize },
     /// The stderr line before this one was cut to `limit` of its `length`
     /// bytes.
@@ -186,10 +157,8 @@ pub enum SendError {
 
 /// The transport's half of a connection — what a factory writes into.
 ///
-/// Public because writing a second transport (the deferred WebSocket factory) is
-/// meant to be possible from outside this module without touching anything
-/// above the seam. A transport's whole obligation is here: put whole frames in,
-/// take whole frames out, say what else it saw, and stop when `shutdown` fires.
+/// A transport's whole obligation: put whole frames in, take whole frames out,
+/// report what else it saw, and stop when `shutdown` fires.
 pub struct TransportEnds {
     /// Frames the client wants sent, in order.
     pub outgoing: mpsc::Receiver<Frame>,
@@ -205,14 +174,11 @@ pub struct TransportEnds {
     pub graceful: CancellationToken,
 }
 
-/// Cancels the transport when the last client-side part goes away.
+/// Cancels the transport when the last of the three client-side ends is
+/// dropped (counted by the `Arc`), or on an explicit RPC close.
 ///
-/// The client end is three separately-movable values (the typed layer parks the
-/// stream in one task and keeps the sink in another), so "the connection was
-/// dropped" is the drop of the last of them — an `Arc` counts that, and nothing
-/// else has to remember to hang up.
-/// Explicit RPC close can also stop it while borrowed client ends still exist.
-/// Stdio installs a synchronous stop hook for shutdown without a running executor.
+/// Stdio installs a synchronous stop hook so shutdown works without a running
+/// executor.
 struct Guard {
     shutdown: CancellationToken,
     graceful: CancellationToken,
@@ -284,9 +250,7 @@ impl Connection {
         (self.outgoing, self.incoming, self.diagnostics)
     }
 
-    /// Installs the trace on both frame ends. Private, and reachable only
-    /// through [`Trace::decorate`], so a tapped connection is the only kind
-    /// anyone can build a traced one out of.
+    /// Installs the trace on both frame ends; reached only through the trace.
     pub(crate) fn tapped(mut self, tap: Tap) -> Self {
         self.outgoing.tap = Some(tap.clone());
         self.incoming.tap = Some(tap);
@@ -359,14 +323,9 @@ impl FrameSink {
     }
     /// Sends one frame, recording it as it goes.
     ///
-    /// The wait for room happens first, then the record and the handoff happen
-    /// together: the trace holds the log while the frame goes into the pipe, so
-    /// two tasks sharing a sink cannot record in one order and enqueue in the
-    /// other. The trace's claim to be *the* order of the wire is only worth
-    /// making if concurrent senders cannot break it.
-    ///
-    /// What "sent" therefore means is "handed to the transport" — the honest
-    /// claim, since nothing above the seam can know the wire took it.
+    /// Waits for room first, then records and enqueues under the trace's lock,
+    /// so concurrent senders cannot record in one order and enqueue in another.
+    /// "Sent" means handed to the transport.
     pub async fn send(&self, frame: Frame) -> Result<(), SendError> {
         self.send_captured(frame).await.map(|_| ())
     }
@@ -375,16 +334,9 @@ impl FrameSink {
 impl FrameStream {
     /// The next frame from the agent, or `None` once no more will come.
     ///
-    /// The trace has the frame before this returns it, which is the whole of
-    /// "below any typed layer" (§6.2): there is no way to observe a frame here
-    /// that the trace has not already recorded.
-    ///
-    /// And it says where the trace put it, which is the same sentence read
-    /// forwards: what the layer below knows about a frame, the layer above is
-    /// told rather than left to work out. A typed layer that had to find its
-    /// own frame in the log again would be matching on text — two identical
-    /// notifications are two frames and one string — and a screen built on that
-    /// would point at the wrong row exactly when an agent repeats itself.
+    /// The trace records the frame before this returns it (§6.2), and the
+    /// ordinal it was captured under comes with it, so identical frames are
+    /// never confused by matching on text.
     pub async fn recv(&mut self) -> Option<Received> {
         let frame = self.frames.recv().await?;
         let captured = self
@@ -402,8 +354,7 @@ impl DiagnosticStream {
 }
 
 impl Diagnostic {
-    /// Stamps an observation now — which for a line read from a pipe is when it
-    /// was read, the closest the client end can get to when it was written.
+    /// Stamps an observation now; for a pipe line, when it was read.
     pub fn now(kind: DiagnosticKind) -> Self {
         Self {
             at: SystemTime::now(),
@@ -450,8 +401,7 @@ impl std::fmt::Display for Diagnostic {
 }
 
 impl std::fmt::Display for DiagnosticKind {
-    /// One console line's worth. The stderr case is the agent's own text and
-    /// nothing else — decoration belongs to whatever renders it.
+    /// One console line. Stderr is the agent's text, undecorated.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stderr(line) => f.write_str(line),
