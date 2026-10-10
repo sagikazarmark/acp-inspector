@@ -29,7 +29,7 @@ use acp_inspector_core::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiDownload, HiTrash},
+    icons::ld_icons::{LdDownload, LdTrash2},
 };
 
 use crate::copy::Copy;
@@ -239,7 +239,7 @@ pub fn Console(
                                 on_export.call(());
                             }
                         },
-                        Icon { class: "icon", icon: HiDownload }
+                        Icon { class: "icon", width: 16, height: 16, icon: LdDownload }
                         "Export…"
                     }
                     if let Some(wire) = wire {
@@ -460,7 +460,7 @@ fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
                         }
                     });
                 },
-                Icon { class: "icon", icon: HiTrash }
+                Icon { class: "icon", width: 16, height: 16, icon: LdTrash2 }
                 if armed_now { "Confirm clear" } else { "Clear" }
             }
             if armed_now {

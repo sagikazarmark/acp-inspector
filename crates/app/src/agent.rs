@@ -105,7 +105,7 @@ use acp_inspector_core::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiPlus, HiRefresh},
+    icons::ld_icons::{LdPlus, LdRefreshCw},
 };
 
 /// A lifecycle call that did not do what it said, and which call it was.
@@ -1842,7 +1842,7 @@ pub(crate) fn sessions(
                             aria_describedby: (!connected).then_some(UNAVAILABLE),
                             onclick: move |_| if connected { on_list.call(None) },
                             span { class: "disclosure-icon", aria_hidden: "true",
-                                Icon { class: "icon", icon: HiRefresh }
+                                Icon { class: "icon", width: 16, height: 16, icon: LdRefreshCw }
                             }
                             "List sessions"
                         }
@@ -1882,7 +1882,7 @@ pub(crate) fn sessions(
                         // the same thing, and only one of them is true.
                         onclick: move |_| if connected { on_new_session.call(roots.then(|| Roots::supplied(creating()))) },
                         span { class: "disclosure-icon", aria_hidden: "true",
-                            Icon { class: "icon", icon: HiPlus }
+                            Icon { class: "icon", width: 16, height: 16, icon: LdPlus }
                         }
                         "New session"
                     }
@@ -3468,7 +3468,7 @@ mod tests {
         assert!(
             lifecycle.contains(r#"class="disclosure-icon" aria-hidden="true""#)
                 && lifecycle.contains("<svg"),
-            "new and reported roots use the shared Heroicons Outline disclosure marker: {lifecycle}"
+            "new and reported roots use the shared Lucide disclosure marker: {lifecycle}"
         );
         // **The hierarchy is the tone now and no longer the size.** Every
         // control on a row is the row's own height in the drawing, so what

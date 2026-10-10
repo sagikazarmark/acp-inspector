@@ -288,8 +288,11 @@ p.unnamed { color: var(--txt); }
 .dot-done { color: var(--ok); }
 body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: blink 1.6s var(--ease-standard) infinite; }
 
-.icon { width: 13px; height: 13px; flex: none; }
-.icon path { fill: none; stroke: currentColor; }
+/* **One icon family, at one size and one weight** (D8): Lucide, 16px, a 1.5
+   stroke in the colour of the words beside it. The icon's own `stroke-width`
+   attribute is presentational, so this rule is what draws it. */
+.icon { width: 16px; height: 16px; flex: none; stroke-width: 1.5; }
+.role-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; }
 
 /* ---------------------------------------------------------------------------
    The controls this window draws itself.

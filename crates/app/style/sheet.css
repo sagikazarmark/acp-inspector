@@ -3008,13 +3008,18 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   animation: blink 1.6s var(--ease-standard) infinite;
 }
 .icon {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   flex: none;
+  stroke-width: 1.5;
 }
-.icon path {
-  fill: none;
-  stroke: currentColor;
+.role-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
 :is(.btn-quiet, [data-schemaform-presence] .btn) {
   --btn-bg: transparent;
