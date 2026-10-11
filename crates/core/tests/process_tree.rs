@@ -73,7 +73,16 @@ fn listening(port: u16) -> bool {
 }
 
 async fn stopped(port: u16) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    stopped_within(port, Duration::from_secs(2)).await;
+}
+
+/// A graceful stop gives stdin EOF and then SIGTERM a grace period each.
+async fn stopped_gracefully(port: u16) {
+    stopped_within(port, Duration::from_secs(5)).await;
+}
+
+async fn stopped_within(port: u16, patience: Duration) {
+    tokio::time::timeout(patience, async {
         while listening(port) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -171,13 +180,32 @@ async fn disconnect_and_reconnect_only_stop_the_previous_tree() {
     let _first_cleanup = Witness(first);
     let second = connected(&inspector).await;
     let _second_cleanup = Witness(second);
-    stopped(first).await;
+    // A reconnect stops the previous agent gracefully.
+    stopped_gracefully(first).await;
     assert!(listening(second));
     assert_eq!(inspector.status(), ConnectionStatus::Connected);
     let start = Instant::now();
-    inspector.disconnect();
+    inspector.disconnect_gracefully();
     assert!(start.elapsed() < Duration::from_millis(500));
-    stopped(second).await;
+    stopped_gracefully(second).await;
+    assert!(
+        inspector
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::Stopped { .. }))
+    );
+}
+
+#[tokio::test]
+async fn disconnect_ends_a_graceful_stop_still_in_progress() {
+    let inspector = Inspector::new();
+    let port = connected(&inspector).await;
+    let _cleanup = Witness(port);
+    inspector.disconnect_gracefully();
+    assert!(listening(port), "still within its grace");
+    inspector.disconnect();
+    stopped(port).await;
 }
 
 #[test]

@@ -21,6 +21,18 @@ default: testy test
 run:
     cargo run -p acp-inspector
 
+# Run the headless CLI: `just cli -- run --prompt hi -- AGENT [ARGS...]`.
+#
+# The same core without a window (README, "Headless CLI"). The leading `--`
+# keeps `just` from reading the CLI's own flags, and is dropped here; the
+# arguments are passed positionally so a prompt with spaces stays one argument.
+[positional-arguments]
+cli *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${1:-}" = "--" ]; then shift; fi
+    exec cargo run -q -p acp-inspector-cli -- "$@"
+
 # Prove the web build of the app crate still compiles.
 #
 # On the native target, because that is the half of the promise this checkout
@@ -107,19 +119,43 @@ check:
     npm ci
     npm run css:check
 
+# Check the dependency graph's advisories, licences and sources (`deny.toml`).
+# CI runs it; it fetches the RustSec advisory database, so it needs the network.
+deny:
+    cargo deny check
+
+# Render the third-party licence notices the app ships with, from `about.toml`
+# and `about.hbs`. Generated at bundle time and never committed: the file is a
+# function of `Cargo.lock`. `bundle-macos` writes it into the bundle and the
+# disk image. Needs cargo-about (in the devenv shell; elsewhere
+# `cargo install cargo-about --locked`).
+licenses out="dist/THIRD_PARTY_LICENSES.html":
+    mkdir -p "$(dirname {{quote(out)}})"
+    cargo about generate --locked --fail about.hbs -o {{quote(out)}}
+
 # Bundle the app as a macOS application and a disk image.
 #
 # The one recipe that runs `dx`, and the one thing `dx` does here is assemble
-# `ACP Inspector.app` — the release build, the `Info.plist` and the icon, from
+# the application bundle — the release build, the `Info.plist` and the icon, from
 # what `crates/app/Dioxus.toml` states
-# (docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). Signing, the disk
-# image and notarization are Apple's own tools, run from here rather than from
+# (docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). Everything after
+# that is this recipe's: the bundle's name, the licence notices, the check that
+# it will launch on another Mac, signing, the disk image and notarization.
+# Signing and notarization are Apple's own tools, run from here rather than from
 # inside the bundler: an identity is a person's and never committed config, and
 # `hdiutil` is on every Mac while the bundler's image step fetches a script
 # from GitHub at bundle time.
 #
 # Runs only on a Mac, for the Mac it runs on: `dx` does not cross-bundle, so an
 # Intel image and an Apple Silicon image are this recipe on two machines.
+#
+# Runs outside the devenv shell. The shell's C toolchain links Nix's libiconv
+# from `/nix/store` and its SDK sets a deployment target of macOS 14, so a
+# bundle built there starts only on Macs that have that store path. Release
+# bundles are built with Xcode's Command Line Tools, rustup (which reads
+# `rust-toolchain.toml`), `dx` 0.7 and cargo-about on PATH (README, "Releasing");
+# the recipe refuses a Nix shell up front, and `scripts/check-macos-bundle.sh`
+# checks the result either way.
 #
 #   just bundle-macos                                  # unsigned, for this machine
 #   just bundle-macos "Developer ID Application: Name (TEAMID)"          # signed
@@ -132,6 +168,7 @@ bundle-macos identity="" notary="":
     set -euo pipefail
     identity={{quote(identity)}}
     notary={{quote(notary)}}
+    product="ACP Inspector"
 
     if [ "$(uname -s)" != "Darwin" ]; then
         echo "bundle-macos: dx bundles only for the platform it runs on, and this is not a Mac." >&2
@@ -139,6 +176,15 @@ bundle-macos identity="" notary="":
     fi
     if [ -n "$notary" ] && [ -z "$identity" ]; then
         echo "bundle-macos: notarization needs a signed bundle; pass a Developer ID identity first." >&2
+        exit 1
+    fi
+
+    # Fail before a long build rather than after it (the guard below would).
+    cc_path="$(command -v cc || true)"
+    if [ -n "${IN_NIX_SHELL:-}" ] || [ -n "${DEVENV_ROOT:-}" ] || [ "${cc_path#/nix/store/}" != "$cc_path" ]; then
+        echo "bundle-macos: this is a Nix shell (cc is ${cc_path:-missing}). A bundle built here links /nix/store" >&2
+        echo "  libraries and targets the shell's SDK, and no other Mac can start it. Run it from a plain" >&2
+        echo "  terminal with Xcode's Command Line Tools and rustup (README, \"Releasing\")." >&2
         exit 1
     fi
 
@@ -150,18 +196,39 @@ bundle-macos identity="" notary="":
         exit 1
     fi
 
-    # `dx` tracks the `dioxus` minor in Cargo.lock; a different one bundles a
-    # program built against a renderer this checkout does not use.
+    # `dx` must be the `dioxus` version in Cargo.lock: dx itself reports any
+    # other one as incompatible with the renderer it is bundling.
+    dioxus_version="$(awk '/^name = "dioxus"$/ { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"
     case "$(dx --version 2>/dev/null || true)" in
-        "dioxus 0.7."*) ;;
+        "dioxus $dioxus_version "* | "dioxus $dioxus_version") ;;
         *)
-            echo "bundle-macos: dx 0.7.x is required (cargo install dioxus-cli --version ^0.7 --locked)." >&2
+            echo "bundle-macos: dx $dioxus_version is required, the dioxus version in Cargo.lock" >&2
+            echo "  (cargo install dioxus-cli --version =$dioxus_version --locked); found: $(dx --version 2>/dev/null || echo none)." >&2
             exit 1
             ;;
     esac
+    if ! cargo about --version >/dev/null 2>&1; then
+        echo "bundle-macos: cargo-about is required for the licence notices (cargo install cargo-about --locked)." >&2
+        exit 1
+    fi
 
+    # The deployment target is the one the plist declares: `minimum_system_version`
+    # becomes `LSMinimumSystemVersion`, and this makes the linker stamp the same
+    # `minos`, which the guard checks.
+    min_macos="$(sed -n 's/^minimum_system_version *= *"\([0-9.]*\)".*/\1/p' crates/app/Dioxus.toml)"
+    if [ -z "$min_macos" ]; then
+        echo "bundle-macos: no minimum_system_version in crates/app/Dioxus.toml." >&2
+        exit 1
+    fi
+    export MACOSX_DEPLOYMENT_TARGET="$min_macos"
+
+    # The release profile strips, so dx strips the binary again with the
+    # toolchain's own rust-objcopy, pointing it at LLVM with LD_LIBRARY_PATH —
+    # which macOS ignores, so rustup's rust-objcopy cannot load libLLVM. The
+    # fallback path is where it is.
     rm -rf dist
-    dx bundle --macos --release --locked -p acp-inspector \
+    DYLD_FALLBACK_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
+        dx bundle --macos --release --locked -p acp-inspector \
         --package-types macos --out-dir dist
 
     app="$(find dist -maxdepth 2 -type d -name '*.app' | head -n 1)"
@@ -170,10 +237,29 @@ bundle-macos identity="" notary="":
         ls -la dist >&2 || true
         exit 1
     fi
-    if [ "$(basename "$app")" != "ACP Inspector.app" ]; then
-        echo "bundle-macos: note — dx named the bundle '$(basename "$app")', not 'ACP Inspector.app';" >&2
-        echo "  [application] name in crates/app/Dioxus.toml is not being read as the product name." >&2
+
+    # dx names the bundle after the crate (`AcpInspector.app`) and ignores
+    # `[application] name` (release plan T2, #22). Rename it and set the two
+    # names Finder and the menu bar show, before anything is signed.
+    if [ "$(basename "$app")" != "$product.app" ]; then
+        renamed="$(dirname "$app")/$product.app"
+        mv "$app" "$renamed"
+        app="$renamed"
     fi
+    plist="$app/Contents/Info.plist"
+    for key in CFBundleName CFBundleDisplayName; do
+        /usr/libexec/PlistBuddy -c "Set :$key $product" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :$key string $product" "$plist"
+    done
+
+    # The notices for every crate compiled in, inside the bundle and (below)
+    # next to it in the image.
+    notices="$app/Contents/Resources/THIRD_PARTY_LICENSES.html"
+    cargo about generate --locked --fail about.hbs -o "$notices"
+
+    # That another Mac can start it: only system libraries, and the `minos` the
+    # plist declares.
+    ./scripts/check-macos-bundle.sh "$app"
 
     # Hardened runtime and a secure timestamp are what notarization requires;
     # `--deep` is not used because there is no nested code to sign — one binary,
@@ -192,9 +278,18 @@ bundle-macos identity="" notary="":
         rm -f dist/notarize.zip
     fi
 
+    # The image holds the app, a link to /Applications to drag it onto, and
+    # the licence notices.
     version="$(cargo pkgid -p acp-inspector | sed 's/.*@//')"
     dmg="dist/ACP-Inspector-${version}-$(uname -m).dmg"
-    hdiutil create -volname "ACP Inspector" -srcfolder "$app" -ov -format UDZO "$dmg"
+    stage="dist/image"
+    rm -rf "$stage"
+    mkdir "$stage"
+    ditto "$app" "$stage/$product.app"
+    cp "$notices" "$stage/THIRD_PARTY_LICENSES.html"
+    ln -s /Applications "$stage/Applications"
+    hdiutil create -volname "$product" -srcfolder "$stage" -ov -format UDZO "$dmg"
+    rm -rf "$stage"
 
     if [ -n "$identity" ]; then
         codesign --force --timestamp --sign "$identity" "$dmg"
@@ -208,5 +303,29 @@ bundle-macos identity="" notary="":
     echo "bundle-macos: $app"
     echo "bundle-macos: $dmg"
     if [ -z "$identity" ]; then
-        echo "bundle-macos: unsigned — Gatekeeper will want right-click → Open on another Mac."
+        echo "bundle-macos: unsigned — on another Mac, Gatekeeper wants Open Anyway in System Settings → Privacy & Security."
+    fi
+
+# Reads `dist-workspace.toml` and the workspace; builds nothing and publishes
+# nothing.
+#
+# Show what `dist` would build for Linux and Windows.
+dist-plan:
+    dist plan
+
+# Untested on CI, and never uploads: `dist-workspace.toml` configures no CI. On
+# Linux it needs the WebKitGTK development packages (README, "Building"); on
+# Windows, the MSVC toolchain. Ship `just licenses` beside it (L5).
+#
+#   just dist-build                              # this machine's target
+#   just dist-build x86_64-unknown-linux-gnu     # a named one, if this machine can build it
+#
+# Build the Linux or Windows archive into `target/distrib/`.
+dist-build target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n {{quote(target)}} ]; then
+        dist build --artifacts=local --target {{quote(target)}}
+    else
+        dist build --artifacts=local
     fi

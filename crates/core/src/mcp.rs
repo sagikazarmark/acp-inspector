@@ -2,21 +2,63 @@
 //! The Agent owns execution; these are neither a catalog nor a connectivity report.
 use crate::{CallError, v1};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct McpDraft {
     pub servers: Vec<McpServerDraft>,
 }
 
+/// Editor identities for a server and its rows. Never sent on the wire.
+///
+/// `0` means "not yet identified"; [`McpDraft::identify`] fills every gap with
+/// a process-unique id and keeps the ones already given, so an editor can key
+/// rows on something that survives reordering and removal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct McpServerDraft {
+    pub id: u64,
     pub name: String,
     pub transport: McpTransport,
     pub command: String,
     pub args: Vec<String>,
+    /// Identities for `args`, index for index.
+    pub arg_ids: Vec<u64>,
     pub env: Vec<McpEnv>,
+    /// Identities for `env`, index for index.
+    pub env_ids: Vec<u64>,
     pub url: String,
     pub headers: Vec<McpEnv>,
+    /// Identities for `headers`, index for index.
+    pub header_ids: Vec<u64>,
+}
+
+static NEXT_ROW: AtomicU64 = AtomicU64::new(1);
+
+fn fresh() -> u64 {
+    NEXT_ROW.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Makes `ids` exactly `len` long, keeping the identities it already holds.
+fn fit(ids: &mut Vec<u64>, len: usize) {
+    ids.truncate(len);
+    for id in ids.iter_mut().filter(|id| **id == 0) {
+        *id = fresh();
+    }
+    while ids.len() < len {
+        ids.push(fresh());
+    }
+}
+
+impl McpServerDraft {
+    /// Gives the server and each of its rows an identity, keeping existing ones.
+    pub fn identify(&mut self) {
+        if self.id == 0 {
+            self.id = fresh();
+        }
+        fit(&mut self.arg_ids, self.args.len());
+        fit(&mut self.env_ids, self.env.len());
+        fit(&mut self.header_ids, self.headers.len());
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,6 +100,13 @@ pub struct McpFinding {
 }
 
 impl McpDraft {
+    /// Gives every server and row an editor identity, keeping existing ones.
+    pub fn identify(&mut self) {
+        for server in &mut self.servers {
+            server.identify();
+        }
+    }
+
     pub fn findings(&self) -> Vec<McpFinding> {
         let mut findings = Vec::new();
         for (server, definition) in self.servers.iter().enumerate() {
@@ -282,6 +331,42 @@ mod tests {
             vec![("X", ""), ("X", " a=b ")]
         );
     }
+    #[test]
+    fn identities_fill_gaps_and_survive_edits_without_reaching_the_wire() {
+        let mut draft = McpDraft {
+            servers: vec![McpServerDraft {
+                name: "tools".into(),
+                command: "/bin/tools".into(),
+                args: vec!["a".into(), "b".into()],
+                ..Default::default()
+            }],
+        };
+        let before = draft.definitions().unwrap();
+        draft.identify();
+        let server = &draft.servers[0];
+        assert_ne!(server.id, 0);
+        assert_eq!(server.arg_ids.len(), 2);
+        assert_ne!(server.arg_ids[0], server.arg_ids[1]);
+        let kept = server.clone();
+
+        // Identifying again keeps what was given and fills only what is new.
+        draft.servers[0].args.push("c".into());
+        draft.identify();
+        assert_eq!(draft.servers[0].id, kept.id);
+        assert_eq!(draft.servers[0].arg_ids[..2], kept.arg_ids[..]);
+        assert_eq!(draft.servers[0].arg_ids.len(), 3);
+
+        // A row removed takes its identity with it.
+        draft.servers[0].args.truncate(1);
+        draft.identify();
+        assert_eq!(draft.servers[0].arg_ids, kept.arg_ids[..1]);
+
+        // And none of it is part of the definition sent to the agent.
+        draft.servers[0].args = vec!["a".into(), "b".into()];
+        draft.identify();
+        assert_eq!(draft.definitions().unwrap(), before);
+    }
+
     #[test]
     fn validation_names_fields_but_never_checks_the_agents_filesystem() {
         let mut draft = McpDraft {

@@ -1,0 +1,132 @@
+# The checks `just check` and `just` run locally, on a clean machine per
+# platform. The Rust toolchain is the one `rust-toolchain.toml` pins, and Testy
+# is built from the rust-sdk rev `scripts/build-testy.sh` pins.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: Check and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The desktop shell's WebView and the libraries dioxus-desktop links on
+      # Linux (README, "Running it"). macOS needs nothing: WKWebView and
+      # Security come with the system SDK.
+      - name: Install WebKitGTK and the desktop shell's system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
+
+      # Reads rust-toolchain.toml: the pinned version, rustfmt and clippy.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The suite's scripted agents are Python 3.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (desktop)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Clippy (web)
+        run: cargo clippy -p acp-inspector --all-targets --locked --no-default-features --features web -- -D warnings
+
+      - name: Decode under each serde_json number feature
+        run: bash scripts/check-number-features.sh
+
+      # Keyed on the script (which holds the pinned rev) and the toolchain.
+      - name: Cache Testy
+        id: testy-cache
+        uses: actions/cache@v4
+        with:
+          path: .testy/bin/testy
+          key: testy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-testy.sh', 'rust-toolchain.toml') }}
+
+      - name: Build Testy
+        if: steps.testy-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-testy.sh
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Install the stylesheet toolchain
+        run: npm ci
+
+      - name: The committed stylesheet is what its source generates
+        run: npm run css:check
+
+      - name: Node tests
+        run: |
+          npm run test:clipboard
+          npm run test:navigation
+
+      # `just node-free`: the app builds and tests from tracked files with no
+      # Node, no dx and no network.
+      - name: Build and test without Node
+        run: ./scripts/check-node-free.sh
+
+  deny:
+    name: Dependencies (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Advisories, licences and sources
+        run: cargo deny check
+
+  windows:
+    name: Compile (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      # Windows is built from source and not packaged or tested (README,
+      # "Supported platforms"); this keeps it compiling.
+      - name: Check
+        run: cargo check --workspace --all-targets --locked

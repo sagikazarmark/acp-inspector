@@ -28,3 +28,6 @@ target/
 
 # Standard-library Python acceptance fixtures.
 __pycache__/
+
+# Finder's per-folder metadata.
+.DS_Store

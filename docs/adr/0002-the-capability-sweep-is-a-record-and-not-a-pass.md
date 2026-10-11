@@ -3,7 +3,7 @@
 [§1.1](../architecture.md#11-what-is-deliberately-not-built) has promised since the MVP that *the
 capability sweep* — **a tool-driven pass that exercises every advertised method and leaves a
 filled-in report** — was wanted, and was the ring after the current one. The fourth ring
-([#96](https://github.com/sagikazarmark/dioxus-chat.orig/issues/96)) does not build it. What it
+(host #96) does not build it. What it
 builds instead is **passive**: a per-connection record of which of the agent's advertisements were
 driven and what came back, filled in by the user driving the affordances that already exist, drawn
 as a fourth fact on the capability panel's rows. The pass itself is not deferred again — it is
@@ -69,3 +69,8 @@ in the table with this argument in place of the old one.
   with no surface of its own and no second party to audit, it names a property an Advertisement
   carries rather than a thing a screen is about — and *exercisable* is already spoken for in §7.5,
   where it means a button exists rather than that one was pressed.
+
+---
+
+*`host #N` cites an issue in the repository the inspector began in, which is private; see the
+[architecture spec](../architecture.md#architecture-specification--acp-inspector).*

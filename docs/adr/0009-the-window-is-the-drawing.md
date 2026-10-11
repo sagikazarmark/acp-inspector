@@ -1,5 +1,9 @@
 # The window is the drawing
 
+> **Amended by the release plan (`docs/release-plan.md`: D1, D3, D4, D9, D12, D19).** The sub-AA exception list is gone — `--dim2` is #636c78 / #808a96 and light `--out`, `--ok` and `--acc` were darkened, so every ink clears 4.5:1 — no text is under 11px or control label under 12px; IBM Plex is bundled and inlined rather than asked for; the capitals are one register (a rail section's name), never a wire name; the light fill is the lime with dark ink; the corners are four, not nine; a row fades up only when marked `data-arrived` and the dots blink only while a turn streams; the daisyUI themes point at the palette by `var()` instead of carrying its values.
+
+> **Amended again by the release plan (A3, D8, D17, D18).** The lists are oldest first in the document and only their scrollers are laid out bottom-up; the one icon family is Lucide at 16px with a 1.5 stroke; on macOS the bar is the title bar (transparent, full-size content, the traffic lights inset into it); and below 1180px the turn and the wire stay side by side while the rail becomes a drawer opened from the bar, its edge draggable at full width (220–420px, remembered in the webview's storage) and its Capabilities openable wide over the screens. **The one-region-at-a-time layout is kept below 760px, for the web build**: the desktop window's minimum is 960px, so a desktop window never reaches it.
+
 ## Context
 
 A drawing arrived — one HTML page, one populated screen, both schemes — and it is not a restyle of

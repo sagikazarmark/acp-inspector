@@ -220,6 +220,7 @@ async fn the_spawn_forms_fields_reach_the_agent() {
                 .into(),
             env: "\nINSPECTOR_TEST_MARK=carried\nhalf-typed\n".into(),
             cwd: "/tmp".into(),
+            ..AgentCommand::default()
         }
         .factory(),
     );
@@ -235,6 +236,41 @@ async fn the_spawn_forms_fields_reach_the_agent() {
         reported[1].ends_with("/tmp"),
         "the cwd carried: {reported:?}"
     );
+}
+
+#[tokio::test]
+async fn variables_the_form_unsets_or_clears_do_not_reach_the_agent() {
+    let report = "-c\nprintf '%s|%s|%s\\n' \"${HOME-unset}\" \"${USER-unset}\" \"$INSPECTOR_TEST_MARK\" >&2; cat > /dev/null";
+    for (unset, clear_env, expected) in
+        [("HOME", false, None), ("", true, Some("unset|unset|kept"))]
+    {
+        let inspector = Inspector::new();
+        let mut lines = inspector.diagnostics().changes();
+        inspector.connect(
+            &AgentCommand {
+                command: "/bin/sh".into(),
+                args: report.into(),
+                env: "INSPECTOR_TEST_MARK=kept".into(),
+                unset: unset.into(),
+                clear_env,
+                ..AgentCommand::default()
+            }
+            .factory(),
+        );
+        until(&mut lines, "the agent to report its environment", || {
+            !stderr_lines(&inspector).is_empty()
+        })
+        .await;
+        let reported = &stderr_lines(&inspector)[0];
+        match expected {
+            Some(expected) => assert_eq!(reported, expected),
+            None => assert!(
+                reported.starts_with("unset|") && reported.ends_with("|kept"),
+                "{reported}"
+            ),
+        }
+        inspector.disconnect();
+    }
 }
 
 #[test]

@@ -10,7 +10,7 @@
 //! about a connection. The one that spawns one is the rule the window records
 //! by — an invocation is remembered because an agent *answered* — and it
 //! asserts the rule rather than the wiring: the launch handler in
-//! `crates/app/src/main.rs` is the caller, and this is the same two answers it
+//! `crates/app/src/app/launch.rs` is the caller, and this is the same two answers it
 //! reads, made in the same order, without a window to read them in.
 
 use std::path::PathBuf;
@@ -117,6 +117,8 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "\n  --flag  \n\n  value\n".to_owned(),
             env: "\n ACP_LOG=debug \n".to_owned(),
             cwd: " /tmp \n".to_owned(),
+            remember_env_values: true,
+            ..AgentCommand::default()
         })
         .expect("somewhere to write");
 
@@ -127,6 +129,8 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "--flag\nvalue".to_owned(),
             env: "ACP_LOG=debug".to_owned(),
             cwd: "/tmp".to_owned(),
+            remember_env_values: true,
+            ..AgentCommand::default()
         }],
         "the blank lines and the padding are what the spawn already ignores"
     );
@@ -139,6 +143,7 @@ fn what_is_remembered_is_the_invocation_and_not_the_keystrokes() {
             args: "--flag\n\nvalue  ".to_owned(),
             env: "ACP_LOG=debug".to_owned(),
             cwd: "/tmp".to_owned(),
+            ..AgentCommand::default()
         })
         .expect("somewhere to write");
     assert_eq!(recent.entries().len(), 1, "{:?}", recent.entries());
@@ -168,6 +173,13 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
     // that keeps the form working.
     let recent = RecentCommands::load_from(&path);
     assert!(recent.entries().is_empty());
+    // Set aside rather than overwritten by the next save.
+    let backup = recent.backup().expect("the unreadable file was kept");
+    assert_eq!(backup, path.with_extension("json.bak"));
+    assert_eq!(
+        std::fs::read_to_string(backup).unwrap(),
+        "{ this is not the file we left }"
+    );
 
     recent
         .record(&typed("npx", ""))
@@ -177,6 +189,123 @@ fn a_file_this_never_wrote_is_read_as_no_list_at_all() {
         ["npx"],
         "and the next launch is remembered over it"
     );
+    assert!(RecentCommands::load_from(&path).backup().is_none());
+    let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        left.iter().all(|name| !name.ends_with(".new")),
+        "no staging file is left behind: {left:?}"
+    );
+}
+
+#[test]
+fn an_environment_to_unset_or_clear_is_remembered_and_older_files_still_load() {
+    let path = scratch("environment").join("recent.json");
+    std::fs::write(
+        &path,
+        r#"{"format":"acp-inspector-recent","version":1,"commands":[{"command":"old","args":"","env":"","cwd":""}]}"#,
+    )
+    .unwrap();
+    let recent = RecentCommands::load_from(&path);
+    assert_eq!(named(&recent), ["old"], "a file without the new fields");
+
+    let command = AgentCommand {
+        command: "agent".to_owned(),
+        unset: "\n OPENAI_API_KEY \n".to_owned(),
+        clear_env: true,
+        ..AgentCommand::default()
+    };
+    recent.record(&command).unwrap();
+    let reloaded = RecentCommands::load_from(&path).entries();
+    assert_eq!(reloaded[0].unset, "OPENAI_API_KEY");
+    assert!(reloaded[0].clear_env);
+    assert_eq!(
+        reloaded[0].unset_names().collect::<Vec<_>>(),
+        ["OPENAI_API_KEY"]
+    );
+}
+
+#[test]
+fn variable_values_are_not_kept_unless_the_launch_asked() {
+    let path = scratch("names-only").join("recent.json");
+    let recent = RecentCommands::load_from(&path);
+    let secret = AgentCommand {
+        command: "agent".to_owned(),
+        env: "ANTHROPIC_API_KEY=sk-secret\nACP_LOG=debug".to_owned(),
+        ..AgentCommand::default()
+    };
+    recent.record(&secret).unwrap();
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(!written.contains("sk-secret"), "{written}");
+    let kept = RecentCommands::load_from(&path).entries();
+    assert_eq!(kept[0].env, "ANTHROPIC_API_KEY=\nACP_LOG=");
+    assert!(
+        kept[0].env_values_missing(),
+        "a refill says the values were not saved"
+    );
+
+    // A launch that asked keeps them, and replaces the names-only row of the
+    // same invocation rather than sitting beside it.
+    recent
+        .record(&AgentCommand {
+            remember_env_values: true,
+            ..secret.clone()
+        })
+        .unwrap();
+    let kept = RecentCommands::load_from(&path).entries();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].env, "ANTHROPIC_API_KEY=sk-secret\nACP_LOG=debug");
+    assert!(kept[0].remember_env_values && !kept[0].env_values_missing());
+}
+
+#[test]
+fn values_written_before_are_kept_until_the_reader_forgets_them() {
+    let path = scratch("legacy-values").join("recent.json");
+    std::fs::write(
+        &path,
+        r#"{"format":"acp-inspector-recent","version":1,"commands":[{"command":"old","args":"","env":"TOKEN=sk-old","cwd":""}]}"#,
+    )
+    .unwrap();
+    let recent = RecentCommands::load_from(&path);
+    let entry = recent.entries().remove(0);
+    assert_eq!(entry.env, "TOKEN=sk-old", "nothing is silently deleted");
+    assert!(entry.has_env_values() && !entry.env_values_missing());
+    assert!(
+        entry.remember_env_values,
+        "a relaunch from it keeps them too, until the reader says otherwise"
+    );
+    recent.record(&entry).unwrap();
+    let entry = RecentCommands::load_from(&path).entries().remove(0);
+    assert_eq!(entry.env, "TOKEN=sk-old");
+
+    recent.forget_values(&entry).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(!written.contains("sk-old"), "{written}");
+    let forgotten = RecentCommands::load_from(&path).entries().remove(0);
+    assert_eq!(forgotten.env, "TOKEN=");
+    assert!(forgotten.env_values_missing());
+}
+
+#[test]
+fn a_removed_entry_stays_removed_after_a_restart() {
+    let path = scratch("remove").join("recent.json");
+    let recent = RecentCommands::load_from(&path);
+    for name in ["first", "second", "third"] {
+        recent.record(&typed(name, "")).unwrap();
+    }
+    recent.remove(&typed("second", "")).unwrap();
+    assert_eq!(named(&recent), ["third", "first"]);
+    assert_eq!(
+        named(&RecentCommands::load_from(&path)),
+        ["third", "first"],
+        "the file says the same"
+    );
+    // Removing what is not there is no change.
+    recent.remove(&typed("missing", "")).unwrap();
+    assert_eq!(named(&RecentCommands::load_from(&path)), ["third", "first"]);
 }
 
 #[test]
@@ -243,7 +372,7 @@ async fn an_invocation_is_remembered_because_an_agent_answered() {
     let path = scratch("launched").join("recent.json");
     let recent = RecentCommands::load_from(&path);
 
-    // The launch handler's rule, in the order it has it (`crates/app/src/main.rs`):
+    // The launch handler's rule, in the order it has it (`crates/app/src/app/launch.rs`):
     // start the agent, then record if an agent described itself — which a
     // handshake that failed afterwards, at `session/new`, does not undo.
     //

@@ -1,60 +1,51 @@
-//! Where an agent is started (`docs/architecture.md` §9).
+//! The Connect dialog, where an agent is launched. See `docs/architecture.md` §9.
 //!
-//! **It is a dialog because launching is a thing done once.** The four fields
-//! and the list of invocations that worked were a permanent column of the
-//! window: measured, the rail they were in was a fifth of its width and forty
-//! per cent of it was empty, and nothing in it changed while a reader worked. A
-//! task performed once per connection does not earn a column; it earns a way in
-//! and a way out.
-//!
-//! **The platform owns the modality.** A native `<dialog>` opened with
-//! `showModal` traps focus, dims what is behind it, closes on Escape and
-//! restores focus to whatever opened it — four behaviours this window would
-//! otherwise have to write, get subtly wrong, and test. Opening and closing are
-//! the two things a Rust signal cannot do to it, because the modal state lives
-//! on the element rather than in an attribute, so those go through the one
-//! script this module has.
-//!
-//! **And the fifth behaviour is a form.** A click on the backdrop closes a
-//! dialog in every application anybody has used, and `showModal` does not do it
-//! — so the backdrop is a `<form method="dialog">` filling the space behind the
-//! box, whose submit button is the click. It is the platform's own way out
-//! again rather than a listener this window has to attach, remove and reason
-//! about: submitting a `dialog` form closes the dialog it is in.
+//! A native `<dialog>` opened with `showModal`: the platform traps focus, dims
+//! the window, closes on Escape and restores focus. The backdrop is a
+//! `<form method="dialog">`, so a click outside closes it too.
 
 use acp_inspector_core::AgentCommand;
 use dioxus::prelude::*;
 
-use crate::spawn::SpawnForm;
+use crate::spawn::{LaunchFailure, SpawnForm};
 
-/// The dialog, by the name the two scripts below reach it under.
+/// The dialog's element id.
 const DIALOG: &str = "connect-dialog";
 
-/// Open the dialog.
+/// Opens the dialog modally.
 ///
-/// **`showModal` and not an `open` attribute.** The attribute renders the
-/// element in the page like any other box: no backdrop, no focus trap, no
-/// Escape. Modality is a property of the element that only this call sets, so a
-/// component rendering `open: true` would draw the form in a corner of the
-/// window with the window still usable behind it and call it a modal.
-///
-/// **And no `open` signal to go with it.** Whether the dialog is showing lives
-/// on the element, because that is where the platform keeps it: Escape and the
-/// backdrop close it without asking anybody, and a Rust signal that thought it
-/// was still open would answer the next click by setting a value that had not
-/// changed — a Connect button that works once. Nothing in this window needs to
-/// know, so nothing in it is told.
-///
-/// Nothing the agent said reaches this string: the only value interpolated is a
-/// `const` this crate wrote.
+/// `showModal`, not an `open` attribute: only the call makes it modal. No
+/// signal mirrors the open state, because Escape and the backdrop close it
+/// without telling Rust, and a stale signal would swallow the next open. Only a
+/// crate `const` is interpolated into the script.
 pub fn open() {
     document::eval(&format!("document.getElementById({DIALOG:?})?.showModal()"));
 }
 
-/// Shut it, for the one thing that shuts it which is not the reader: an agent
-/// that answered.
+/// Closes it; called when an agent answers a launch.
 pub fn close() {
     document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
+}
+
+/// Shows the dialog and focuses the launch failure alert once drawn, or
+/// Command if it never comes. The alert settles a few frames after the launch
+/// returns, so the script waits for it.
+pub fn show_failure() {
+    document::eval(&failure_focus());
+}
+
+fn failure_focus() -> String {
+    format!(
+        r#"const dialog = document.getElementById({DIALOG:?});
+if (dialog && !dialog.open) dialog.showModal();
+for (let attempt = 0; attempt < 30; attempt += 1) {{
+  await new Promise(requestAnimationFrame);
+  const alert = document.getElementById('launch-failure');
+  if (alert) {{ alert.focus(); return; }}
+}}
+document.getElementById({COMMAND:?})?.focus();"#,
+        COMMAND = crate::spawn::COMMAND,
+    )
 }
 
 /// The launch form, in a dialog over the window.
@@ -64,16 +55,28 @@ pub fn Connect(
     launching: bool,
     recent: Vec<AgentCommand>,
     unsaved: Option<String>,
+    /// Why the last launch did not reach an agent, said inside the dialog.
+    #[props(default)]
+    failure: Option<LaunchFailure>,
+    /// The invocation the window last launched, which the fields follow.
+    #[props(default)]
+    launched: Option<AgentCommand>,
+    /// A remembered invocation to fill the fields with (`SpawnForm::prefill`).
+    #[props(default)]
+    prefill: Option<(u64, AgentCommand)>,
     on_launch: EventHandler<AgentCommand>,
+    #[props(default)] on_remove: Option<EventHandler<AgentCommand>>,
+    #[props(default)] on_forget: Option<EventHandler<AgentCommand>>,
 ) -> Element {
     rsx! {
         dialog {
             id: DIALOG,
             class: "modal connect-dialog",
             "data-slot": "connect",
+            aria_labelledby: "connect-title",
             div { class: "modal-box dialog-box connect-box",
                 header { class: "dialog-head",
-                    h2 { "Connect to an agent" }
+                    h2 { id: "connect-title", if running { "Agent command" } else { "Connect to an agent" } }
                     span { class: "grow" }
                     button {
                         class: "btn btn-xs btn-quiet",
@@ -86,15 +89,13 @@ pub fn Connect(
                     }
                 }
 
-                SpawnForm { running, launching, recent, unsaved, on_launch }
+                SpawnForm { running, launching, recent, unsaved, failure, launched, prefill, on_launch, on_remove, on_forget }
             }
 
-            // The click outside. Nothing in it is drawn — the box above covers
-            // the middle and this covers the rest — and its one control is
-            // named for the reader who reaches it by keyboard rather than by
-            // pointing.
+            // The click outside. Out of the Tab order: the keyboard has Escape
+            // and Close.
             form { method: "dialog", class: "modal-backdrop",
-                button { "data-slot": "dismiss", "close" }
+                button { "data-slot": "dismiss", tabindex: "-1", "close" }
             }
         }
     }
@@ -156,6 +157,17 @@ mod tests {
         assert!(
             html.contains(r#"data-slot="close-connect""#),
             "and a way out that is not the keyboard: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-labelledby="connect-title""#)
+                && html.contains(r#"<h2 id="connect-title">Connect to an agent</h2>"#)
+                && html.contains(r#"data-slot="dismiss" tabindex="-1""#),
+            "the dialog is named by its heading and the backdrop is not a Tab stop: {html}"
+        );
+        assert!(
+            failure_focus().contains("launch-failure")
+                && failure_focus().contains("launch-command"),
+            "a failed launch takes focus to its alert, or to Command"
         );
     }
 }

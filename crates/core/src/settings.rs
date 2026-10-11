@@ -1,32 +1,13 @@
 //! What the window remembers about how it should look (`docs/architecture.md`
-//! §9): the appearance and the indentation preferences, in a file of the
+//! §9): the appearance and indentation preferences, in a file of the
 //! inspector's own.
 //!
-//! **Two preferences, and a file rather than a panel.** Both choices are offered
-//! by controls that sit in the bar the window already has, and this is only where
-//! the answers are kept — read once at the window's start, written on every
-//! change, because a preference that needs a clean exit to persist loses to a
-//! crash.
-//!
-//! **One file, and every preference in it.** A save writes the pair, so a choice
-//! made about one is never a way of forgetting the other; the file's version
-//! covers the shape rather than the field list, which is why a preference joining
-//! it costs no version — a file written before there was an indentation
-//! preference names none, and a file that names none is a window drawing the
-//! wire.
-//!
-//! It is beside [`RecentCommands`](crate::RecentCommands) rather than inside it:
-//! that file is `0600` because it carries environment variables, and coupling a
-//! convenience list's version to a preference's helps neither. What the two do
-//! share — where a file of the inspector's lives, and the write-beside-and-move
-//! that replaces one — is stated once, in `crates/core/src/kept.rs`.
-//!
-//! **A save that fails is silent.** The choice still applies for the session —
-//! the same shape recording a recent command has, where the entry is in the list
-//! whether or not the file was written. Unlike a list of typed invocations,
-//! either of these is one click to redo, so they earn no note on screen. Anything
-//! this cannot read is [`Appearance::System`] and [`Indentation::Wire`], which
-//! are the defaults a window with no preferences at all would open on.
+//! Read once at start, written on every change so a crash loses nothing. A save
+//! writes both preferences; a missing field reads as its default, so adding a
+//! preference needs no version bump. A failed save is silent: the choice still
+//! applies for the session. An unreadable file means [`Appearance::System`] and
+//! [`Indentation::Wire`]. File location and atomic replace live in
+//! `crates/core/src/kept.rs`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -43,9 +24,8 @@ use crate::store::locked;
 /// apart from one this wrote.
 const FORMAT: &str = "acp-inspector-settings";
 
-/// The shape's version. It changes when this would read an older file wrongly —
-/// at which point the older file is ignored, which leaves the window on System
-/// and costs one click to put right.
+/// The shape's version. Bumped when an older file would be misread; older
+/// files are then ignored.
 const VERSION: u32 = 1;
 
 /// The file itself.
@@ -56,15 +36,13 @@ const NOWHERE: &str = "no directory to remember settings in";
 
 /// The window's preferences, as the last run of the app left them.
 ///
-/// A handle, not the values: cloning shares one, so the window can hand it to
-/// the effect that saves into it without threading a reference through the tree
-/// — the same shape [`RecentCommands`](crate::RecentCommands) has, for the same
-/// reason.
+/// A handle: clones share one set of values.
 #[derive(Clone)]
 pub struct Settings {
     /// Where they are kept, or `None` on a machine with nowhere to keep them.
     path: Option<PathBuf>,
     held: Arc<Mutex<Preferences>>,
+    backup: Option<PathBuf>,
 }
 
 /// Everything the window remembers, which is what a save writes and what a load
@@ -90,17 +68,11 @@ struct Written {
 struct Stored {
     format: String,
     version: u32,
-    /// A file of this version that names no appearance at all is System.
-    ///
-    /// This covers the *absent* field only. A field holding a token no version
-    /// of this has heard of fails the whole parse instead, which `read` below
-    /// answers as System too — same outcome by a different road, and
-    /// `crates/core/tests/appearance.rs` pins both.
+    /// An absent field is System. An unknown token fails the whole parse, which
+    /// `read` also answers as System (`crates/core/tests/appearance.rs`).
     #[serde(default)]
     appearance: Appearance,
-    /// And the same for the indentation, which is what makes a file written
-    /// before this preference existed a readable file rather than a version to
-    /// bump: it names none, and naming none is Wire.
+    /// An absent field is Wire, so files from before this preference still load.
     #[serde(default)]
     indentation: Indentation,
 }
@@ -116,31 +88,30 @@ impl Settings {
             None => Self {
                 path: None,
                 held: Arc::default(),
+                backup: None,
             },
         }
     }
 
-    /// The preferences kept in a particular file — what [`load`](Self::load)
-    /// does once it knows where, and what the tests drive.
+    /// The preferences kept in a particular file.
     pub fn load_from(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let held = read(&path).unwrap_or_default();
+        let (held, backup) = read(&path);
         Self {
             path: Some(path),
-            held: Arc::new(Mutex::new(held)),
+            held: Arc::new(Mutex::new(held.unwrap_or_default())),
+            backup,
         }
     }
 
-    /// Where the preferences live when nobody says otherwise: the platform's own
-    /// directory for a program's state, under a directory of the inspector's —
-    /// the same place [`RecentCommands::location`] answers with, in a file of
-    /// this store's own.
-    ///
-    /// The state directory rather than the config one, because nobody wrote this
-    /// and nobody is meant to edit it: it is a click the window recorded, not a
-    /// file somebody is expected to open. `None` on a machine with no home
-    /// directory at all, which is answered by saying so rather than by picking
-    /// somewhere.
+    /// Where loading set aside a file it could not read, if it did.
+    pub fn backup(&self) -> Option<&Path> {
+        self.backup.as_deref()
+    }
+
+    /// The default location: the same directory as
+    /// [`RecentCommands::location`], in a file of its own. `None` when there is
+    /// no home directory.
     ///
     /// [`RecentCommands::location`]: crate::RecentCommands::location
     pub fn location() -> Option<PathBuf> {
@@ -162,35 +133,27 @@ impl Settings {
         self.lock().indentation
     }
 
-    /// Remembers a choice of appearance, and saves it.
+    /// Remembers a choice of appearance, and saves it. The choice applies even
+    /// if the save fails.
     ///
-    /// Answers with whether it reached the disk. The choice is in effect
-    /// regardless — see the module's note on why nothing is said about a save
-    /// that failed.
-    ///
-    /// **The file is written under the preferences' own lock**, so two changes
-    /// made at once cannot reach the disk in the other order from the one they
-    /// were made in — which would outlive the window saying the wrong one was
-    /// last.
+    /// The file is written under the lock, so concurrent changes reach the disk
+    /// in the order they were made.
     pub fn set_appearance(&self, appearance: Appearance) -> io::Result<()> {
         let mut held = self.lock();
         held.appearance = appearance;
         self.save(*held)
     }
 
-    /// Remembers a choice of indentation, and saves it. The same rules as the
-    /// appearance's, including the silence about a save that did not land.
+    /// Remembers a choice of indentation, and saves it, under the same rules as
+    /// [`set_appearance`](Self::set_appearance).
     pub fn set_indentation(&self, indentation: Indentation) -> io::Result<()> {
         let mut held = self.lock();
         held.indentation = indentation;
         self.save(*held)
     }
 
-    /// Writes the preferences where they live.
-    ///
-    /// Ordinary permissions, unlike the recent commands': a colour scheme is not
-    /// a secret, and a file that is `0600` for no reason invites the next
-    /// preference to be kept somewhere it does not belong.
+    /// Writes the preferences where they live, with ordinary permissions:
+    /// nothing in them is secret.
     fn save(&self, preferences: Preferences) -> io::Result<()> {
         let path = self
             .path
@@ -213,17 +176,15 @@ impl Settings {
     }
 }
 
-/// The preferences a file holds, or `None` if it holds anything else.
-///
-/// A missing file is the first run of the app; a file that will not parse, says
-/// it is something else, or comes from a version whose shape this cannot read,
-/// is a file this cannot use — and all four are the same answer, because none of
-/// them is a reason a window should not open: the operating system has an answer
-/// for how the window should look, and the wire is an answer for how a payload
-/// is drawn.
-fn read(path: &Path) -> Option<Preferences> {
-    let document = std::fs::read_to_string(path).ok()?;
-    let file: Stored = serde_json::from_str(&document).ok()?;
+/// The preferences a file holds, or `None` if it is missing, unparsable,
+/// something else, or another version. An unusable file is set aside as `.bak`
+/// rather than overwritten.
+fn read(path: &Path) -> (Option<Preferences>, Option<PathBuf>) {
+    kept::load(path, parse)
+}
+
+fn parse(document: &str) -> Option<Preferences> {
+    let file: Stored = serde_json::from_str(document).ok()?;
     (file.format == FORMAT && file.version == VERSION).then_some(Preferences {
         appearance: file.appearance,
         indentation: file.indentation,

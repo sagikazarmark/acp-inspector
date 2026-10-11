@@ -3,23 +3,41 @@
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+use std::time::{Instant, SystemTime};
 
 /// One JSON-RPC message as it crossed the wire (`CONTEXT.md`, *Frame*).
 ///
-/// **Text, not a parsed value.** The inspector's subject matter is what an agent
-/// actually emitted, including what no schema recognizes, so nothing below the
-/// typed layer parses, validates, or reformats a frame — it is carried and
-/// recorded exactly as it arrived (§8, the raw-first rule). A frame that is not
-/// JSON at all is still a frame, and still gets shown.
-///
-/// Cheap to clone, because every frame is cloned at least once: the trace keeps
-/// a copy of everything that passes the seam.
+/// Text, not a parsed value: carried and recorded exactly as it arrived, even
+/// when it is not JSON (§8). Cheap to clone.
 #[derive(Clone)]
 pub struct Frame(Arc<Contents>);
 
 struct Contents {
     text: Arc<str>,
     summary: OnceLock<FrameSummary>,
+    origin: Origin,
+    /// When a transport read it, for frames that came off a pipe.
+    read: Option<(SystemTime, Instant)>,
+    /// Composed by a person rather than by the typed layer.
+    hand: bool,
+}
+
+/// How the text relates to the bytes that crossed.
+enum Origin {
+    Verbatim,
+    /// Not valid UTF-8: the text is a lossy decoding of these bytes.
+    Lossy(Box<[u8]>),
+    /// Too long to carry: the text is a lossy decoding of the retained prefix.
+    Omitted(Omission),
+}
+
+/// What a placeholder stands in for: a line the transport read but dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Omission {
+    /// The line's length in bytes, line ending excluded.
+    pub length: usize,
+    /// The transport's limit it was over.
+    pub limit: usize,
 }
 
 impl PartialEq for Frame {
@@ -29,65 +47,162 @@ impl PartialEq for Frame {
 }
 impl Eq for Frame {}
 
-/// Which way a frame went. The inspector is always the client, so the two
-/// directions are the two ends of its own connection — never a third party's
-/// (§13: observing other people's traffic is Wiretap's charter, not this one).
+/// Which way a frame went, relative to the inspector, which is always the
+/// client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Direction {
     ToAgent,
     FromAgent,
 }
 
+impl Direction {
+    pub(crate) fn opposite(self) -> Self {
+        match self {
+            Self::ToAgent => Self::FromAgent,
+            Self::FromAgent => Self::ToAgent,
+        }
+    }
+}
+
 impl Frame {
     pub fn new(text: impl Into<Arc<str>>) -> Self {
+        Self::build(text.into(), Origin::Verbatim, None)
+    }
+
+    /// A frame a person wrote and sent by hand, carried exactly as given and
+    /// marked by [`is_hand_sent`](Self::is_hand_sent).
+    pub fn by_hand(text: impl Into<Arc<str>>) -> Self {
         Self(Arc::new(Contents {
-            text: text.into(),
-            summary: OnceLock::new(),
+            hand: true,
+            ..Self::contents(text.into(), Origin::Verbatim, None)
         }))
+    }
+
+    /// Whether a person composed this frame by hand. Its answer drives none of
+    /// the typed stores and no conformance rule is judged on it.
+    pub fn is_hand_sent(&self) -> bool {
+        self.0.hand
+    }
+
+    /// The bytes of a frame read back out of an export: decoded lossily where
+    /// they are not UTF-8, as they were when they crossed, and stamped with
+    /// nothing.
+    pub(crate) fn rebuilt(bytes: Vec<u8>, hand: bool) -> Self {
+        let (text, origin) = match String::from_utf8(bytes) {
+            Ok(text) => (text, Origin::Verbatim),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                (text, Origin::Lossy(bytes.into()))
+            }
+        };
+        Self(Arc::new(Contents {
+            hand,
+            ..Self::contents(text.into(), origin, None)
+        }))
+    }
+
+    /// A placeholder read back out of an export, which says only how long the
+    /// dropped line was.
+    pub(crate) fn placeholder(omission: Omission) -> Self {
+        Self::build("".into(), Origin::Omitted(omission), None)
+    }
+
+    /// A line a transport has just read, stamped now. Bytes that are not UTF-8
+    /// are decoded lossily and kept, so the frame is recorded rather than lost.
+    pub fn read(bytes: Vec<u8>) -> Self {
+        let read = Some((SystemTime::now(), Instant::now()));
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::build(text.into(), Origin::Verbatim, read),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                Self::build(text.into(), Origin::Lossy(bytes.into()), read)
+            }
+        }
+    }
+
+    /// A placeholder for a line a transport read but could not carry. `prefix`
+    /// is what it kept of the line's start.
+    pub fn omitted(prefix: &[u8], omission: Omission) -> Self {
+        let text = String::from_utf8_lossy(prefix).into_owned();
+        let read = Some((SystemTime::now(), Instant::now()));
+        Self::build(text.into(), Origin::Omitted(omission), read)
+    }
+
+    fn build(text: Arc<str>, origin: Origin, read: Option<(SystemTime, Instant)>) -> Self {
+        Self(Arc::new(Self::contents(text, origin, read)))
+    }
+
+    fn contents(text: Arc<str>, origin: Origin, read: Option<(SystemTime, Instant)>) -> Contents {
+        Contents {
+            text,
+            summary: OnceLock::new(),
+            origin,
+            read,
+            hand: false,
+        }
     }
 
     pub fn as_str(&self) -> &str {
         &self.0.text
     }
 
-    /// What the frame says it is, for a surface that has to draw a thousand of
-    /// them in one column.
+    /// The bytes that crossed: the text's own, unless the frame
+    /// [is lossy](Self::is_lossy).
+    pub fn bytes(&self) -> &[u8] {
+        match &self.0.origin {
+            Origin::Lossy(bytes) => bytes,
+            _ => self.0.text.as_bytes(),
+        }
+    }
+
+    /// Whether the text is a lossy decoding of bytes that were not UTF-8.
+    pub fn is_lossy(&self) -> bool {
+        matches!(self.0.origin, Origin::Lossy(_))
+    }
+
+    /// Set when this is a placeholder for a frame the transport dropped; the
+    /// text is then the start of that frame, not the frame.
+    pub fn omission(&self) -> Option<Omission> {
+        match self.0.origin {
+            Origin::Omitted(omission) => Some(omission),
+            _ => None,
+        }
+    }
+
+    /// When a transport read this frame, for one that came off a pipe.
+    pub fn read_at(&self) -> Option<SystemTime> {
+        self.0.read.map(|(at, _)| at)
+    }
+
+    pub(crate) fn read_instant(&self) -> Option<Instant> {
+        self.0.read.map(|(_, at)| at)
+    }
+
+    /// What the frame says it is, read off the JSON-RPC envelope alone
+    /// (`method`, `id`, `result`, `error`); payloads are never decoded. Computed
+    /// once and shared by clones.
     ///
-    /// **This is not the typed layer and it decodes nothing** (§8). It reads
-    /// the four fields the JSON-RPC envelope itself defines — `method`, `id`,
-    /// `result`, `error` — and says which of the four shapes the envelope is
-    /// in. It never looks inside `params`, never names a v1 type, and never
-    /// decides whether the agent was right; the Timeline is where a frame
-    /// becomes something with a meaning, and that is still true.
-    ///
-    /// **A frame it cannot read is still a frame**, which is the rule this
-    /// method exists under rather than around: anything that is not a JSON
-    /// object is [`FrameKind::Unreadable`], and the surface that asked draws
-    /// exactly what it drew before — the frame's own text, verbatim. The
-    /// summary is a thing put *in front of* the bytes, never instead of them.
+    /// Anything that is not an envelope object is [`FrameKind::Unreadable`].
     pub fn summary(&self) -> &FrameSummary {
         self.0.summary.get_or_init(|| {
+            if self.omission().is_some() {
+                return FrameSummary::unreadable();
+            }
             serde_json::from_str(self.as_str()).unwrap_or_else(|_| FrameSummary::unreadable())
         })
     }
 
-    /// Whether this frame can cross a message-per-line transport as the single
-    /// message it claims to be.
-    ///
-    /// Only `\n` is asked about: it is the framing character, and a frame that
-    /// contains one would arrive at the agent as two messages while the trace
-    /// showed one — the inspector lying about the wire, which is the one thing
-    /// it may never do.
+    /// Whether this frame can cross a message-per-line transport as one
+    /// message: it contains no `\n`, which would split it on the wire while the
+    /// trace showed one.
     pub(crate) fn is_one_message(&self) -> bool {
         !self.as_str().contains('\n')
     }
 }
 
 /// Which of the JSON-RPC envelope's four shapes a frame is in.
-///
-/// The envelope's own vocabulary and nothing above it: what a *call* is for is
-/// the Timeline's answer, and whether the agent should have sent one is the
-/// Conformance Annotations'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameKind {
     /// A method with an id: somebody is waiting for an answer.
@@ -98,8 +213,7 @@ pub enum FrameKind {
     Result,
     /// An answer that did not.
     Error,
-    /// Not a JSON object, or a JSON object in none of those four shapes —
-    /// which is a frame worth seeing rather than a frame to hide (§8).
+    /// Not a JSON object, or a JSON object in none of those four shapes.
     Unreadable,
 }
 
@@ -111,6 +225,42 @@ pub struct FrameSummary {
     pub method: Option<String>,
     /// The id it carried, as it was written.
     pub id: Option<String>,
+    /// The id as a match key, keeping its JSON type.
+    pub(crate) key: Option<IdKey>,
+}
+
+/// An id as JSON-RPC matches it, and as a careless agent might.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdKey {
+    /// The id's JSON: `3` and `"3"` differ, as JSON-RPC says they do.
+    pub(crate) exact: String,
+    /// The integer it means whatever its type, where it means one.
+    pub(crate) loose: Option<String>,
+}
+
+impl IdKey {
+    fn of(raw: &str, value: &serde_json::Value) -> Option<Self> {
+        match value {
+            serde_json::Value::String(text) => Some(Self {
+                exact: serde_json::to_string(text).ok()?,
+                loose: integral(text).map(|id| id.to_string()),
+            }),
+            serde_json::Value::Number(_) => Some(Self {
+                exact: raw.trim().to_owned(),
+                loose: integral(raw).map(|id| id.to_string()),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The integer a number's spelling means, if it means one: `3`, `3.0`, `"3"`.
+pub(crate) fn integral(text: &str) -> Option<i64> {
+    let text = text.trim();
+    text.parse::<i64>().ok().or_else(|| {
+        let float = text.parse::<f64>().ok()?;
+        (float.fract() == 0.0 && float.abs() < 9.0e15).then_some(float as i64)
+    })
 }
 
 // Validate the envelope once, borrowing and skipping payloads without allocating
@@ -125,6 +275,7 @@ impl<'de> Deserialize<'de> for FrameSummary {
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                 let (mut method, mut id, mut result, mut error) = (None, None, false, false);
+                let mut id_key = None;
                 while let Some(key) = map.next_key::<String>()? {
                     let raw = map.next_value::<&serde_json::value::RawValue>()?;
                     match key.as_str() {
@@ -132,9 +283,10 @@ impl<'de> Deserialize<'de> for FrameSummary {
                         "id" => {
                             // Use the existing Value number semantics for this label only;
                             // never convert IDs through f64 ourselves or decode payloads.
-                            id = match serde_json::from_str::<serde_json::Value>(raw.get())
-                                .map_err(serde::de::Error::custom)?
-                            {
+                            let value = serde_json::from_str::<serde_json::Value>(raw.get())
+                                .map_err(serde::de::Error::custom)?;
+                            id_key = IdKey::of(raw.get(), &value);
+                            id = match value {
                                 serde_json::Value::String(s) => Some(s),
                                 serde_json::Value::Number(n) => Some(n.to_string()),
                                 _ => None,
@@ -152,7 +304,12 @@ impl<'de> Deserialize<'de> for FrameSummary {
                     (None, false, _) if result => FrameKind::Result,
                     _ => FrameKind::Unreadable,
                 };
-                Ok(FrameSummary { kind, method, id })
+                Ok(FrameSummary {
+                    kind,
+                    method,
+                    id,
+                    key: id_key,
+                })
             }
         }
         deserializer.deserialize_map(Envelope)
@@ -165,16 +322,12 @@ impl FrameSummary {
             kind: FrameKind::Unreadable,
             method: None,
             id: None,
+            key: None,
         }
     }
 
-    /// The one word a row leads with, or `None` where the envelope said nothing
-    /// this can put there.
-    ///
-    /// The method where there is one, because that is what a reader scans a
-    /// trace for; otherwise what kind of answer it is, because an answer's own
-    /// method is the *call's* and correlating the two is the reader's business
-    /// rather than a label's.
+    /// The one word a row leads with: the method where there is one, otherwise
+    /// `result` or `error`; `None` for an unreadable frame.
     pub fn label(&self) -> Option<&str> {
         match (&self.method, self.kind) {
             (Some(method), _) => Some(method),
@@ -192,8 +345,7 @@ impl fmt::Display for Frame {
 }
 
 impl fmt::Debug for Frame {
-    /// The frame's text, not `Frame("…")` around it: every place this shows up —
-    /// a failed assertion, a log line — wants the JSON that was on the wire.
+    /// The frame's text as a string literal, without a `Frame(…)` wrapper.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.as_str(), f)
     }
@@ -235,8 +387,7 @@ mod tests {
         assert_eq!(notification.label(), Some("session/update"));
         assert_eq!(notification.id, None);
 
-        // An answer carries the id and not the method — correlating the two is
-        // the reader's, so the label says which kind of answer it is.
+        // An answer carries no method, so the label is the kind of answer.
         let result = summary(r#"{"jsonrpc":"2.0","id":3,"result":{"sessionId":"s1"}}"#);
         assert_eq!(result.kind, FrameKind::Result);
         assert_eq!(result.label(), Some("result"));
@@ -249,8 +400,6 @@ mod tests {
 
     #[test]
     fn an_id_is_rendered_as_it_was_written() {
-        // JSON-RPC allows either, and an agent that changed which it sends is
-        // showing the reader something rather than nothing.
         assert_eq!(
             summary(r#"{"id":"3","result":{}}"#).id.as_deref(),
             Some("3")
@@ -260,9 +409,7 @@ mod tests {
 
     #[test]
     fn a_frame_this_cannot_read_is_still_a_frame() {
-        // The rule §8 states, asserted at the one method that could break it:
-        // what comes back is *no label*, never a guess and never an error, and
-        // the surface goes on drawing the bytes.
+        // No label, never a guess or an error (§8).
         for unreadable in [
             "not json at all",
             "[1,2,3]",
@@ -286,9 +433,7 @@ mod tests {
 
     #[test]
     fn a_method_on_an_answer_is_still_the_method() {
-        // An agent that puts both on one object has sent something worth
-        // seeing. The method is what the row leads with either way, because it
-        // is the more specific of the two.
+        // The method is the more specific of the two, so the row leads with it.
         let both = summary(r#"{"id":1,"method":"session/update","result":{}}"#);
         assert_eq!(both.kind, FrameKind::Call);
         assert_eq!(both.label(), Some("session/update"));

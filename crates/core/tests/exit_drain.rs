@@ -2,8 +2,44 @@
 
 mod common;
 
-use acp_inspector_core::{ConnectionStatus, DiagnosticKind, Inspector, StdioSpawn, TurnState, v1};
+use std::sync::Arc;
+
+use acp_inspector_core::{
+    Connection, ConnectionFactory, ConnectionStatus, Diagnostic, DiagnosticKind, Frame, Inspector,
+    StdioSpawn, TransportEnds, TurnState, connection, v1,
+};
 use common::{PATIENCE, QUIET, received, until};
+
+/// A transport whose agent is a script run against the transport ends, for
+/// the failures no subprocess can be made to produce.
+struct Scripted<F>(std::sync::Mutex<Option<F>>);
+
+impl<F, R> ConnectionFactory for Scripted<F>
+where
+    F: FnOnce(TransportEnds) -> R,
+    R: std::future::Future<Output = ()> + Send + 'static,
+{
+    fn connect(&self) -> Connection {
+        let (connection, ends) = connection();
+        let script = self.0.lock().unwrap().take().expect("connected once");
+        tokio::spawn(script(ends));
+        connection
+    }
+}
+
+fn scripted<F, R>(script: F) -> Scripted<F>
+where
+    F: FnOnce(TransportEnds) -> R,
+    R: std::future::Future<Output = ()> + Send + 'static,
+{
+    Scripted(std::sync::Mutex::new(Some(script)))
+}
+
+fn broke() -> Diagnostic {
+    Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(
+        std::io::Error::other("the pipe broke"),
+    )))
+}
 
 #[tokio::test]
 async fn failed_automatic_replies_preserve_all_final_frames_and_prompt_answer() {
@@ -47,12 +83,24 @@ os._exit(0)
             inspector.turn(),
             TurnState::Ended(v1::StopReason::EndTurn)
         ));
+        // Whether a reply's write fails is up to the OS: on macOS a child spawned
+        // by a concurrent test can inherit this pipe's read end (pipe() and
+        // FD_CLOEXEC are two calls there), and then the write succeeds. What the
+        // transport guarantees is the order: any write failure precedes the exit.
         let diagnostics = inspector.diagnostics().entries();
-        assert!(
-            diagnostics
+        if let Some(failed) = diagnostics
+            .iter()
+            .position(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_)))
+        {
+            let exited = diagnostics
                 .iter()
-                .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_)))
-        );
+                .position(|line| matches!(line.kind, DiagnosticKind::AgentExited(_)))
+                .expect("the exit is reported");
+            assert!(
+                failed < exited,
+                "a write failure must be reported before the exit"
+            );
+        }
         assert!(
             matches!(diagnostics.last().unwrap().kind, DiagnosticKind::AgentExited(status) if status.success())
         );
@@ -184,21 +232,29 @@ noise_thread.join()
 
 #[tokio::test]
 async fn read_failure_interrupts_a_backpressured_automatic_reply() {
+    // A pipe that cannot be read has no subprocess recipe (any bytes are now a
+    // frame), so the transport is scripted: replies are never taken, so the
+    // automatic ones back up, and then the read fails.
     let inspector = Inspector::new();
     let mut status = inspector.status_changes();
-    inspector.connect(&StdioSpawn::new("python3").args([
-        "-c",
-        r#"
-import json, os, sys, time
-# Long ids fill the stdin pipe well before the bounded outgoing queue. The
-# remaining Frames fit in the incoming queue, letting its pump see the error.
-for i in range(400):
-    print(json.dumps({'jsonrpc': '2.0', 'id': str(i)+'x'*4096, 'method': 'unsupported'}))
-sys.stdout.flush()
-os.write(1, b'\xff\n')
-time.sleep(60)
-"#,
-    ]));
+    inspector.connect(&scripted(|ends: TransportEnds| async move {
+        let TransportEnds {
+            outgoing,
+            incoming,
+            diagnostics,
+            shutdown,
+            ..
+        } = ends;
+        for i in 0..400 {
+            let request = format!(r#"{{"jsonrpc":"2.0","id":"{i}","method":"unsupported"}}"#);
+            if incoming.send(Frame::new(request)).await.is_err() {
+                return;
+            }
+        }
+        let _ = diagnostics.send(broke()).await;
+        shutdown.cancelled().await;
+        drop(outgoing);
+    }));
     tokio::time::timeout(
         std::time::Duration::from_secs(3),
         until(&mut status, "read failure during a blocked reply", || {
@@ -284,7 +340,7 @@ async fn exit_preserves_final_frames_and_prompt_outcome_before_reporting_lost() 
 }
 
 #[tokio::test]
-async fn closed_stdout_and_failed_stderr_do_not_end_a_live_agent() {
+async fn closed_stdout_and_closed_stderr_do_not_end_a_live_agent() {
     let inspector = Inspector::new();
     let mut frames = inspector.trace().changes();
     inspector.connect(&StdioSpawn::new("python3").args([
@@ -304,23 +360,115 @@ sys.stdin.read()
     .await;
     tokio::time::sleep(QUIET).await;
     assert_eq!(inspector.status(), ConnectionStatus::Connected);
+    // The line that is not UTF-8 is still on the console, and marked.
+    let diagnostics = inspector.diagnostics().entries();
+    assert!(
+        matches!(&diagnostics[..], [line, note]
+            if matches!(&line.kind, DiagnosticKind::Stderr(text) if text == "\u{FFFD}")
+                && matches!(note.kind, DiagnosticKind::StderrLineLossy)),
+        "{diagnostics:?}"
+    );
     inspector.disconnect();
     assert_eq!(inspector.status(), ConnectionStatus::Disconnected);
+}
+
+#[tokio::test]
+async fn stderr_that_is_not_utf8_is_drained_to_the_end_and_the_agent_lives() {
+    // One bad byte used to end console capture, and the agent then died of a
+    // broken pipe on its next stderr write.
+    let inspector = Inspector::new();
+    let mut frames = inspector.trace().changes();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import sys, time
+err = sys.stderr.buffer
+err.write(b'before \xff\xfe bad bytes\n'); err.flush()
+time.sleep(0.1)
+for i in range(2000):
+    err.write(('after %d %s\n' % (i, 'x' * 100)).encode()); err.flush()
+print('{"jsonrpc":"2.0","method":"_probe/done"}', flush=True)
+sys.stdin.read()
+"#,
+    ]));
+    until(&mut frames, "the agent to finish writing stderr", || {
+        !received(&inspector).is_empty()
+    })
+    .await;
+    let mut lines = inspector.diagnostics().changes();
+    until(&mut lines, "every stderr line", || {
+        inspector.diagnostics().len() >= 2002
+    })
+    .await;
+    let diagnostics = inspector.diagnostics().entries();
+    assert!(
+        matches!(&diagnostics[0].kind, DiagnosticKind::Stderr(text) if text == "before \u{FFFD}\u{FFFD} bad bytes")
+    );
+    assert!(matches!(
+        diagnostics[1].kind,
+        DiagnosticKind::StderrLineLossy
+    ));
+    for (i, line) in diagnostics[2..2002].iter().enumerate() {
+        assert!(
+            matches!(&line.kind, DiagnosticKind::Stderr(text) if text.starts_with(&format!("after {i} "))),
+            "{line:?}"
+        );
+    }
+    assert_eq!(inspector.status(), ConnectionStatus::Connected);
+    inspector.disconnect();
+}
+
+#[tokio::test]
+async fn a_stdout_line_that_is_not_utf8_is_a_recorded_frame_and_the_handshake_completes() {
+    let inspector = Inspector::new();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import json, sys
+out = sys.stdout.buffer
+request = json.loads(sys.stdin.readline())
+out.write(b'{"jsonrpc":"2.0","method":"_x/note","params":{"s":"\xff"}}\n')
+out.write(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'protocolVersion': 1, 'agentCapabilities': {}}}).encode() + b'\n')
+out.flush()
+sys.stdin.read()
+"#,
+    ]));
+    tokio::time::timeout(PATIENCE, inspector.initialize())
+        .await
+        .unwrap()
+        .expect("the answer after the bad line still answers");
+    assert_eq!(inspector.status(), ConnectionStatus::Connected);
+    let traced = inspector.trace().entries();
+    let lossy = &traced[1].frame;
+    assert!(lossy.is_lossy());
+    assert_eq!(
+        lossy.as_str(),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"_x/note\",\"params\":{\"s\":\"\u{FFFD}\"}}"
+    );
+    assert_eq!(
+        lossy.bytes(),
+        b"{\"jsonrpc\":\"2.0\",\"method\":\"_x/note\",\"params\":{\"s\":\"\xff\"}}"
+    );
+    assert!(!traced[2].frame.is_lossy());
+    inspector.disconnect();
 }
 
 #[tokio::test]
 async fn pipe_failure_settles_a_pending_call_without_waiting_for_process_exit() {
     let inspector = Inspector::new();
     let mut status = inspector.status_changes();
-    inspector.connect(&StdioSpawn::new("python3").args([
-        "-c",
-        r#"
-import os, sys
-sys.stdin.readline()
-os.write(1, b'\xff\n')
-sys.stdin.read()
-"#,
-    ]));
+    inspector.connect(&scripted(|ends: TransportEnds| async move {
+        let TransportEnds {
+            mut outgoing,
+            diagnostics,
+            shutdown,
+            ..
+        } = ends;
+        let _ = outgoing.recv().await;
+        let _ = diagnostics.send(broke()).await;
+        // The process is still running: nothing reports an exit.
+        shutdown.cancelled().await;
+    }));
     let result = tokio::time::timeout(PATIENCE, inspector.initialize())
         .await
         .unwrap();
@@ -393,7 +541,14 @@ sys.stdin.read()
         assert_eq!(inspector.status(), ConnectionStatus::Connected);
     }
     assert_eq!(received(&inspector).len(), 16);
-    assert!(inspector.diagnostics().is_empty());
+    // Only how each replaced agent stopped, never its stderr.
+    assert!(
+        inspector
+            .diagnostics()
+            .entries()
+            .iter()
+            .all(|line| matches!(line.kind, DiagnosticKind::Stopped { .. }))
+    );
     inspector.disconnect();
 }
 

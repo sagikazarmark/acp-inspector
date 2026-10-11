@@ -277,7 +277,7 @@ arranged, what a register is for, and which of ADR 0004's rules the arrangement 
   [§9](../architecture.md#9-screens) now say what was always meant: nothing decoded *as v1*. The
   envelope is the transport's own vocabulary, which is what the Console is for.
 - **The window has a menu, so it has ids to keep in step.** `shell.rs` declares the commands and
-  `main.rs` answers them; a test reads the command module out of the source and fails when the
+  `app/menu.rs` answers them (originally `main.rs`); a test reads the command module out of the source and fails when the
   window does not answer one, because a menu item that does nothing is worse than one that is not
   there. What a click *does* is not testable without a window, and is not tested.
 - **The launch form's props lost half of themselves, and the sheet lost the fold.** `SpawnForm` no

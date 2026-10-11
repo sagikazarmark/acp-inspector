@@ -1,8 +1,9 @@
 [package]
 name = "acp-inspector-core"
-version = "0.0.1"
+version = "0.1.0"
 description = "Headless core of the ACP Inspector: the connection contract, the stdio transport, the frame trace, and the typed ACP v1 client"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true

@@ -2,11 +2,11 @@
 //! focus their targets, and node-local findings as a stack of descriptions.
 
 use dioxus::prelude::*;
+use schemaform_dioxus::SubmissionMode;
 use schemaform_dioxus::render::{FindingCollectionContext, FindingCollectionPresenter};
 
 use super::Appearance;
 use super::parts::icon;
-use super::shell::advisory_presentation;
 
 /// Heroicons' outline exclamation triangle, marking the summary alert.
 const WARNING_ICON: &str = "M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z";
@@ -53,7 +53,8 @@ fn summary(context: FindingCollectionContext, appearance: Appearance) -> Element
     if entries.is_empty() {
         return rsx! {};
     }
-    let blocking = !advisory_presentation() && entries.iter().any(|(finding, _)| finding.blocking);
+    let advisory = context.submission_mode() == SubmissionMode::Advisory;
+    let blocking = !advisory && entries.iter().any(|(finding, _)| finding.blocking);
     let tone = if blocking {
         "alert-error"
     } else {
@@ -75,6 +76,7 @@ fn summary(context: FindingCollectionContext, appearance: Appearance) -> Element
                         button {
                             r#type: "button",
                             class: "link {link_class}",
+                            "data-schemaform-button": "finding",
                             onclick: move |_| target_focus.focus(),
                             "{finding.text}"
                         }
@@ -86,7 +88,7 @@ fn summary(context: FindingCollectionContext, appearance: Appearance) -> Element
 }
 
 fn local(context: FindingCollectionContext, appearance: Appearance) -> Element {
-    let advisory = advisory_presentation();
+    let advisory = context.submission_mode() == SubmissionMode::Advisory;
     let findings = context.findings().cloned().collect::<Vec<_>>();
     rsx! {
         for finding in findings {

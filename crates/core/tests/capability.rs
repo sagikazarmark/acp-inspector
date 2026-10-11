@@ -88,7 +88,7 @@ async fn the_listing_affordance_is_gated_on_the_advertisement() {
 /// restating it, and the set stays two hand-written lists rather than three.
 ///
 /// The display's own copy — the rows, their order and the field each is read
-/// from — is pinned beside it, in `crates/app/src/agent.rs`'s
+/// from — is pinned beside it, in `crates/app/src/agent/accounts.rs`'s
 /// `every_session_capability_v1_defines_is_a_row` and
 /// `the_two_gating_shapes_are_not_flattened_into_one`. It is not shared with
 /// this one: core carries no rendering and the desktop crate carries no runtime
@@ -124,8 +124,9 @@ fn claimed_by_this_client(inspector: &Inspector) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The whole of what this client claims, on every connection: boolean config
-/// options, both elicitation modes, and the services still declined.
+/// The whole of what this client claims by default: boolean config options,
+/// session compaction and notices, both elicitation modes, and the services a
+/// launch did not choose.
 ///
 /// Written out as the JSON an agent reads rather than assembled from the
 /// builders core assembles it with — an expectation restated in core's own
@@ -137,7 +138,9 @@ fn the_claim() -> serde_json::Value {
         // Schema 1.7 stabilized terminal authentication; its default is an
         // explicit refusal, matching the inspector's own-terminal rule (§7.1).
         "auth": {"terminal": false},
-        "session": {"configOptions": {"boolean": {}}},
+        // Schema 1.11 stabilized compaction and notices; the timeline draws
+        // both, so both are claimed.
+        "session": {"compaction": {}, "configOptions": {"boolean": {}}, "notices": {}},
         "elicitation": {"form": {}, "url": {}},
     })
 }
@@ -164,10 +167,10 @@ async fn the_client_advertises_what_it_will_honour_and_nothing_else() {
 
 #[tokio::test]
 async fn every_connection_advertises_the_same_claim() {
-    // **Fixed, with no way to turn it off** (§7.6): there is no spawn-form
-    // switch and no per-connection state behind it, so a second agent is told
-    // exactly what the first was. Driven rather than read, because "not
-    // configurable" is a claim about what crosses the wire.
+    // **The same launch makes the same claim** (§7.6): with the launch's
+    // services left alone, a second agent is told exactly what the first was.
+    // Driven rather than read, because the claim is about what crosses the
+    // wire. What a launch can change is `tests/client_services.rs`'s.
     let inspector = Inspector::new();
     inspector.connect(&agent().factory());
     inspector.initialize().await.expect("Testy initializes");
@@ -195,13 +198,13 @@ async fn every_connection_advertises_the_same_claim() {
 /// than decoded (§8).
 fn defined<T: schemars::JsonSchema>() -> Vec<String> {
     let schema = schemars::schema_for!(T);
+    // An object with no fields at all (a claim made by presence alone, like
+    // `compaction: {}`) has no `properties` to list.
     let mut named: Vec<_> = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
-        .expect("a capability object has properties")
-        .keys()
-        .cloned()
-        .collect();
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
     named.sort();
     named
 }
@@ -211,7 +214,7 @@ fn the_capability_set_the_display_names_is_the_whole_stable_set_v1_defines() {
     // **The one question no agent can be driven to answer.** Every other test
     // here asks an agent what it claimed; this one asks the protocol what there
     // is to claim. The display names its capabilities in a hand-written list
-    // (`crates/app/src/agent.rs`'s `advertised`) and this one restates it — two
+    // (`crates/app/src/agent/accounts.rs`'s `advertised`) and this one restates it — two
     // seams stating the same set separately (§5), which catches either of them
     // dropping a row but neither of them *missing* one, because a capability
     // upstream adds is absent from both by construction.
@@ -306,7 +309,7 @@ fn the_record_is_keyed_on_the_session_lifecycle_and_logout_and_nothing_else() {
 fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_defines() {
     // The same question as the one above, asked about the *other* party (§7.6).
     // The display now audits both, and this client's own rows are a hand-written
-    // list too (`crates/app/src/agent.rs`'s `claimed`) — so a client capability the
+    // list too (`crates/app/src/agent/accounts.rs`'s `claimed`) — so a client capability the
     // protocol adds is one this tool would be silently declining with nothing on
     // screen saying so, which for the party that is *this tool* is worse than
     // the agent case: the claim is ours to make.
@@ -339,8 +342,20 @@ fn the_client_capability_set_the_display_names_is_the_whole_stable_set_v1_define
     // object, whose presence is the claim at every step.
     assert_eq!(
         defined::<v1::ClientSessionCapabilities>(),
-        ["_meta", "configOptions"],
+        ["_meta", "compaction", "configOptions", "notices"],
         "the session-scoped client capabilities moved"
+    );
+    // Schema 1.11's two, claimed as presence: each object is empty today, so
+    // a field appearing in either is a claim that says more than `{}`.
+    assert_eq!(
+        defined::<v1::CompactionCapabilities>(),
+        Vec::<String>::new(),
+        "the compaction claim grew a field"
+    );
+    assert_eq!(
+        defined::<v1::NoticeCapabilities>(),
+        Vec::<String>::new(),
+        "the notice claim grew a field"
     );
     assert_eq!(
         defined::<v1::SessionConfigOptionsCapabilities>(),

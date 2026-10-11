@@ -1,45 +1,18 @@
-//! Taking a piece of the evidence away.
+//! The copy control, on every surface that draws bytes.
 //!
-//! **Wherever the content is bytes** (§9's density rule names them: the raw
-//! JSON, the frames, the ids, the stderr lines). What a reader does with a
-//! frame after reading it is paste it into an issue, and a tool whose only way
-//! out was an export of the whole trace made them retype the one line they
-//! wanted — or select it by hand out of a scroller that is appending underneath
-//! them.
-//!
-//! **It copies the bytes that crossed.** Nothing is rewritten on the way out,
-//! for the reason nothing is on the way in (§8): what left this window has to be
-//! what crossed the wire, or the paste is evidence about the inspector. That
-//! holds while the window is drawing a frame indented (`crate::indent`) — the
-//! whitespace is for the reader in front of this screen, and the person the
-//! paste is sent to is looking at what the agent sent.
-//!
-//! Two mechanisms, because a WebView is not a page: the clipboard API is what
-//! this should be, and it is unavailable outside a secure context on some of
-//! the platforms this shell runs on. The fallback is the old `execCommand`
-//! path, which every WebView still honours. The text goes over the channel
-//! rather than into the script, so a frame containing a quote, a backslash or a
-//! newline is copied rather than executed.
-//!
-//! **And the window says so afterwards** ([`crate::toast`]), because a
-//! clipboard is the one thing this tool does that leaves no mark on any screen:
-//! every other control changes something a reader can look at, and this one
-//! changes something in another application. The sentence is said only when the
-//! script reports the write took — which is the older rule kept rather than
-//! traded away, since a confirmation that appeared whatever happened would be
-//! the button pretending.
+//! It copies the bytes that crossed, never the indented rendering (§8). The
+//! clipboard API is unavailable outside a secure context on some WebViews, so
+//! `execCommand` is the fallback. The text is sent over the eval channel rather
+//! than spliced into the script. A toast confirms only a write the script
+//! reports as done.
 
 use dioxus::prelude::*;
-use dioxus_free_icons::{Icon, icons::hi_outline_icons::HiClipboardCopy};
+use dioxus_free_icons::{Icon, icons::ld_icons::LdCopy};
 
 use crate::toast;
 
-/// The script both paths live in, and the one answer they give back: whether
-/// the text is on the clipboard.
-///
-/// Neither path throws on the way out. The API path resolves or it does not,
-/// and `execCommand` answers with a boolean an unsupported WebView reports
-/// `false` for — so the two failures this can have are one value here.
+/// The script both paths live in. It answers one boolean: whether the text is
+/// on the clipboard. Neither path throws.
 const COPY: &str = r#"
 const text = await dioxus.recv();
 const focused = document.activeElement;
@@ -70,28 +43,18 @@ try {
 /// Callers choose feedback: evidence Copy confirms success with a toast;
 /// export retrieval also displays failure beside the path.
 pub(crate) async fn copied(text: String) -> bool {
-    // The script is the constant above and never anything else: a frame's text
-    // is *sent* to it, so nothing an agent emitted is ever part of a program
-    // this window runs. That is not a nicety here — the text being copied is
-    // attacker-controlled by definition, since the subject of this tool is an
-    // agent that may be behaving badly (§7.3).
+    // The script is constant and the text is sent to it: what is copied is
+    // agent-controlled, so it must never become part of a program (§7.3).
     let copying = document::eval(COPY);
     if copying.send(text).is_err() {
         return false;
     }
-    // A script that never answered, answered something else, or ran in a window
-    // that has gone away is a copy nobody can promise happened.
+    // No answer, a wrong answer or a closed window: not a copy anyone can
+    // promise.
     copying.join::<bool>().await.unwrap_or(false)
 }
 
-/// The button, wherever bytes are drawn.
-///
-/// **The same control everywhere**, because it does the same thing everywhere:
-/// a reader who learns it on a trace row has learnt it on a timeline entry's
-/// raw JSON. It is a ghost button in the label register, so it is legible where
-/// it sits and does not compete with the line it is about — a copy control that
-/// weighed as much as the frame would be a mark on every row of the densest
-/// surface in the tool.
+/// The copy button, the same control everywhere bytes are drawn.
 #[component]
 pub fn Copy(
     /// What lands on the clipboard, exactly.
@@ -106,11 +69,8 @@ pub fn Copy(
     /// What it is, for the control's own name — "this frame", "this line".
     what: String,
 ) -> Element {
-    // Where this says the write took. Reached from context rather than handed
-    // down, because this is the same control on three screens and none of the
-    // components between them are about it: a callback threaded from the root
-    // through the Console, the Trace, the Diagnostic channel and every Timeline
-    // entry would be five components carrying a message for a sixth.
+    // Reached from context: the control sits on three screens and nothing
+    // between them is about it.
     let announcer = toast::announcer();
 
     rsx! {
@@ -118,19 +78,16 @@ pub fn Copy(
             class: "btn btn-xs btn-quiet copy",
             "data-slot": "copy",
             r#type: "button",
-            // The glyph says nothing a reader can hear, so the button carries
-            // its own name — the rule the console's chevron already follows.
+            // The glyph is silent, so the button carries its own name.
             aria_label: "Copy {what}",
             title: "Copy {what}",
             onclick: move |event| {
-                // The row underneath is a disclosure on both surfaces, and a
-                // copy that also expanded it would be one click doing two
-                // things.
+                // The row underneath is a disclosure; a copy must not also
+                // toggle it.
                 event.stop_propagation();
                 let text = copy_text(&text, frame.as_ref(), shared.as_deref());
-                // The control's own name, said back: "Copy this frame" pressed
-                // is "Copied this frame". One string builds both, so the two
-                // cannot come to disagree about what was taken.
+                // One string builds both "Copy this frame" and "Copied this
+                // frame".
                 let what = what.clone();
                 spawn(async move {
                     if copied(text).await {
@@ -138,17 +95,8 @@ pub fn Copy(
                     }
                 });
             },
-            // **A glyph now, from the family.** It was the word `copy`, on the
-            // reasoning that a clipboard pictogram is a *character* the platform
-            // fonts this window inherits do not all have — true of a character,
-            // and this window stopped drawing icons as characters when it took
-            // an icon crate: the paths ship with the binary and render the same
-            // everywhere. The two controls the same reasoning named — Export and
-            // Clear — became icons on the Console's own bar, so the word left
-            // this one as the last text control among glyphs. What it is called
-            // is unchanged and is where it always was, on the control.
             span { class: "disclosure-icon", aria_hidden: "true",
-                Icon { class: "icon", icon: HiClipboardCopy }
+                Icon { class: "icon", width: 16, height: 16, icon: LdCopy }
             }
         }
     }
@@ -189,9 +137,7 @@ mod tests {
         assert!(html.contains(r#"data-slot="copy""#), "{html}");
         assert!(html.contains(r#"aria-label="Copy this frame""#), "{html}");
         assert!(html.contains(r#"title="Copy this frame""#), "{html}");
-        // The glyph is decorative and the name is on the control, which is the
-        // rule every icon-only control in this window follows: what it takes is
-        // in the accessibility tree whether or not anything is drawn.
+        // The glyph is decorative; the name is on the control.
         assert!(
             html.contains(r#"class="disclosure-icon" aria-hidden="true"><svg"#),
             "the mark comes from the icon family rather than from the font: {html}"

@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use dioxus_primitives::dioxus_attributes::attributes;
-use schemaform_dioxus::{ControlFacets, ControlKind, ControlRenderContext, use_text_edit};
+use schemaform_dioxus::{ControlKind, ControlRenderContext, use_text_edit};
 
 use super::Appearance;
 use super::mapping::use_text_binding;
@@ -18,31 +18,15 @@ fn input_mode(kind: ControlKind) -> &'static str {
     }
 }
 
-/// The adapter's format mapping; its `ControlFacets::input_type` is crate-private in 0.4.1.
-fn input_type(control: &ControlFacets) -> &'static str {
-    if control.write_only {
-        return "password";
-    }
-    if control.kind != ControlKind::String {
-        return "text";
-    }
-    match control.format.as_deref() {
-        Some("email" | "idn-email") => "email",
-        Some("uri" | "uri-reference" | "iri" | "iri-reference") => "url",
-        Some("date") => "date",
-        Some("date-time") => "datetime-local",
-        Some("time") => "time",
-        _ => "text",
-    }
-}
-
 /// One daisyUI text control: the renderer's hook-safe child component.
 ///
 /// `Field` receives a fresh context on every render whose binding compares equal across renders
 /// (its identity is the edit's hook-stable handles) and whose metadata values it syncs itself,
 /// so the registry parts re-render only when the node's presentation actually changes. A
 /// write-only control is a password input labelled with its replacement action, so the value it
-/// holds is never shown.
+/// holds is never shown. The input `type` and the format placeholder are the adapter's resolved
+/// `ControlFacets::input_type` and `placeholder`, so a host's `format_input_type` overrides
+/// reach this control as they reach the built-in.
 ///
 /// A read-only node renders as noninteractive `output` rather than an `Input` that merely
 /// rejects edits, as the built-in does; the facets' `read_only` also covers a node the core will
@@ -56,15 +40,18 @@ pub(super) fn TextControl(context: ControlRenderContext, appearance: Appearance)
     }
     let control = context.control();
     let kind = kind_name(control.kind);
+    // A write-only control shows its replacement prompt; otherwise the adapter's format
+    // placeholder, which shows the shape a `date-time` or `time` text input expects.
     let placeholder = control
         .write_only_replacement
         .as_ref()
-        .map(|replacement| replacement.placeholder.clone());
+        .map(|replacement| replacement.placeholder.clone())
+        .or_else(|| control.placeholder.clone());
 
     // Listeners cannot travel through `extends`, so the composition events reach the native
     // input through the widget's explicit attribute list together with its other attributes.
     let input_attributes = attributes!(input {
-        r#type: input_type(control),
+        r#type: control.input_type.as_str(),
         inputmode: input_mode(control.kind),
         readonly: edit.read_only,
         placeholder,

@@ -690,24 +690,44 @@ now four rings stale. Retaking them needs a display and a running
 
 ## Redesign
 
-The window as ADR 0009 arranges it, rendered from the fixtures in
-`crates/app/src/mock.rs` at the same two supported sizes:
+The window as ADR 0009 arranges it, held to the release plan's design floor
+(D1–D19), rendered from the fixtures in `crates/app/src/mock.rs` at the two
+supported sizes, in both schemes, with motion off:
 
 ```text
 INSPECTOR_MOCK=target/mock cargo test -p acp-inspector mock::writes
 ```
 
-- [Populated, 1440 x 880, light](redesign/populated-1440-light.png)
-- [Populated, 1440 x 880, dark](redesign/populated-1440-dark.png)
-- [Capabilities, 1440 x 880, dark](redesign/capabilities-1440-dark.png)
-- [First run, 1440 x 880, light](redesign/first-run-1440-light.png)
-- [Populated, 960 x 640, light](redesign/populated-960-light.png)
-- [Populated, 960 x 640, dark](redesign/populated-960-dark.png)
-- [Command palette, 1440 x 880, dark](redesign/palette-1440-dark.png)
+Each page was captured with headless Chromium at a window 87px taller than the
+viewport (`--headless=new` reserves that much) and cropped to the viewport.
+Last recaptured on 2026-10-11, after schemaform 0.6.1 and the registry reinstall:
+quiet buttons that say which way they go (Decline, Disconnect, Stop, Delete) carry
+their tone again, which the interim presence-button rule had overridden.
 
-The two narrow captures are the arrangement at the window's own minimum, which
-is the one the drawing gives a window too narrow for three columns: one region
-at a time, with a **Details | Session | Messages** bar at the foot to choose
-between them, and a toolbar that drops the protocol facts it can no longer fit.
-Nothing is lost at that width — the three regions are the same three regions —
-and the chooser does not exist while all three are on screen.
+- Populated, 1440 x 900: [light](redesign/populated-1440-light.png), [dark](redesign/populated-1440-dark.png)
+- First run, 1440 x 900: [light](redesign/first-run-1440-light.png), [dark](redesign/first-run-1440-dark.png)
+- Capabilities, 1440 x 900: [light](redesign/capabilities-1440-light.png), [dark](redesign/capabilities-1440-dark.png)
+- Permission request waiting, 1440 x 900: [light](redesign/permission-1440-light.png), [dark](redesign/permission-1440-dark.png)
+- Elicitation form waiting, 1440 x 900: [light](redesign/elicitation-1440-light.png), [dark](redesign/elicitation-1440-dark.png)
+- Plan, diff, failed tool call, refused turn, 1440 x 900: [light](redesign/evidence-1440-light.png), [dark](redesign/evidence-1440-dark.png)
+- Turn streaming, 1440 x 900: [light](redesign/streaming-1440-light.png), [dark](redesign/streaming-1440-dark.png)
+- Connect dialog, 1440 x 900: [light](redesign/connect-1440-light.png), [dark](redesign/connect-1440-dark.png)
+- Sessions dialog, 1440 x 900: [light](redesign/sessions-1440-light.png), [dark](redesign/sessions-1440-dark.png)
+- Command palette, 1440 x 900: [light](redesign/palette-1440-light.png), [dark](redesign/palette-1440-dark.png)
+- Populated, 960 x 900: [light](redesign/populated-960-light.png), [dark](redesign/populated-960-dark.png)
+- First run, 960 x 900: [light](redesign/first-run-960-light.png), [dark](redesign/first-run-960-dark.png)
+- Permission request waiting, 960 x 900: [light](redesign/permission-960-light.png), [dark](redesign/permission-960-dark.png)
+- Plan, diff, failed tool call, refused turn, 960 x 900: [light](redesign/evidence-960-light.png), [dark](redesign/evidence-960-dark.png)
+- Populated, 1100 x 900: [light](redesign/populated-1100-light.png), [dark](redesign/populated-1100-dark.png)
+- Rail open as a drawer, 1100 x 900: [light](redesign/drawer-1100-light.png), [dark](redesign/drawer-1100-dark.png)
+- Raw composer, pending calls, merged stderr and a client service waiting, 1440 x 900: [light](redesign/workbench-1440-light.png), [dark](redesign/workbench-1440-dark.png); 1100 x 900: [light](redesign/workbench-1100-light.png), [dark](redesign/workbench-1100-dark.png)
+- A trace opened from a file, 1440 x 900: [light](redesign/viewing-1440-light.png), [dark](redesign/viewing-1440-dark.png)
+- Capabilities open wide, 1440 x 900: [light](redesign/wide-1440-light.png), [dark](redesign/wide-1440-dark.png)
+
+The narrower captures are the arrangement the release plan's D18 gives a
+window too narrow for the rail beside both screens: the timeline and the trace
+keep the width side by side, the rail is a drawer opened from the toolbar, and
+the trace's header and rows drop their words and previews before anything
+overflows. The one-region-at-a-time layout is drawn only below 760px, which a
+desktop window (minimum 960px) never reaches. The captures were taken on macOS,
+so the toolbar leaves room at its leading edge for the traffic lights (D17).

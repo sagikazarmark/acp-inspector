@@ -282,6 +282,30 @@ mod tests {
     }
 
     #[test]
+    fn a_resource_link_takes_a_row_but_none_of_the_byte_budget() {
+        let mut draft = AttachmentDraft::default();
+        let five = draft.reserve("five.png".into()).unwrap();
+        draft.finish(five, Ok(image("five.png", 5 * 1024 * 1024)));
+        let one = draft.reserve("one.png".into()).unwrap();
+        draft.finish(one, Ok(image("one.png", 1024 * 1024)));
+        let link = draft.reserve("spec.md".into()).unwrap();
+        draft.finish(
+            link,
+            Ok(Attachment::link("file:///spec.md", "", "").unwrap()),
+        );
+        assert_eq!(draft.bytes(), MAX_TOTAL_BYTES);
+        assert!(draft.sendable());
+        assert!(matches!(
+            &draft.content().unwrap()[..],
+            [
+                v1::ContentBlock::Image(_),
+                v1::ContentBlock::Image(_),
+                v1::ContentBlock::ResourceLink(_)
+            ]
+        ));
+    }
+
+    #[test]
     fn the_exact_total_budget_fits_and_one_more_byte_is_a_visible_failure() {
         let mut draft = AttachmentDraft::default();
         let first = draft.reserve("five.png".into()).unwrap();

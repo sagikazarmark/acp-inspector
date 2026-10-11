@@ -1,40 +1,19 @@
-//! What a decoded `session/update` looks like (`docs/architecture.md` §7.2,
-//! §9): a rendering for every stable v1 variant, and a way of saying so for the
-//! ones there is no rendering for.
+//! Renderings for decoded `session/update`s: one for each of the fourteen
+//! stable v1 variants that schema 1.11 exposes (`crates/core/tests/typed.rs`
+//! names the same set). Unstable variants are not decoded. See
+//! `docs/architecture.md` §7.2 and §8.
 //!
-//! **Eleven variants, not the spec's twelve.** The spec counts the stable v1
-//! `sessionUpdate` variants from the schema metadata (§7.4);
-//! `agent-client-protocol-schema` 1.6 exposes eleven outside its `unstable_*`
-//! features, and the unstable ones are deliberately not decoded — they are
-//! unknown traffic, which is displayed rather than understood (§8).
-//! `crates/core/tests/typed.rs` counts the same eleven against a real agent.
-//!
-//! Every `match` here ends in a `_` arm, and none of them is a fallthrough for
-//! tidiness: the schema's enums are `#[non_exhaustive]`, so the arm is what
-//! happens when the protocol grows a variant this window has not been taught
-//! yet. It says so, and the entry's raw JSON opens itself
-//! ([`timeline`](crate::timeline)) — the raw-first rule as the default rather
-//! than as the error path.
-//!
-//! Nothing here rewrites what the agent sent. Text is rendered as the text it
-//! was and JSON as the JSON it was: an inspector that reordered, respelled or
-//! summarised the wire would be showing its own work rather than the agent's.
-//! The one thing a reader may ask for is whitespace between a payload's tokens
-//! (`crate::indent`), which is off by default and changes nothing but where the
-//! bytes sit on the screen.
+//! The schema's enums are `#[non_exhaustive]`, so every `match` ends in a `_`
+//! arm that says it has no rendering; the timeline then opens the raw JSON.
+//! Nothing here rewrites what the agent sent.
 
 use acp_inspector_core::v1;
 use dioxus::prelude::*;
 
+use crate::copy::Copy;
 use crate::disclosure;
 
-/// Whose words a streamed chunk is.
-///
-/// The three chunk variants and nothing else — a thought is the agent's too,
-/// and reads differently enough to be its own voice. It lives here rather than
-/// in the timeline that groups by it, because what a voice is *called* is the
-/// same question as what any other update is called, and one table is what
-/// keeps a run of chunks reading the same as a lone one.
+/// Whose words a streamed chunk is: one per chunk variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Voice {
     User,
@@ -43,14 +22,7 @@ pub enum Voice {
 }
 
 impl Voice {
-    /// What this voice's chunks are called on screen, and the tone they read
-    /// in.
-    ///
-    /// **The variant the wire carries, not a word for it.** A reader watching
-    /// this screen beside the wire log is reading two accounts of the same
-    /// traffic, and one of them calling `agent_thought_chunk` a *thought* is a
-    /// translation they have to hold in their head. The drawing labels these
-    /// rows with the update's own name for the same reason.
+    /// The label (the wire's own variant name) and tone for this voice's chunks.
     pub fn told(self) -> (&'static str, &'static str) {
         match self {
             Self::User => ("user_message_chunk", "user"),
@@ -60,11 +32,7 @@ impl Voice {
     }
 }
 
-/// The voice an update is in and the chunk it carries, when it is one of the
-/// three streamed-chunk variants.
-///
-/// The one place those three are told from everything else: the timeline groups
-/// by what this answers, and renders what it hands back.
+/// The voice and chunk of a streamed-chunk update, or `None` for any other.
 pub fn spoken(update: &v1::SessionUpdate) -> Option<(Voice, &v1::ContentChunk)> {
     Some(match update {
         v1::SessionUpdate::UserMessageChunk(chunk) => (Voice::User, chunk),
@@ -74,14 +42,8 @@ pub fn spoken(update: &v1::SessionUpdate) -> Option<(Voice, &v1::ContentChunk)> 
     })
 }
 
-/// What an update looks like: what it is called, the tone it reads in, and the
-/// update itself.
-///
-/// `None` is the answer for a variant this window has no rendering for, and the
-/// timeline shows those as their JSON instead (§8). **Name and rendering come
-/// out of one place** so that "this variant has a rendering" is one fact rather
-/// than two that could drift — which is what the test at the bottom of this
-/// file checks, one constructed variant at a time.
+/// An update's label, tone and rendering, or `None` for a variant with no
+/// rendering (the timeline shows its JSON instead).
 pub fn render(update: &v1::SessionUpdate) -> Option<(&'static str, &'static str, Element)> {
     if let Some((voice, chunk)) = spoken(update) {
         let (label, tone) = voice.told();
@@ -107,23 +69,99 @@ pub fn render(update: &v1::SessionUpdate) -> Option<(&'static str, &'static str,
         v1::SessionUpdate::ConfigOptionUpdate(update) => ("config", "note", config(update)),
         v1::SessionUpdate::SessionInfoUpdate(update) => ("session", "note", info(update)),
         v1::SessionUpdate::UsageUpdate(update) => ("usage", "note", usage(update)),
+        v1::SessionUpdate::Notice(notice) => ("notice", "note", noticed(notice)),
+        // Core folds a compaction's summary chunks into its update, so a
+        // compaction is one card however many frames it took.
+        v1::SessionUpdate::CompactionUpdate(update) => ("compaction", "note", compaction(update)),
+        v1::SessionUpdate::CompactionSummaryChunk(chunk) => (
+            "compaction",
+            "note",
+            rsx! {
+                div { class: "evidence", "data-slot": "compaction",
+                    div { class: "evidence-head",
+                        strong { class: "evidence-title", "Context compaction" }
+                        code { class: "tag evidence-kind", "{chunk.compaction_id}" }
+                    }
+                    div { class: "said", {content(&chunk.content)} }
+                }
+            },
+        ),
         _ => return None,
     })
+}
+
+/// Information the agent showed the reader outside the session's history:
+/// its severity, title and description, as sent.
+fn noticed(notice: &v1::Notice) -> Element {
+    let (severity, tone) = match &notice.severity {
+        v1::NoticeSeverity::Info => ("info".to_owned(), ""),
+        v1::NoticeSeverity::Warning => ("warning".to_owned(), "warn"),
+        v1::NoticeSeverity::Error => ("error".to_owned(), "bad"),
+        v1::NoticeSeverity::Other(other) => (other.clone(), ""),
+        _ => ("a severity this window has no name for".to_owned(), ""),
+    };
+    rsx! {
+        div { class: "evidence", "data-slot": "notice",
+            div { class: "evidence-head",
+                strong { class: "evidence-title", "{notice.title}" }
+                span { class: "evidence-state {tone}", "{severity}" }
+            }
+            if let Some(description) = &notice.description {
+                p { class: "evidence-note", "{description}" }
+            }
+        }
+    }
+}
+
+/// A context compaction: where it stands, its summary, and its error, with the
+/// three patch states (absent, cleared, set) kept apart.
+fn compaction(update: &v1::CompactionUpdate) -> Element {
+    let (status, tone) = match &update.status {
+        v1::CompactionStatus::InProgress => ("in_progress".to_owned(), "working"),
+        v1::CompactionStatus::Completed => ("completed".to_owned(), "done"),
+        v1::CompactionStatus::Failed => ("failed".to_owned(), "bad"),
+        v1::CompactionStatus::Cancelled => ("cancelled".to_owned(), "waiting"),
+        v1::CompactionStatus::Other(other) => (other.clone(), "waiting"),
+        _ => ("unrecognized status".to_owned(), "waiting"),
+    };
+    let summary: Option<Option<Vec<v1::ContentBlock>>> = update.summary.clone().into();
+    let error: Option<Option<String>> = update.error.clone().into();
+
+    rsx! {
+        div { class: "evidence", "data-slot": "compaction",
+            div { class: "evidence-head",
+                span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
+                strong { class: "evidence-title", "Context compaction" }
+                code { class: "tag evidence-kind", title: "compactionId", "{update.compaction_id}" }
+                span { class: "evidence-state {tone}", "{status}" }
+            }
+            {match summary {
+                Some(Some(blocks)) if !blocks.is_empty() => rsx! {
+                    div { class: "said", "data-slot": "compaction-summary",
+                        for (position, block) in blocks.iter().enumerate() {
+                            span { key: "{position}", {content(block)} }
+                        }
+                    }
+                },
+                Some(_) => rsx! { p { class: "evidence-note", "Summary cleared." } },
+                None => rsx! {},
+            }}
+            {match error {
+                Some(Some(error)) => rsx! { p { class: "evidence-note", "data-slot": "compaction-error", "Error: {error}" } },
+                _ => rsx! {},
+            }}
+        }
+    }
 }
 
 /// One content block, wherever one turns up: in a message, in a thought, in a
 /// tool call's output.
 pub fn content(block: &v1::ContentBlock) -> Element {
     match block {
-        // The text, and nothing around it. Chunks of one message sit side by
-        // side in the flow, so what is on screen is the message the agent
-        // streamed rather than the pieces it arrived in.
-        v1::ContentBlock::Text(text) => rsx! { "{text.text}" },
+        // Bare text, so a message's chunks read as one message.
+        v1::ContentBlock::Text(text) => rsx! { Windowed { text: text.text.clone() } },
         v1::ContentBlock::Image(image) => rsx! {
             figure { class: "media",
-                // The bytes the agent sent, shown rather than described: an
-                // image is content, and a client that only named its MIME type
-                // would be hiding what it was handed.
                 img {
                     src: "data:{image.mime_type};base64,{image.data}",
                     alt: "an image the agent sent",
@@ -131,8 +169,7 @@ pub fn content(block: &v1::ContentBlock) -> Element {
                 figcaption { class: "mono", "{image.mime_type}" }
             }
         },
-        // No player: sound is not something a trace reader is listening for,
-        // and the bytes are in the frame underneath.
+        // No player; the bytes are in the frame.
         v1::ContentBlock::Audio(audio) => rsx! {
             span { class: "media mono", "audio · {audio.mime_type}" }
         },
@@ -157,11 +194,10 @@ fn embedded(resource: &v1::EmbeddedResourceResource) -> Element {
         v1::EmbeddedResourceResource::TextResourceContents(text) => rsx! {
             div { class: "resource",
                 code { class: "mono", "{text.uri}" }
-                pre { class: "quoted", "{text.text}" }
+                Windowed { text: text.text.clone(), class: "quoted" }
             }
         },
-        // Base64 of something that is not text, and this window has no idea
-        // what: its size is the useful fact about it.
+        // Opaque base64: its size is the useful fact.
         v1::EmbeddedResourceResource::BlobResourceContents(blob) => rsx! {
             span { class: "resource",
                 code { "{blob.uri}" }
@@ -174,13 +210,7 @@ fn embedded(resource: &v1::EmbeddedResourceResource) -> Element {
     }
 }
 
-/// A tool call, as the bounded inset group that merges its updates in place
-/// (§11 seam 3).
-///
-/// One group per `toolCallId` is the store's doing: every status change, every
-/// piece of output and every location the agent sent for this id has already
-/// been folded into the call this renders, and the frames behind it are on the
-/// entry.
+/// A tool call, with its updates already merged in by the store (§11 seam 3).
 fn tool_call(call: &v1::ToolCall) -> Element {
     let (status, tone) = status(call.status);
 
@@ -189,9 +219,11 @@ fn tool_call(call: &v1::ToolCall) -> Element {
             div { class: "evidence-head",
                 span { class: "dot dot-{marked(tone)}", aria_hidden: "true" }
                 strong { class: "evidence-title", "{call.title}" }
-                span { class: "evidence-kind", "{kind(call.kind)}" }
+                {tool_name(call.name.as_deref())}
+                span { class: "tag evidence-kind", "{kind(call.kind)}" }
                 span { class: "evidence-state {tone}", "{status}" }
             }
+            {call_id(&call.tool_call_id)}
             {locations(&call.locations)}
             {outputs(&call.content)}
             {raw(&call.tool_call_id, "input", call.raw_input.as_ref())}
@@ -200,16 +232,8 @@ fn tool_call(call: &v1::ToolCall) -> Element {
     }
 }
 
-/// An update for a tool call the session has no create for.
-///
-/// It is an entry of its own because the store had nothing to merge it into,
-/// which is a fact about the agent worth seeing: the fields it carried are what
-/// it said, and the rest is what it did not.
-///
-/// It is also what a permission request names its tool call with
-/// ([`permission`](crate::permission)) — the same shape, carrying the same
-/// "only what it said" — so the card a reader is being asked about is the card
-/// they already know how to read.
+/// An update for a tool call the session never saw created, drawn with only
+/// the fields it carried. Also how a permission request draws its tool call.
 pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
     let fields = &update.fields;
     let told = fields.status.map(status);
@@ -226,12 +250,17 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
                         None => rsx! { code { "{update.tool_call_id}" } },
                     }}
                 }
+                {tool_name(fields.name.as_deref())}
                 if let Some(doing) = fields.kind {
-                    span { class: "evidence-kind", "{kind(doing)}" }
+                    span { class: "tag evidence-kind", "{kind(doing)}" }
                 }
                 if let Some((what, tone)) = told {
                     span { class: "evidence-state {tone}", "{what}" }
                 }
+            }
+            // Drawn here only where the title above is not already the id.
+            if fields.title.is_some() {
+                {call_id(&update.tool_call_id)}
             }
             p { class: "evidence-note",
                 "An update for a tool call this session never saw created."
@@ -244,6 +273,26 @@ pub fn tool_call_update(update: &v1::ToolCallUpdate) -> Element {
             }
             {raw(&update.tool_call_id, "input", fields.raw_input.as_ref())}
             {raw(&update.tool_call_id, "output", fields.raw_output.as_ref())}
+        }
+    }
+}
+
+/// The tool's programmatic name, where the agent gave one (schema 1.8).
+fn tool_name(name: Option<&str>) -> Element {
+    rsx! {
+        if let Some(name) = name {
+            code { class: "tag evidence-kind mono", "data-slot": "tool-name", title: "name", "{name}" }
+        }
+    }
+}
+
+/// The tool call's wire id, which a reader searches the Trace for.
+fn call_id(id: &v1::ToolCallId) -> Element {
+    rsx! {
+        div { class: "evidence-meta", "data-slot": "tool-call-id",
+            span { class: "sr-only", "toolCallId " }
+            code { class: "mono", title: "toolCallId", "{id}" }
+            Copy { text: id.to_string(), what: "the tool call id" }
         }
     }
 }
@@ -282,18 +331,16 @@ fn outputs(outputs: &[v1::ToolCallContent]) -> Element {
                             if let Some(old) = &diff.old_text {
                                 del { class: "diff-version removed",
                                     span { class: "sr-only", "Removed content:" }
-                                    pre { class: "quoted", "{old}" }
+                                    Windowed { text: old.clone(), class: "quoted" }
                                 }
                             }
                             ins { class: "diff-version added",
                                 span { class: "sr-only", "Added content:" }
-                                pre { class: "quoted", "{diff.new_text}" }
+                                Windowed { text: diff.new_text.clone(), class: "quoted" }
                             }
                         }
                     },
-                    // The inspector advertises no terminal capability (§7.3),
-                    // so it has no terminal to embed — the id is the whole of
-                    // what it can honestly show.
+                    // No terminal is embedded (§7.3), so the id is all there is.
                     v1::ToolCallContent::Terminal(terminal) => rsx! {
                         span { class: "resource mono", "terminal {terminal.terminal_id}" }
                     },
@@ -308,16 +355,8 @@ fn outputs(outputs: &[v1::ToolCallContent]) -> Element {
 
 /// A tool call's raw input or output, as the JSON it arrived as.
 ///
-/// Displayed rather than named as a type: the value is `serde_json`'s, and this
-/// crate does not depend on a JSON library to print something that already
-/// knows how to print itself — three dependencies is the shape of this crate
-/// (`Cargo.toml`), and a fourth for `to_string` would not be.
-///
-/// The one payload on this screen that is a decoded value rather than a frame,
-/// and it is drawn through the same switch as the frames (`crate::indent`): what
-/// a reader turned on is a way of reading JSON, and a tool call's arguments are
-/// the JSON they most often want it for. Which half of which call it is names the
-/// disclosure, so this one is laid out when it is open and never before.
+/// Drawn through the indentation switch (`crate::indent`), laid out only while
+/// its disclosure is open.
 fn raw(
     call: &v1::ToolCallId,
     what: &'static str,
@@ -330,35 +369,80 @@ fn raw(
         if let Some(value) = value {
             details { class: "disclose", "data-slot": "tool-raw",
                 summary {
-                    aria_label: "Show or hide raw {what} evidence",
-                    title: "Show or hide raw {what} evidence",
-                    onclick: move |_| crate::indent::toggled(&toggling),
+                    aria_label: "Show or hide raw {what}",
+                    title: "Show or hide raw {what}",
+                    onclick: move |event| {
+                        // Not a press of the Timeline row. Propagation only: the
+                        // native toggle still runs.
+                        event.stop_propagation();
+                        crate::indent::toggled(&toggling);
+                    },
                     {disclosure::chevron()}
                     "{what}"
                 }
-                pre {
-                    class: "quoted",
-                    "{crate::indent::drawn(&disclosure, false, &value.to_string())}"
+                // Copy in the block's corner, where it stays as the block scrolls.
+                div { class: "quoted-block",
+                    Windowed {
+                        text: crate::indent::drawn(&disclosure, false, &value.to_string()),
+                        class: "quoted",
+                    }
+                    div { class: "quoted-copy",
+                        // The value as it arrived, whatever the layout above says.
+                        Copy { text: value.to_string(), what: "raw {what}" }
+                    }
                 }
             }
         }
     }
 }
 
-/// What a tool call's raw input or output is called in the one set that holds
-/// what the reader has open (`crate::indent`).
+/// How much of one piece of tool content is drawn before the reader asks for
+/// the rest: every byte drawn is laid out again on each Timeline render.
+pub(crate) const WINDOW: usize = 64 * 1024;
+
+/// Text drawn up to [`WINDOW`] bytes, with a control for the rest. In a `pre`
+/// of `class` where one is given, inline otherwise; the cut is at a character
+/// boundary.
+#[component]
+pub(crate) fn Windowed(text: String, #[props(into, default)] class: Option<String>) -> Element {
+    let mut whole = use_signal(|| false);
+    let cut = text.len() > WINDOW && !whole();
+    let shown = if cut {
+        crate::page::prefix(&text, WINDOW)
+    } else {
+        text.as_str()
+    };
+    let kib = text.len().div_ceil(1024);
+
+    rsx! {
+        if let Some(class) = class {
+            pre { class: "{class}", "{shown}" }
+        } else {
+            "{shown}"
+        }
+        if cut {
+            span { class: "hint windowed", "data-slot": "windowed",
+                " … first {WINDOW / 1024} KiB of {kib} KiB. "
+                button {
+                    class: "btn btn-xs btn-quiet",
+                    r#type: "button",
+                    "data-slot": "show-all",
+                    onclick: move |event| {
+                        event.stop_propagation();
+                        whole.set(true);
+                    },
+                    "Show all"
+                }
+            }
+        }
+    }
+}
+
+/// The name a tool call's raw input or output has in the open-disclosure set
+/// (`crate::indent`), shared by the toggle and the laid-out block.
 ///
-/// Built once and shared by the control that turns the disclosure over and the
-/// block that is laid out because it did, which is how the two cannot come to
-/// disagree about which disclosure they are about.
-///
-/// **The call, and not where it is drawn**, which is deliberate rather than
-/// overlooked: one tool call is on screen twice while a permission request names
-/// the card it is about ([`tool_call_update`], `crate::permission`), so opening
-/// one of them marks both. The two `<details>` keep their own open state — this
-/// window sets neither — so what it costs is the hidden one laying out a payload
-/// nobody can see, and what it buys is a name that does not have to be threaded
-/// through every surface a tool call can appear on.
+/// Keyed on the call, not where it is drawn: a call shown twice (beside a
+/// permission request) is marked open in both places.
 fn named(call: &v1::ToolCallId, what: &str) -> String {
     format!("tool {call} {what}")
 }
@@ -368,7 +452,7 @@ fn plan_entries(plan: &v1::Plan) -> Element {
     rsx! {
         div { class: "evidence", "data-slot": "plan",
             div { class: "evidence-head",
-                span { class: "eyebrow", "plan · {plan.entries.len()} entries" }
+                span { class: "wire-name", "plan · {plan.entries.len()} entries" }
             }
             ul { class: "plan",
                 for (position, entry) in plan.entries.iter().enumerate() {
@@ -379,8 +463,7 @@ fn plan_entries(plan: &v1::Plan) -> Element {
     }
 }
 
-/// One line of running plan text rather than columns: an entry is a sentence,
-/// and a column layout would have to be as wide as the longest one.
+/// One plan entry, as a line of running text.
 fn plan_entry(position: usize, entry: &v1::PlanEntry) -> Element {
     let (mark, tone, status) = planned(&entry.status);
     let priority = priority(&entry.priority);
@@ -403,7 +486,7 @@ fn commands(update: &v1::AvailableCommandsUpdate) -> Element {
     rsx! {
         div { class: "evidence", "data-slot": "commands",
             div { class: "evidence-head",
-                span { class: "eyebrow", "available_commands_update · {update.available_commands.len()}" }
+                span { class: "wire-name", "available_commands_update · {update.available_commands.len()}" }
             }
             ul { class: "plan",
                 for (position, command) in update.available_commands.iter().enumerate() {
@@ -438,16 +521,9 @@ fn config(update: &v1::ConfigOptionUpdate) -> Element {
     }
 }
 
-/// What a config option is set to, in the value the wire carries — or `None`
-/// for a kind this window cannot read one out of.
-///
-/// Here rather than beside either of the two screens that ask, because both of
-/// them ask the same question of the same protocol type: this is what an
-/// announcement of a change says the option is now, and what the Session
-/// Settings surface says it *is* ([`session_settings`](crate::session_settings)).
-/// An option kind with no rendering has no value this window can name either,
-/// and naming one anyway would be a guess about a shape it just said it does not
-/// know.
+/// What a config option is set to, as the wire carries it, or `None` for a
+/// kind this window cannot read. Shared with
+/// [`session_settings`](crate::session_settings).
 pub fn current_value(kind: &v1::SessionConfigKind) -> Option<String> {
     match kind {
         v1::SessionConfigKind::Select(select) => Some(select.current_value.to_string()),
@@ -456,11 +532,8 @@ pub fn current_value(kind: &v1::SessionConfigKind) -> Option<String> {
     }
 }
 
-/// What the agent renamed the session, or when it last said it did something.
-///
-/// The two fields are `MaybeUndefined`: absent, explicitly cleared, or set. All
-/// three are different things an agent can mean, so all three are shown as
-/// different things.
+/// A session info update. Both fields are `MaybeUndefined`, and absent,
+/// cleared and set are drawn differently.
 fn info(update: &v1::SessionInfoUpdate) -> Element {
     let title: Option<Option<String>> = update.title.clone().into();
     let updated: Option<Option<String>> = update.updated_at.clone().into();
@@ -506,9 +579,7 @@ fn usage(update: &v1::UsageUpdate) -> Element {
 /// Where a tool call stands, and the tone it reads in.
 fn status(status: v1::ToolCallStatus) -> (&'static str, &'static str) {
     match status {
-        // v1's own four words rather than shorter ones for them: this is the
-        // field's value, and a reader checking the card against the frame in
-        // the wire log should find the same string in both.
+        // The wire's own values, so the card matches the frame.
         v1::ToolCallStatus::Pending => ("pending", "waiting"),
         v1::ToolCallStatus::InProgress => ("in_progress", "working"),
         v1::ToolCallStatus::Completed => ("completed", "done"),
@@ -534,26 +605,19 @@ fn kind(kind: v1::ToolKind) -> &'static str {
     }
 }
 
-/// The dot a tool call's state is drawn as.
-///
-/// **The window has five dots and this is which of them**: a status word is the
-/// row's own vocabulary — `pending`, `in_progress` — and the mark beside it is
-/// the one every other surface uses for the same four meanings, so a reader
-/// learns the marks once. Nothing is said by the dot that the word beside it
-/// does not say.
+/// The window-wide dot for a tool call's tone. Decorative: the status word
+/// beside it says the same.
 fn marked(tone: &str) -> &'static str {
     match tone {
         "working" => "wait",
         "done" => "done",
         "bad" => "gone",
-        // `waiting`, and anything a later ring adds: nothing is happening yet.
+        // `waiting`, and anything unrecognised.
         _ => "idle",
     }
 }
 
 /// Where a plan entry stands: its decorative mark, visual tone and spoken name.
-/// Where a plan entry stands: the tone of the dot beside it, the tone of the
-/// row, and the word a reader who is not looking at either hears.
 fn planned(status: &v1::PlanEntryStatus) -> (&'static str, &'static str, &'static str) {
     match status {
         v1::PlanEntryStatus::Pending => ("idle", "waiting", "pending"),
@@ -576,12 +640,8 @@ fn priority(priority: &v1::PlanEntryPriority) -> &'static str {
 mod tests {
     use super::*;
 
-    /// One of each stable v1 `sessionUpdate` variant the schema crate exposes.
-    ///
-    /// Written out rather than derived, because a `#[non_exhaustive]` enum
-    /// cannot be enumerated: this list is a claim, and the day the schema grows
-    /// a twelfth variant it is a claim that has to be updated by hand — which
-    /// is the same hand that would be adding the arm.
+    /// One of each stable v1 `sessionUpdate` variant. Written by hand: a
+    /// `#[non_exhaustive]` enum cannot be enumerated.
     fn every_variant() -> Vec<v1::SessionUpdate> {
         let chunk = || v1::ContentChunk::new(v1::ContentBlock::from("hello"));
 
@@ -600,20 +660,27 @@ mod tests {
             v1::SessionUpdate::ConfigOptionUpdate(v1::ConfigOptionUpdate::new(vec![])),
             v1::SessionUpdate::SessionInfoUpdate(v1::SessionInfoUpdate::new()),
             v1::SessionUpdate::UsageUpdate(v1::UsageUpdate::new(120, 200_000)),
+            v1::SessionUpdate::Notice(v1::Notice::new(v1::NoticeSeverity::Info, "Heads up")),
+            v1::SessionUpdate::CompactionUpdate(v1::CompactionUpdate::new(
+                "k1",
+                v1::CompactionStatus::InProgress,
+            )),
+            v1::SessionUpdate::CompactionSummaryChunk(v1::CompactionSummaryChunk::new(
+                "k1",
+                v1::ContentBlock::from("summary"),
+            )),
         ]
     }
 
     #[test]
     fn every_stable_v1_variant_has_a_rendering() {
-        // The acceptance the spec asks for (§7.2): every stable variant is
-        // decoded *and* shown as itself, so that landing in the raw-first path
-        // means the agent sent something new — not that this window never got
-        // around to it.
+        // §7.2: every stable variant renders as itself, so the raw-first path
+        // means the agent sent something new.
         let variants = every_variant();
         assert_eq!(
             variants.len(),
-            11,
-            "the eleven stable variants `agent-client-protocol-schema` 1.6 exposes"
+            14,
+            "the fourteen stable variants `agent-client-protocol-schema` 1.11 exposes"
         );
 
         for update in variants {
@@ -622,6 +689,56 @@ mod tests {
                 "{update:?} renders as itself rather than as unknown traffic"
             );
         }
+    }
+
+    #[test]
+    fn a_tool_calls_name_is_on_its_card() {
+        let call = v1::ToolCall::new("call-1", "Reading a file").name("read_file");
+        let (_, _, body) = render(&v1::SessionUpdate::ToolCall(call)).expect("it renders");
+        let html = dioxus_ssr::render_element(body);
+        assert!(
+            html.contains(r#"data-slot="tool-name""#) && html.contains(">read_file<"),
+            "{html}"
+        );
+
+        let unnamed = v1::ToolCall::new("call-1", "Reading a file");
+        let (_, _, body) = render(&v1::SessionUpdate::ToolCall(unnamed)).expect("it renders");
+        assert!(!dioxus_ssr::render_element(body).contains("tool-name"));
+
+        let update = v1::ToolCallUpdate::new(
+            "call-1",
+            v1::ToolCallUpdateFields::new().name("write_file".to_owned()),
+        );
+        let html = dioxus_ssr::render_element(tool_call_update(&update));
+        assert!(html.contains(">write_file<"), "{html}");
+    }
+
+    #[test]
+    fn a_notice_and_a_compaction_read_as_themselves() {
+        let notice = v1::Notice::new(v1::NoticeSeverity::Warning, "Rate limited")
+            .description("Retrying in 30 seconds".to_owned());
+        let (label, _, body) = render(&v1::SessionUpdate::Notice(notice)).expect("it renders");
+        assert_eq!(label, "notice");
+        let html = dioxus_ssr::render_element(body);
+        assert!(html.contains("Rate limited") && html.contains("Retrying in 30 seconds"));
+        assert!(html.contains(">warning<"), "{html}");
+
+        let compaction = v1::CompactionUpdate::new("k1", v1::CompactionStatus::Completed)
+            .summary(vec![v1::ContentBlock::from("kept the plan")])
+            .error(acp_inspector_core::MaybeUndefined::Null);
+        let (label, _, body) =
+            render(&v1::SessionUpdate::CompactionUpdate(compaction)).expect("it renders");
+        assert_eq!(label, "compaction");
+        let html = dioxus_ssr::render_element(body);
+        assert!(
+            html.contains("Context compaction") && html.contains(">completed<"),
+            "{html}"
+        );
+        assert!(html.contains("kept the plan"), "{html}");
+        assert!(
+            !html.contains("compaction-error"),
+            "a cleared error is no error: {html}"
+        );
     }
 
     #[test]
@@ -637,11 +754,8 @@ mod tests {
         }) {
             let (_, _, body) = render(&update).expect("the stable family renders");
             let html = dioxus_ssr::render_element(body);
-            // A bounded box in the flow, in this window's own class rather
-            // than in Tailwind's utilities: the class says which kind of box it
-            // is and the stylesheet says what that looks like, so the two
-            // schemes are one declaration rather than two utilities that only
-            // work in one.
+            // The window's own class rather than Tailwind utilities, so both
+            // themes are styled by one declaration.
             assert!(
                 html.contains(r#"class="evidence""#),
                 "{update:?} is a bounded group in the flow: {html}"
@@ -649,9 +763,8 @@ mod tests {
         }
     }
 
-    /// A tool call carrying raw input, rendered inside a window: its evidence is
-    /// a disclosure the reader operates, and markup carrying a control has to be
-    /// built where there is a runtime to hang one on.
+    /// A tool call carrying raw input, rendered in a virtual DOM (its disclosure
+    /// needs a runtime).
     fn tool_card(indentation: acp_inspector_core::Indentation, opened: bool) -> String {
         #[component]
         fn Host(indentation: acp_inspector_core::Indentation, opened: bool) -> Element {
@@ -659,9 +772,7 @@ mod tests {
             let call = v1::ToolCall::new("call-1", "Reading a file")
                 .raw_input(serde_json::json!({"path": "settings.json"}));
             if opened {
-                // The same call the summary makes when it is activated, by the
-                // name this card gives its disclosure — a screen test has no
-                // pointer, and what a click leaves behind is this.
+                // What activating the summary does.
                 crate::indent::toggled(&named(&call.tool_call_id, "input"));
             }
             let (_, _, body) = render(&v1::SessionUpdate::ToolCall(call)).expect("it renders");
@@ -691,8 +802,8 @@ mod tests {
             .0;
 
         assert!(
-            summary.contains(r#"aria-label="Show or hide raw input evidence""#)
-                && summary.contains(r#"title="Show or hide raw input evidence""#)
+            summary.contains(r#"aria-label="Show or hide raw input""#)
+                && summary.contains(r#"title="Show or hide raw input""#)
                 && summary.contains(r#"class="disclosure-icon""#)
                 && summary.contains("<svg"),
             "tool raw evidence uses the shared named outline disclosure: {summary}"
@@ -700,11 +811,92 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_call_shows_its_id_and_its_raw_values_can_be_copied() {
+        let html = tool_card(acp_inspector_core::Indentation::Wire, false);
+        assert!(
+            html.contains(r#"data-slot="tool-call-id""#)
+                && html.contains(r#"title="toolCallId">call-1</code>"#),
+            "the id the wire carries is on the card: {html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="Copy raw input""#)
+                && html.contains(r#"aria-label="Copy the tool call id""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn large_tool_content_is_windowed_until_the_reader_asks_for_all_of_it() {
+        let big = format!("{}🦀{}", "a".repeat(WINDOW - 2), "tail".repeat(1000));
+        let html = dioxus_ssr::render_element(content(&v1::ContentBlock::from(big.as_str())));
+        assert!(
+            html.contains(r#"data-slot="windowed""#)
+                && html.contains(r#"data-slot="show-all""#)
+                && !html.contains("tail")
+                && html.len() < WINDOW + 2048,
+            "only the first window is drawn"
+        );
+        let small = dioxus_ssr::render_element(content(&v1::ContentBlock::from("short")));
+        assert!(small.contains("short") && !small.contains("windowed"));
+    }
+
+    #[test]
+    fn opening_raw_evidence_does_not_press_the_row_around_it() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::Mutation;
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut reveals = use_signal(|| 0);
+            let call = v1::ToolCall::new("call-1", "Reading a file")
+                .raw_input(serde_json::json!({"path": "settings.json"}));
+            let (_, _, body) = render(&v1::SessionUpdate::ToolCall(call)).expect("it renders");
+            rsx! {
+                article { onclick: move |_| reveals += 1, {body} }
+                span { "data-slot": "reveals", "{reveals}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        // The listeners in document order: the row, then the raw summary.
+        let listeners: Vec<_> = edits
+            .iter()
+            .filter_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "click" => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let summary = *listeners
+            .iter()
+            .find(|id| {
+                edits.iter().any(|edit| {
+                    matches!(edit, Mutation::SetAttribute { name: "aria-label", value: dioxus::core::AttributeValue::Text(text), id: at, .. } if at == *id && text == "Show or hide raw input")
+                })
+            })
+            .expect("the raw input summary listens for clicks");
+        dom.runtime().handle_event(
+            "click",
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            ),
+            summary,
+        );
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        assert!(
+            dioxus_ssr::render(&dom).contains(r#"data-slot="reveals">0"#),
+            "{}",
+            dioxus_ssr::render(&dom)
+        );
+    }
+
+    #[test]
     fn a_tool_calls_raw_evidence_is_laid_out_where_the_reader_opened_it() {
-        // The one payload on this screen that is a decoded value rather than a
-        // frame, drawn through the same switch as the frames beside it
-        // (`crate::indent`) — and it is where a reader most often wants it,
-        // since a tool call's arguments are the JSON they came to read.
         let opened = tool_card(acp_inspector_core::Indentation::Indented, true);
         assert!(
             opened.contains(
@@ -713,8 +905,7 @@ mod tests {
             "the arguments are laid out for reading: {opened}"
         );
 
-        // And a card nobody opened is the value as it arrived, which is what
-        // keeps a session's worth of tool calls from being laid out for nobody.
+        // A closed card holds the value as it arrived.
         let closed = tool_card(acp_inspector_core::Indentation::Indented, false);
         assert!(
             closed.contains("<pre class=\"quoted\">{&#34;path&#34;:&#34;settings.json&#34;}</pre>"),
@@ -741,7 +932,7 @@ mod tests {
         assert!(
             head.contains(r#"class="dot dot-idle""#)
                 && head.contains(r#"class="evidence-title""#)
-                && head.contains(r#"class="evidence-kind""#)
+                && head.contains(r#"class="tag evidence-kind""#)
                 && head.contains(r#"class="evidence-state waiting""#)
                 && head.contains("pending")
                 && head.contains("Permission request")

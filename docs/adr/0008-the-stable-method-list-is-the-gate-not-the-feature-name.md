@@ -96,3 +96,14 @@ surface: the eleven stable update variants are unchanged, compaction stays raw-f
 stable terminal-authentication claim is displayed as declined under the existing own-terminal rule.
 That stabilization alone accounts for the capability tripwire and wire-expectation changes; the
 elicitation tests pass unchanged against Testy built from rust-sdk `v2.1.0`, using schema 1.7.0.
+
+## Postscript — 2026-10-10: schema 1.11
+
+The workspace now depends on `agent-client-protocol-schema` 1.11, still with default features
+only. The gate was applied as written: the stable method list is unchanged, so no method became
+typed and no `unstable_*` feature is enabled. What 1.8 to 1.11 stabilized lives inside methods this
+client already decodes — the tool-call `name`, and the `notice`, `compaction_update` and
+`compaction_summary_chunk` session updates — and compiles in the default build, so it is decoded
+like the rest of the stable schema. Notices and compaction are also claimed, because the timeline
+renders both (the [§7.4 audit](../architecture.md#74-the-coverage-yardstick) has the detail). Plan
+operations and subagents remain behind unstable features and raw-first.

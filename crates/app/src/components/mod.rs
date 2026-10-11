@@ -4,6 +4,6 @@ pub mod checkbox;
 pub mod field;
 pub mod input;
 pub mod native_select;
-pub mod radio_group;
 pub mod schemaform_daisyui;
-pub mod select;
+pub mod schemaform_daisyui_collection;
+pub mod textarea;

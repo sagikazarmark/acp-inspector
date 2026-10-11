@@ -32,9 +32,14 @@
       # fetches the rust-sdk checkout with `git`.
       just
       git
+      # The suite's scripted agents (`scripts/*-agent.py`) are Python 3; without
+      # it the `exit_drain`, `process_tree`, `retention` and `stdio` tests fail.
+      python3
 
       lld
 
+      # `just licenses` and `just bundle-macos`: the third-party notices.
+      cargo-about
       cargo-audit
       cargo-deny
       cargo-dist
@@ -79,7 +84,11 @@
   languages = {
     rust = {
       enable = true;
+      # The version `rust-toolchain.toml` pins, so the shell, rustup and CI
+      # run the same clippy. Kept here rather than read from that file because
+      # the shell also wants the wasm target, which CI and rustup users don't.
       channel = "stable";
+      version = "1.98.1";
       targets = [ "wasm32-unknown-unknown" ];
     };
     javascript = {

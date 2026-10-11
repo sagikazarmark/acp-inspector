@@ -1,0 +1,10 @@
+# The toolchain every check runs on: `just check`, CI and the devenv shell
+# (`devenv.nix` names the same version). Pinned, not `stable`, because a new
+# stable brings new lints and `clippy -D warnings` is a gate. Bump it on purpose,
+# in a commit that also fixes what the new lints find.
+#
+# `rust-version` in `Cargo.toml` is the separate, lower floor the code builds on.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

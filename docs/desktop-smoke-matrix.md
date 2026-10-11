@@ -14,7 +14,7 @@ Dark**, and **System** with the operating system in both light and dark mode. Sy
 
 | Contract | Evidence |
 |---|---|
-| Shell, top bar, the tool's own mark and name once, explicit dot-plus-text Connection states, the protocol and Session facts, the spine, and one connection control that is Connect… or Disconnect and never a refusal | `crates/app/src/main.rs::tests` |
+| Shell, top bar, the tool's own mark and name once, explicit dot-plus-text Connection states, the protocol and Session facts, the spine, and one connection control that is Connect… or Disconnect and never a refusal | `crates/app/src/main.rs` and `crates/app/src/app/bar.rs` tests |
 | Appearance values, persistence and System fallback | `crates/core/tests/appearance.rs`, `crates/app/src/appearance.rs::tests` |
 | Indentation persistence, whitespace-only layout, non-JSON payloads left alone, and the switch reaching both screens | `crates/core/tests/indentation.rs`, `crates/app/src/{indent,trace,timeline,update}.rs::tests` |
 | Inspector Light, Inspector Dark and preferred-dark System selectors | `style::tests::production_uses_only_the_custom_unprefixed_inspector_themes` |
@@ -26,9 +26,9 @@ Dark**, and **System** with the operating system in both light and dark mode. Sy
 | One visible focus treatment for buttons, fields, native select, tabs, disclosures and recall | `style::tests::every_control_family_has_the_same_visible_focus_indicator` |
 | Ordinary button centering, intentional multiline centering and primary/ordinary/quiet/destructive hierarchy | `style::tests::{ordinary_buttons_center_content_and_icon_only_targets_are_large_enough,permission_choices_keep_centered_compact_and_multiline_geometry}`, `console::tests::the_traces_verbs_are_on_the_console_bar_and_only_on_its_own_surface`, component SSR tests |
 | Launch, fold, running state, one-time Command autofocus, focus-stable Launching, overflow-free empty textareas and politely confirmed recent-command recall | `crates/app/src/{spawn,style}.rs::tests`, `crates/core/tests/recent.rs` |
-| Agent/client identity, low-chrome Advertisements and complete authentication states | `crates/app/src/agent.rs::tests`, `crates/core/tests/capability.rs` |
+| Agent/client identity, low-chrome Advertisements and complete authentication states | `crates/app/src/agent/` tests, `crates/core/tests/capability.rs` |
 | Two-line capability rows in the rail, hairline separators, long-value wrapping, and Authentication methods as a name and the call that uses it | `style::tests::{a_capability_row_is_two_lines_in_the_rail_and_says_both_of_them,long_agent_identifiers_and_auth_method_facts_wrap_rather_than_widen,an_auth_method_is_a_row_of_a_name_and_the_call_that_uses_it,agent_controlled_narrow_window_content_wraps}` |
-| Session new/list/page/load/resume/close/delete, refresh and roots behavior | `crates/app/src/agent.rs::tests`, `crates/core/tests/{session,restore,lifecycle,roots,capability}.rs` |
+| Session new/list/page/load/resume/close/delete, refresh and roots behavior | `crates/app/src/agent/` tests, `crates/core/tests/{session,restore,lifecycle,roots,capability}.rs` |
 | Flat Session rows, current/available/stale wording, centered lifecycle hierarchy and one Agent-rail scroller | `agent::tests::{listed_sessions_state_which_one_is_current_without_changing_its_affordances,session_lifecycle_and_roots_use_compact_daisyui_components}`, `style::tests::session_lifecycle_uses_grouped_rows_and_explicit_states` |
 | Every listed Session and repeated roots Affordance has a target-specific accessible name | `agent::tests::every_listed_session_affordance_names_the_session_it_drives` |
 | Complete adversarial root paths remain in the compact Heroicons disclosures and locally scrollable fields | `agent::tests::a_long_reported_root_remains_complete_in_the_summary_and_field`, `style::tests::{agent_controlled_narrow_window_content_wraps,session_lifecycle_uses_grouped_rows_and_explicit_states}` |

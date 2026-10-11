@@ -3,7 +3,7 @@
 
 use std::{any::Any, cell::RefCell, rc::Rc, time::Duration};
 
-use acp_inspector_core::{ElicitationRequest, EntryId, EntryKind};
+use acp_inspector_core::{ElicitationRequest, EntryId, EntryKind, TimelineEntry, TurnState};
 use dioxus::core::{AttributeValue, ElementId, Mutation};
 use dioxus::html::{
     PlatformEventData, SerializedFileData, SerializedFormData, SerializedFormObject,
@@ -174,7 +174,7 @@ async fn layout_preserves_prompt_and_attachment_but_session_changes_reset_them()
     let edits = dom.rebuild_to_vec().edits;
     input(&mut dom, listener(&edits, "input"), "Keep this prompt");
     attach(&mut dom, &edits).await;
-    click(&mut dom, target(&edits, "aria-label", "JSON-RPC full"));
+    click(&mut dom, target(&edits, "aria-label", "Trace only"));
     let hidden = dioxus_ssr::render(&dom);
     assert!(
         hidden.contains("class=\"split spine-wire\""),
@@ -205,7 +205,7 @@ async fn layout_preserves_prompt_and_attachment_but_session_changes_reset_them()
     );
 
     // Both reset paths matter: a different id, and reopening the same Session.
-    let wire = target(&edits, "aria-label", "JSON-RPC full");
+    let wire = target(&edits, "aria-label", "Trace only");
     let split = target(&edits, "aria-label", "Split");
     let resets =
         ["Switch Session", "Reopen Session"].map(|name| (name, target(&edits, "aria-label", name)));
@@ -266,7 +266,7 @@ async fn layout_preserves_elicitation_form_raw_and_resolved_values() {
     let field = target(&edits, "data-schemaform-control", "string");
     input(&mut dom, field, "Edited form");
     assert!(dioxus_ssr::render(&dom).contains("value=\"Edited form\""));
-    let wire = target(&edits, "aria-label", "JSON-RPC full");
+    let wire = target(&edits, "aria-label", "Trace only");
     let split = target(&edits, "aria-label", "Split");
     click(&mut dom, wire);
     click(&mut dom, split);
@@ -310,11 +310,17 @@ async fn layout_preserves_elicitation_form_raw_and_resolved_values() {
     click(&mut dom, target(&edits, "aria-label", "Refresh requests"));
     click(&mut dom, wire);
     click(&mut dom, split);
+    // The form turns read-only in an effect, on the next scheduler turn.
+    for _ in 0..3 {
+        let _ = tokio::time::timeout(Duration::from_millis(50), dom.wait_for_work()).await;
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+    }
     let html = dioxus_ssr::render(&dom);
     assert!(
-        html.contains("resolved") && html.contains("value=\"Edited form\""),
-        "resolved fields keep the displayed answer"
+        html.contains("resolved") && html.contains(">Edited form</output>"),
+        "resolved fields keep the displayed answer, read-only: {html}"
     );
+    assert!(!html.contains("value=\"Edited form\""), "{html}");
     click(&mut dom, raw);
     assert!(dioxus_ssr::render(&dom).contains("Independent raw"));
     click(&mut dom, wire);

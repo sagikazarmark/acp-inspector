@@ -1,0 +1,39 @@
+# cargo-about: the third-party licence notices the app ships with.
+# `just licenses` renders `about.hbs` with this into THIRD_PARTY_LICENSES.html,
+# and `just bundle-macos` puts that file in the bundle's `Contents/Resources`
+# and next to the app in the disk image. Generated at bundle time, never
+# committed: it is a function of Cargo.lock.
+#
+# The accepted list is `deny.toml`'s, which `cargo deny check` enforces; when a
+# crate offers a choice, cargo-about picks the first of these it allows.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MIT-0",
+    "MPL-2.0",
+]
+
+# What the bundle is built for. Linux and Windows are listed so a source build
+# there is covered by the same notices.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+# Tests, examples and the icon renderer are not shipped.
+ignore-dev-dependencies = true
+# Build scripts and proc macros are not shipped either, but their output is
+# compiled in; keeping them is the conservative reading.
+ignore-build-dependencies = false
+
+# The workspace's own crates are covered by LICENSE-MIT and LICENSE-APACHE.
+private = { ignore = true }

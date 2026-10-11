@@ -1,11 +1,15 @@
 //! Real controls over App's shared navigation seam, with both evidence surfaces.
 use std::{any::Any, rc::Rc, time::SystemTime};
 
-use acp_inspector_core::{Direction, EntryId, EntryKind, Frame, Recorded};
+use acp_inspector_core::{
+    Appearance, ConnectionStatus, Direction, EntryId, EntryKind, Frame, Recorded, SessionSettings,
+    TimelineEntry, TracedFrame, TurnState,
+};
 use dioxus::core::{AttributeValue, ElementId, Mutation};
 use dioxus::html::{PlatformEventData, SerializedMouseData};
 
 use super::*;
+use crate::app::commands::commands;
 
 fn host() -> Element {
     let nav = navigation::use_navigation();
@@ -35,7 +39,7 @@ fn host() -> Element {
     let decoded = use_signal(|| HashSet::from([0]));
     let lines = use_signal(Vec::new);
     let commands = commands(PaletteWiring {
-        connected: false,
+        connected: true,
         described: false,
         traced: true,
         spine: (nav.spine)(),
@@ -62,7 +66,7 @@ fn host() -> Element {
         }
         div { class: (nav.region)().class(),
             Rail {
-                status: ConnectionStatus::Disconnected, launched: None, session: None,
+                status: ConnectionStatus::Connected, launched: None, session: None,
                 claims: agent::Claims::about(None), settings: SessionSettings::default(),
                 settings_epoch: 0, changing_mode: false, setting_option: None, commands: 0,
                 tab: (nav.rail)(), on_tab: move |chosen| nav.rail(chosen),
@@ -134,7 +138,7 @@ fn trace_turn_reveals_timeline_from_full_wire_and_narrow_messages() {
         "seeking must select narrow Session"
     );
     assert!(html.contains("row sought"), "the requested entry is marked");
-    click(&mut dom, target(&edits, "aria-label", "Messages"));
+    click(&mut dom, target(&edits, "aria-label", "Trace"));
     click(&mut dom, turn);
     assert!(dioxus_ssr::render(&dom).contains("body on-turn"));
 }
@@ -148,7 +152,7 @@ fn palette_rail_destinations_reveal_details_and_select_the_requested_tab() {
         ("Capabilities", "rail-panel-capabilities"),
         ("Session settings", "rail-panel-session"),
     ] {
-        click(&mut dom, target(&edits, "aria-label", "Messages"));
+        click(&mut dom, target(&edits, "aria-label", "Trace"));
         click(
             &mut dom,
             target(&edits, "aria-label", &format!("Palette {command}")),
@@ -168,7 +172,7 @@ fn full_wire_and_mobile_session_never_hide_both_screens() {
         let control = if full == "toolbar" {
             target(&edits, "title", Spine::Wire.says())
         } else {
-            target(&edits, "aria-label", "Palette JSON-RPC full")
+            target(&edits, "aria-label", "Palette Trace only")
         };
         edits.extend(click(&mut dom, control));
         let html = dioxus_ssr::render(&dom);
@@ -176,7 +180,7 @@ fn full_wire_and_mobile_session_never_hide_both_screens() {
             html.contains("spine-wire") && html.contains("body on-wire"),
             "{full} full wire reveals Messages"
         );
-        edits.extend(click(&mut dom, target(&edits, "aria-label", "Session")));
+        edits.extend(click(&mut dom, target(&edits, "aria-label", "Timeline")));
         let html = dioxus_ssr::render(&dom);
         assert!(
             html.contains("spine-split") && html.contains("body on-turn"),
@@ -203,7 +207,7 @@ fn timeline_evidence_reveals_trace_after_diagnostics() {
         html.contains("frame-row revealed"),
         "the Frame must be visible and selected"
     );
-    assert!(html.contains("id=\"console-tab-trace\" class=\"wire-tab\" type=\"button\" role=\"tab\" aria-selected=true"));
+    assert!(html.contains("id=\"console-tab-trace\" class=\"tab wire-tab\" type=\"button\" role=\"tab\" aria-selected=true"));
     // Navigate back and repeat the same destinations, rather than relying on
     // a changing ordinal to trigger a second visit.
     let new_turn = target(&edits, "aria-label", "Show Timeline entry for Frame 0");

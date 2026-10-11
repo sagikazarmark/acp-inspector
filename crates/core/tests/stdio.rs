@@ -195,13 +195,114 @@ async fn a_frame_too_long_to_carry_is_dropped_and_announced_and_the_wire_survive
 
     let dropped = next_diagnostic(connection.diagnostics()).await;
     assert!(
-        matches!(dropped.kind, DiagnosticKind::FrameDropped { .. }),
+        matches!(
+            dropped.kind,
+            DiagnosticKind::FrameDropped {
+                length: 11_000_000,
+                ..
+            }
+        ),
         "{dropped:?}"
     );
+
+    // A placeholder holds its place, carrying the line's start.
+    let placeholder = next_frame(connection.incoming()).await;
+    let omission = placeholder.omission().expect("a placeholder");
+    assert_eq!(omission.length, 11_000_000);
+    assert_eq!(placeholder.as_str(), "x".repeat(4096));
 
     assert_eq!(
         next_frame(connection.incoming()).await.as_str(),
         r#"{"after":1}"#
+    );
+}
+
+#[tokio::test]
+async fn a_frame_ending_in_crlf_keeps_its_carriage_return() {
+    let mut connection =
+        shell(r#"printf '{"jsonrpc":"2.0","method":"x"}\r\n{"two":2}\n'"#).connect();
+
+    let first = next_frame(connection.incoming()).await;
+    assert_eq!(first.as_str(), "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}\r");
+    assert_eq!(
+        first.summary().kind,
+        acp_inspector_core::FrameKind::Notification,
+        "the CR is JSON whitespace"
+    );
+    assert_eq!(
+        next_frame(connection.incoming()).await.as_str(),
+        r#"{"two":2}"#
+    );
+}
+
+#[tokio::test]
+async fn a_long_stderr_line_is_cut_and_the_cut_announced() {
+    let mut connection = shell(
+        "head -c 3000000 /dev/zero | tr '\\0' 'e' >&2; echo >&2; echo next >&2; cat > /dev/null",
+    )
+    .connect();
+
+    let line = next_diagnostic(connection.diagnostics()).await;
+    let DiagnosticKind::Stderr(text) = &line.kind else {
+        panic!("expected the cut line, got {line:?}");
+    };
+    assert_eq!(text.len(), 1024 * 1024);
+    let cut = next_diagnostic(connection.diagnostics()).await;
+    assert!(
+        matches!(
+            cut.kind,
+            DiagnosticKind::StderrLineCut {
+                limit: 1_048_576,
+                length: 3_000_000
+            }
+        ),
+        "{cut:?}"
+    );
+    let next = next_diagnostic(connection.diagnostics()).await;
+    assert!(matches!(&next.kind, DiagnosticKind::Stderr(text) if text == "next"));
+}
+
+#[tokio::test]
+async fn incoming_frames_are_stamped_when_read() {
+    let before = SystemTime::now();
+    let mut connection = shell(r#"printf '{"one":1}\n'; cat > /dev/null"#).connect();
+    tokio::time::sleep(QUIET).await;
+    let after = SystemTime::now();
+    let frame = next_frame(connection.incoming()).await;
+    let read = frame.read_at().expect("a frame off a pipe is stamped");
+    assert!(
+        read >= before && read <= after,
+        "stamped at read, not at consumption"
+    );
+}
+
+#[tokio::test]
+async fn inherited_variables_can_be_removed_or_cleared() {
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the suite inherits HOME"
+    );
+    let script = "printf '%s|%s|%s\\n' \"${HOME-unset}\" \"${USER-unset}\" \"$INSPECTOR_TEST_SET\" >&2; cat > /dev/null";
+    let user = std::env::var("USER").unwrap_or_else(|_| "unset".to_owned());
+
+    let mut removed = shell(script)
+        .env_remove("HOME")
+        .env("INSPECTOR_TEST_SET", "set")
+        .connect();
+    let line = next_diagnostic(removed.diagnostics()).await;
+    assert!(
+        matches!(&line.kind, DiagnosticKind::Stderr(text) if *text == format!("unset|{user}|set")),
+        "{line:?}"
+    );
+
+    let mut cleared = shell(script)
+        .env_clear()
+        .env("INSPECTOR_TEST_SET", "set")
+        .connect();
+    let line = next_diagnostic(cleared.diagnostics()).await;
+    assert!(
+        matches!(&line.kind, DiagnosticKind::Stderr(text) if text == "unset|unset|set"),
+        "{line:?}"
     );
 }
 
@@ -227,8 +328,8 @@ async fn dropping_the_sink_ends_the_agent_and_reports_its_exit() {
     let connection = echo_agent().connect();
     let (outgoing, mut incoming, mut diagnostics) = connection.into_parts();
 
-    // Closing the client's end of stdin is how an stdio agent is asked to stop
-    // (`app/bridge` §3.4's first step).
+    // Closing the client's end of stdin is how an stdio agent is asked to stop:
+    // the first step of a graceful stop.
     drop(outgoing);
 
     assert!(

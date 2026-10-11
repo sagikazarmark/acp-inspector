@@ -1,79 +1,28 @@
-//! The Session Settings surface (`docs/architecture.md` §7.6, §9): what the
-//! live session is configured as, and what it could be configured as.
+//! The Session Settings surface: what the live session is configured as, and
+//! what it could be. See `docs/architecture.md` §7.6 and §9.
 //!
-//! **It sits in the right details rail because it belongs to the Session.** The
-//! Agent rail is Connection-scoped — the Agent's identity, its capabilities,
-//! its auth, its Session listing — so putting these rows there would say they
-//! belong to the Connection, which is exactly the misreading the third gating
-//! shape exists to prevent: Modes and Config Options are *data on a Session
-//! setup response*, not capabilities, and they describe the one Session that is
-//! open. A Mode is also what a user sets immediately before prompting, so the
-//! rail remains next to the prompt whose answer it changes.
-//!
-//! **Each row names the method that would change it.** A mode row goes out as
-//! `session/set_mode` and a config option row as `session/set_config_option`, so
-//! which method a control drives is readable without going to the trace — and
-//! where an agent published the same setting both ways, **both rows appear**,
-//! because a duplicated control is a fact about that agent rather than a mess to
-//! tidy away.
-//!
-//! **The affordance is gated on presence of the data and on nothing else.** An
-//! agent that published no modes gets no mode row at all, so that absence reads
-//! as the agent's answer rather than as an empty widget. What is gated is core's
-//! answer ([`SessionSettings`](acp_inspector_core::SessionSettings)); this file
-//! renders it.
-//!
-//! **Both rows are driven, using the native control suited to their values.** A
-//! compact pair remains directly exercisable as a segmented group, while three
-//! or more, long or grouped values use a native select and a boolean uses one
-//! native checkbox-backed toggle. All of them send the same setter payloads as
-//! the controls they replace, including during a live turn (§7.6).
-//!
-//! **The two kinds write different value shapes, and the control that knows the
-//! kind is what decides which.** A select's write carries a bare value id, a
-//! boolean's carries the boolean under a `type` discriminator — the
-//! discriminator describes the shape of a *value* rather than the kind of an
-//! option — and a boolean option is on the wire at all only because this client
-//! claimed the capability that lets an agent publish one (§7.3).
-//!
-//! **Nothing is applied optimistically, so the row never moves on its own.** What
-//! a mode row shows is the mode the *agent* last stated, and what a set produces
-//! is a sentence beside it: acknowledged and not restated, where the agent
-//! answered and said nothing more, or the refusal it answered with. Both are
-//! core's answer ([`ModeChange`](acp_inspector_core::ModeChange)) — displaying the
-//! requested mode would be this window stating a configuration its agent never
-//! claimed, and displaying nothing would read as a broken control.
-//!
-//! **A config option row moves only because the agent moved it**, which is the
-//! same rule reached from the other side: `session/set_config_option` answers
-//! with the complete replacement option set, so what these rows show is the list
-//! core was handed. Nothing here merges an answer into what was on screen. What
-//! is left to say is a refusal ([`ConfigRefusal`](acp_inspector_core::ConfigRefusal)),
-//! said under the row it is about — or beside the surface, where the agent's own
-//! answer has since stopped publishing the option it was about.
-//!
-//! **And it says what it is**: a decoded view. The schema skips invalid entries
-//! when it deserializes an option list, so a malformed or future-shaped option
-//! can vanish before core ever sees it. The raw-first rule is not weakened — the
-//! frame is in the trace, complete (§8) — but a surface that under-reported
-//! without saying so would imply a completeness the typed layer cannot deliver.
+//! - Modes and Config Options are data on the session setup response, not
+//!   capabilities, so they sit in the rail's Session tab. Each row names the
+//!   method that would change it; a setting published both ways appears twice.
+//! - Gated on the data's presence only: an agent that published no modes gets
+//!   no mode row, and the absence is said as its answer.
+//! - Nothing is applied optimistically. A mode row shows the mode the agent
+//!   last stated, with what became of a set beside it ([`ModeChange`]); config
+//!   option rows show the replacement set the agent answered with, and a
+//!   refusal ([`ConfigRefusal`]) is said under its row or beside the surface.
+//! - A select writes a bare value id and a boolean writes a `type`-tagged
+//!   boolean, so the control that knows the kind builds the value.
+//! - It is a decoded view: the schema skips invalid option entries, so the
+//!   surface says so; the frame is complete in the trace (§8).
 
 use acp_inspector_core::{ConfigRefusal, ModeChange, v1};
 use dioxus::prelude::*;
 
 use crate::update::current_value;
 
-/// A value the user picked for a config option: the option, and the value.
-///
-/// Both, because `session/set_config_option` names both and a value means
-/// nothing without the option it belongs to — two agents may well offer a value
-/// called `default`.
-///
-/// **The value carries its own shape.** A select's is a value id and a
-/// boolean's is a boolean, and which one goes out is decided where the control
-/// is drawn — by the kind of the option the user clicked — rather than by
-/// anything downstream reading the option back to find out. The schema puts the
-/// `type` discriminator on the wire for the one and leaves it off the other.
+/// A value the user picked for a config option, and the option it belongs to.
+/// The value's shape (select id or boolean) is decided where the control is
+/// drawn.
 #[derive(Clone, PartialEq)]
 pub struct Choice {
     pub option: v1::SessionConfigId,
@@ -83,18 +32,14 @@ pub struct Choice {
 /// The live Session's modes and Config Options, in the right details rail.
 #[component]
 pub fn SessionSettings(
-    /// What core made of the session setup response, and of everything the
-    /// agent has said about its settings since — including what became of the
-    /// last mode this window asked for.
+    /// Core's settings for the session, including what became of the last
+    /// mode set.
     settings: acp_inspector_core::SessionSettings,
     /// Changes whenever a Session or Connection replaces the one these
     /// controls belong to, so unsubmitted native-select choices do not leak.
     settings_epoch: u64,
-    /// Whether the agent that published all this is still there. The settings
-    /// outlive it on purpose (§5), so the surface goes on describing a session
-    /// whose agent has gone — but a set needs somebody to answer it, and a
-    /// control that cannot do what it says is worse than one that says it
-    /// cannot.
+    /// Whether the agent is still there. The settings outlive it (§5), but a
+    /// set needs somebody to answer, so the controls say they are unavailable.
     connected: bool,
     /// Whether a `session/set_mode` call is waiting for its answer.
     changing_mode: bool,
@@ -102,8 +47,7 @@ pub fn SessionSettings(
     /// setter has one pending slot, so every Config Option control yields until
     /// that answer arrives while the named row says what is loading.
     setting_option: Option<v1::SessionConfigId>,
-    /// A mode the user picked, on its way to `session/set_mode`. The id and
-    /// nothing else: that is the whole of what the call carries.
+    /// A mode the user picked, on its way to `session/set_mode`.
     on_set_mode: EventHandler<v1::SessionModeId>,
     /// A value the user picked for a config option, on its way to
     /// `session/set_config_option`.
@@ -112,12 +56,8 @@ pub fn SessionSettings(
     let modes = settings.modes.as_ref();
     let options = settings.config_options.as_deref().unwrap_or_default();
     let count = rows(&settings);
-    // Where a config option refusal goes, decided once: under the row it names,
-    // and beside the surface where there is no such row. An agent's answer is
-    // the complete replacement set, so it is entitled to stop publishing the
-    // very option a set was refused for — and a refusal drawn only under a row
-    // it matched would vanish with the row, which would be the window keeping
-    // the secret this surface exists to tell.
+    // A refusal goes under the row it names, or beside the surface if the
+    // agent's replacement set dropped that option, so it never vanishes.
     let refusal = settings.config_refusal.as_ref();
     let refused_row = refusal.and_then(|refusal| {
         options
@@ -128,12 +68,8 @@ pub fn SessionSettings(
     rsx! {
         section { class: "rail-group settings", "data-slot": "session-settings",
             if count == 0 {
-                // An absence that reads as the agent's answer (§7.6). Said
-                // rather than drawn as an empty control, because a reader
-                // looking at nothing has to be able to tell "this agent
-                // published none" from "this tool has not got round to it" —
-                // and the two ways of publishing none are two different answers
-                // an agent gave, so they are two different sentences.
+                // The absence is said as the agent's answer (§7.6); an empty
+                // list and no list are different answers, so different sentences.
                 p { class: "alert", "data-slot": "settings-notice", role: "status",
                     if settings.is_empty() {
                         "This agent published no modes and no config options for this session — neither "
@@ -149,12 +85,8 @@ pub fn SessionSettings(
                 }
             }
 
-            // The modes, as the drawing draws them: one full-width row per mode,
-            // the id the wire carries at the near edge and the name the agent
-            // gave it at the far one, with the current one bounded in the
-            // accent. Every mode is a control, including the one the session is
-            // already in: what an agent does with a set to the mode it is
-            // already in is a thing to find out (§7.6).
+            // Every mode is a control, including the current one: what an agent
+            // does with a set to its current mode is worth finding out (§7.6).
             if let Some(modes) = modes {
                 div {
                     class: "rail-group",
@@ -164,34 +96,26 @@ pub fn SessionSettings(
                         span { class: "eyebrow", "Mode" }
                         span { class: "setting-note", "{v1::AGENT_METHOD_NAMES.session_set_mode}" }
                     }
-                    // Which mode the session is in is the bounded row, and it
-                    // is said in words only where there is no such row: an
-                    // agent may state a mode it never offered, and a surface
-                    // whose whole account of the current mode was a mark on one
-                    // of the offered values would draw that session as being in
-                    // no mode at all.
+                    // Said in words only where no offered row matches: an agent
+                    // may state a mode it never offered.
                     if !modes.available_modes.iter().any(|mode| mode.id == modes.current_mode_id) {
                         {setting_current(Some((modes.current_mode_id.to_string(), false)), None)}
                     }
                     {mode_values(modes, settings_epoch, connected && !changing_mode, on_set_mode)}
                     if changing_mode {
                         p { class: "hint", "data-slot": "setting-loading", role: "status",
-                            "Changing Mode with "
+                            "Changing mode with "
                             code { "{v1::AGENT_METHOD_NAMES.session_set_mode}" }
                             "..."
                         }
                     }
-                    // What became of the last set, where there is anything left
-                    // to say about it — under the rows it is about.
                     if let Some(change) = settings.mode_change.as_ref() {
                         {became_of(change)}
                     }
                 }
             }
 
-            // And one row per config option, whatever its id — an agent that
-            // also published one called `mode` published two settings, and this
-            // is where both of them are.
+            // One row per config option, whatever its id, even `mode`.
             if !options.is_empty() {
                 div { class: "rail-group",
                     div { class: "rail-head",
@@ -228,8 +152,6 @@ pub fn SessionSettings(
                                     "..."
                                 }
                             }
-                            // What the agent said about the last set, under the
-                            // row it was about.
                             if let Some(refusal) = refusal.filter(|_| refused_row == Some(row)) {
                                 {declined(refusal)}
                             }
@@ -239,13 +161,8 @@ pub fn SessionSettings(
                 }
             }
 
-            // **Why every control on the surface is unavailable, said once.**
-            // The settings outlive the agent that published them on purpose
-            // (§5), so this rail goes on describing a session whose agent has
-            // gone — and until this line existed the whole of what it said
-            // about that was a row of controls nobody could press. The Agent
-            // rail answers the same question with the same sentence in the same
-            // place; only where there is a control it is about.
+            // Why every control is unavailable, said once, and only where there
+            // is a control. The settings outlive the agent (§5).
             if !connected && count > 0 {
                 p {
                     class: "hint availability",
@@ -255,37 +172,27 @@ pub fn SessionSettings(
                 }
             }
 
-            // The mode row that is not there, and what the agent did to make it
-            // worth explaining rather than merely absent (§7.6).
             if let Some(mode) = settings.unoffered_mode.as_ref() {
                 {unoffered(mode)}
             }
 
-            // And the one that names no row of its own, beside the surface it
-            // was refused at.
+            // A refusal whose option is no longer published.
             if let Some(refusal) = refusal.filter(|_| refused_row.is_none()) {
                 {declined(refusal)}
             }
 
-            // Said on the surface rather than in a document nobody reading this
-            // screen has open (§7.6).
-            // **Not a notice.** It reports nothing an agent did — it says what
-            // kind of view this is — and drawn in the chrome the agent's own
-            // answers take it was a second identical card under the first, which
-            // on an empty surface is two boxes at the top of an empty rail with
-            // nothing saying which of them is the finding.
-            p { class: "hint", "data-slot": "decoded",
-                "Decoded view. Complete frames remain in Trace."
+            // A hint, not a notice: it says what kind of view this is rather
+            // than reporting anything the agent did (§7.6).
+            if count > 0 {
+                p { class: "hint", "data-slot": "decoded",
+                    "Changes are sent to the agent immediately."
+                }
             }
         }
     }
 }
 
-/// How many settings the agent published, which is how many rows there are.
-///
-/// The modes are one setting and not one per mode: a set of values a single
-/// call chooses between is one control, and the count on the header is a count
-/// of controls.
+/// How many settings the agent published. The modes count as one setting.
 fn rows(settings: &acp_inspector_core::SessionSettings) -> usize {
     usize::from(settings.modes.is_some())
         + settings
@@ -294,20 +201,8 @@ fn rows(settings: &acp_inspector_core::SessionSettings) -> usize {
             .map_or(0, |options| options.len())
 }
 
-/// What the setting is set to, and the id the agent published it under.
-///
-/// **The method moved up to the name and the id came down here**, because the
-/// two facts that were sharing this line could not both fit on it. A method is
-/// twenty-five characters at the rail's width and `Current: verbose` is most of
-/// what is left, so the method wrapped to a line of its own the moment a value
-/// ran past six characters — the line it was put here to save, taken back by
-/// the data. The name is the short half of the row and has room for it.
-///
-/// It still costs no line and it is still on the row it drives, which is what
-/// §9 asks: which method a control drives is readable without going to the
-/// trace. What it no longer is is *adjacent* to the control, and that is the
-/// price of a layout that does not rearrange itself around the length of an
-/// agent's value.
+/// What the setting is set to, and the id the agent published it under. The
+/// method the row drives is on the name line, where it fits at rail width.
 fn setting_current(current: Option<(String, bool)>, identifier: Option<String>) -> Element {
     rsx! {
         span { class: "setting-note", "data-slot": "current",
@@ -340,25 +235,13 @@ fn stated_current(kind: &v1::SessionConfigKind) -> Option<(String, bool)> {
     Some((current, offered))
 }
 
-/// One mode in a short segmented group, as the button that would set it.
+/// One mode as the button that would set it, around the same markup as a
+/// read-only value ([`stated`]).
 ///
-/// **Every mode is one, including the one the session is already in.** An
-/// affordance is gated on the advertisement and on nothing else (§7.6): what an
-/// agent does with a set to the mode it is already in is a thing to find out,
-/// and a window that withheld the control would be answering it on the agent's
-/// behalf. The same goes for a turn in flight, which nothing here knows about.
-///
-/// It says what a read-only value says, in the same words and the same markup
-/// ([`stated`]); what it adds is the button around them.
-///
-/// **`connected` is not a gate on the agent's state, it is whether there is an
-/// agent.** The settings outlive the connection that filled them (§5), so this
-/// surface goes on describing a session whose agent has left — and a control
-/// that cannot do what it says is worse than one that says it cannot, which is
-/// the rule the agent panel's buttons already follow. It is not the whole of
-/// saying so: an agent that leaves *between* the render and the click is
-/// answered by core, which refuses the set with the news that it has gone
-/// ([`ModeChange::Refused`]), and this surface reports that beside the row.
+/// Every mode is a control, including the current one, even mid-turn (§7.6).
+/// `connected` says whether there is an agent to ask, not what state it is in;
+/// an agent that leaves between render and click is refused by core
+/// ([`ModeChange::Refused`]).
 fn mode_segment(
     mode: &v1::SessionMode,
     current: bool,
@@ -367,12 +250,17 @@ fn mode_segment(
 ) -> Element {
     let id = mode.id.to_string();
     let picked = mode.id.clone();
+    // The name once; the id is a caption only where it differs, and always
+    // the tooltip.
+    let distinct = !id.eq_ignore_ascii_case(mode.name.trim());
 
     rsx! {
         button {
             key: "{id}",
             class: "mode-row",
             r#type: "button",
+            title: "{id}",
+            "data-mode": "{id}",
             "data-current": "{current}",
             aria_pressed: current,
             aria_disabled: (!connected).then_some("true"),
@@ -382,8 +270,10 @@ fn mode_segment(
                     on_set_mode.call(picked.clone());
                 }
             },
-            span { class: "mode-id", "{id}" }
             span { class: "mode-name", "{mode.name}" }
+            if distinct {
+                span { class: "mode-id", "{id}" }
+            }
             if current {
                 span { class: "sr-only", " — current" }
             }
@@ -410,15 +300,9 @@ fn mode_values(
     }
 }
 
-/// What became of the last `session/set_mode`, said beside the row it was about
-/// (§7.6).
-///
-/// **Two sentences, because they are two different pieces of news.** A refusal
-/// is the agent saying no, and reads as the failure it is. An acknowledgement
-/// nobody restated is *permitted* silence — the specification obliges no agent
-/// to announce a mode it just set — so it reads as a plain statement of what is
-/// and is not known, which is the shape the previous ring used to tell a
-/// resume-only user that an empty timeline was correct rather than a bug.
+/// What became of the last `session/set_mode` (§7.6): a refusal reads as a
+/// failure; an acknowledgement nobody restated is permitted silence, so it is
+/// said plainly.
 fn became_of(change: &ModeChange) -> Element {
     match change {
         ModeChange::Acknowledged(mode) => rsx! {
@@ -437,42 +321,20 @@ fn became_of(change: &ModeChange) -> Element {
                 " failed: {error}"
             }
         },
-        // `ModeChange` is non-exhaustive. An outcome this window has not heard
-        // of is still an outcome, and saying nothing about it would leave a
-        // control that was pressed looking like one that was not.
+        // `ModeChange` is non-exhaustive; an unknown outcome is still said.
         _ => rsx! {
             p { class: "alert", "data-slot": "setting-result", role: "status", "An outcome this window has no rendering for." }
         },
     }
 }
 
-/// A mode the agent stated for this session while it was opening, where the
-/// answer that opened it published no modes at all (§7.6).
+/// A mode the agent stated while the session opened, where the answer that
+/// opened it published no modes (§7.6). The answer wins, so there is no mode
+/// row; this says what crossed, beside the surface.
 ///
-/// **Said because the absence has an explanation, and the explanation is about
-/// the agent.** A session with no mode row is ordinarily the agent answering
-/// that it published none, which the surface leaves to read as exactly that.
-/// This is the one case where something else happened: `session/load` MUST
-/// replay before it answers, so the agent announced a mode change and then
-/// answered without offering the modes it changed between. The answer wins —
-/// no advertisement, no affordance — and an agent author would want to know
-/// they had done that.
-///
-/// **Beside the surface rather than under a row**, because the row it is about
-/// is the one that is not there. It says what the agent did in the words the
-/// wire used, and points at where the rest is: the announcement is on the
-/// timeline, and the frames are in the trace (§8).
-///
-/// **It says what crossed and stops there.** A `session/load` MUST replay
-/// before it answers, which is why this case exists and is worth naming — but
-/// the same two frames in the same order can arrive under a `session/resume`,
-/// which MUST NOT replay at all, and calling that a replay would be this window
-/// reading an intention out of an ordering. What is claimed is what the frames
-/// decide: the agent stated a mode, and then answered without offering any.
-///
-/// Not a Conformance Annotation and not written as one: no MUST obliges an
-/// agent to publish the modes it announces, so this is a fact about the traffic
-/// rather than a rule about it.
+/// It does not call it a replay: the same frames can arrive under
+/// `session/resume`, which must not replay. Not a Conformance Annotation,
+/// since nothing obliges an agent to publish the modes it announces.
 fn unoffered(mode: &v1::SessionModeId) -> Element {
     rsx! {
         p { class: "alert", "data-slot": "settings-notice", role: "status",
@@ -489,18 +351,9 @@ fn unoffered(mode: &v1::SessionModeId) -> Element {
     }
 }
 
-/// What became of the last `session/set_config_option` (§7.6).
-///
-/// One sentence, where the mode row has two, because there is only one thing
-/// left to say: a set that worked answered with the whole option set, so what
-/// it did is the row itself. A set that did not is this.
-///
-/// **It says the set failed and stops there**, which is the whole of what this
-/// window knows: the agent's refusal, an agent that had gone, or an answer core
-/// could not read as v1 are three different sentences in the error itself, and
-/// each of them is a set whose option set never arrived. What the agent did
-/// with it — one of those three cannot say — is a question for the trace, which
-/// has the frame.
+/// What became of the last `session/set_config_option` (§7.6): only a failure
+/// is said, since a success is the new option set itself. The error says which
+/// failure it was.
 fn declined(refusal: &ConfigRefusal) -> Element {
     rsx! {
         p { class: "alert alert-error", "data-slot": "setting-result", role: "alert",
@@ -517,19 +370,9 @@ fn declined(refusal: &ConfigRefusal) -> Element {
     }
 }
 
-/// The value a set asked for, as the wire carried it — or `None` for a value
-/// shape this window cannot name one out of.
-///
-/// **The ask, not the option's current kind.** What a refusal is about is the
-/// value that went out, and the two shapes read differently on the wire: a
-/// select's is a quoted value id, a boolean's is an unquoted literal. Saying
-/// either as the other would be this window reporting a frame that never
-/// crossed.
-///
-/// `SessionConfigOptionValue` is non-exhaustive, and a shape with no rendering
-/// gets no guess: naming a value out of a shape this window just said it does
-/// not know would be inventing one, which is [`current_value`]'s rule for the
-/// same reason.
+/// The value a set asked for, as the wire carried it: a quoted value id or an
+/// unquoted boolean. `None` for a shape this window cannot name, since
+/// `SessionConfigOptionValue` is non-exhaustive (as [`current_value`]).
 fn asked_for(value: &v1::SessionConfigOptionValue) -> Option<String> {
     match value {
         v1::SessionConfigOptionValue::ValueId { value } => Some(value.to_string()),
@@ -538,18 +381,8 @@ fn asked_for(value: &v1::SessionConfigOptionValue) -> Option<String> {
     }
 }
 
-/// What a config option could be set to, and — where this window can drive it —
-/// the controls that would set it.
-///
-/// **Both settable kinds are driven, and each writes its own value shape.** A
-/// select's write carries a bare value id and a boolean's carries the boolean
-/// under a `type` discriminator; the discriminator describes the shape of a
-/// *value* rather than the kind of an option, which is why the control that
-/// knows the kind is the one that builds the value.
-///
-/// Select values retain their published names and ids in either a segmented
-/// group or native select. A boolean is one native toggle whose checked state is
-/// the Agent's stated current value.
+/// What a config option could be set to, and the controls that would set it.
+/// A select writes a bare value id; a boolean writes a `type`-tagged boolean.
 fn values(
     option: &v1::SessionConfigOption,
     description_id: Option<String>,
@@ -567,9 +400,7 @@ fn values(
             connected,
             on_set_config_option,
         ),
-        // The value as the wire has it, because that is what the option is set
-        // to: a boolean rendered as a word of this window's choosing would be a
-        // paraphrase of a literal.
+        // The value as the wire has it, not a paraphrase.
         v1::SessionConfigKind::Boolean(boolean) => switchable(
             &option.id,
             &option.name,
@@ -578,33 +409,18 @@ fn values(
             connected,
             on_set_config_option,
         ),
-        // `SessionConfigKind` is non-exhaustive: an option shape this window has
-        // no rendering for is still one the agent published, and a row with no
-        // values is better than an option quietly missing from the list.
-        //
-        // **A forward-compatibility arm, and nothing reaches it today.** v1's
-        // kind is internally tagged with exactly `select` and `boolean` and
-        // every option list is deserialized with the item-skipping combinator,
-        // so an option whose kind is a *third* string never arrives here as an
-        // unknown kind — it vanishes from the list before core sees it, which
-        // is driven in `crates/core/tests/session_settings.rs` and is exactly the
-        // under-reporting the decoded-view sentence below names. The day the
-        // schema grows a variant this window does not drive, the option is
-        // still on the list and still read-only.
+        // `SessionConfigKind` is non-exhaustive: a kind with no rendering is
+        // still listed, read-only. Unreachable today, since v1 skips unknown
+        // kinds when decoding (`crates/core/tests/session_settings.rs`).
         _ => rsx! {
             p { class: "alert unnamed", "An option kind this window has no rendering for." }
         },
     }
 }
 
-/// A boolean option as the chip the drawing gives it: the value the agent
-/// stated, and pressing it asks for the inverse.
-///
-/// **A chip and not a toggle.** What is drawn is the *agent's* stated value
-/// (§7.6) — nothing is applied optimistically — and a switch that slid under
-/// the pointer before the agent answered would be this window stating a
-/// configuration its agent never claimed. `aria-pressed` carries the value to
-/// anyone who cannot see the chip.
+/// A boolean option as a chip showing the agent's stated value; pressing it
+/// asks for the inverse. A chip, not a switch, because nothing is applied
+/// optimistically (§7.6). `aria-pressed` carries the value.
 fn switchable(
     option: &v1::SessionConfigId,
     name: &str,
@@ -641,9 +457,8 @@ fn switchable(
     }
 }
 
-/// The values a select offers: the agent's own list, as the chips the drawing
-/// draws them — or a native select where the agent *grouped* them, because a
-/// group is a structure a row of chips cannot say.
+/// The values a select offers, as chips — or a native select where the agent
+/// grouped them, since chips cannot show groups.
 fn choices(
     option: &v1::SessionConfigId,
     name: &str,
@@ -689,14 +504,9 @@ fn choices(
     }
 }
 
-/// The values a *grouped* select offers, as the platform's own list.
-///
-/// **The one shape a row of chips cannot say.** An agent that grouped its
-/// values said something about them, and flattening the groups into one row
-/// would be this window throwing that away; a native `<optgroup>` keeps it,
-/// with the keyboard behaviour and the popup the platform already has.
-/// Choosing prepares the ask and *Set* sends it, including the current value,
-/// repeatedly (§7.6).
+/// The values a grouped select offers, as a native select with `<optgroup>`s.
+/// Choosing prepares the ask and *Set* sends it, even for the current value
+/// (§7.6).
 #[component]
 fn ConfigSelect(
     option: v1::SessionConfigId,
@@ -857,11 +667,8 @@ fn config_target_name(name: &str, id: &v1::SessionConfigId) -> String {
     }
 }
 
-/// One value the agent published, as the chip that would set it.
-///
-/// [`mode_segment`]'s rules apply here too: every value is a control, including
-/// the one the session is already set to, and `connected` says whether there is
-/// anybody to ask rather than judging the agent's state.
+/// One value the agent published, as the chip that would set it. As with
+/// [`mode_segment`], the current value is a control too.
 fn choice_segment(
     option: &v1::SessionConfigId,
     value: &v1::SessionConfigSelectOption,
@@ -903,13 +710,9 @@ mod tests {
 
     use super::*;
 
-    /// What a row is read by on screen — what it *is*, never how it is painted.
-    ///
-    /// One setting the agent published, whichever half of the surface it came
-    /// from.
+    /// One setting row, either half of the surface.
     const SETTING: &str = r#"data-slot="setting""#;
-    /// And the one of them the agent says the session is at, which is a fact
-    /// about the value rather than a class it is drawn in.
+    /// The value the agent says the session is at.
     const CURRENT: &str = r#"data-current="true""#;
 
     fn has_natively_disabled_control(html: &str) -> bool {
@@ -923,8 +726,7 @@ mod tests {
         })
     }
 
-    /// The two modes and the one select option a conformant agent publishes,
-    /// which is what the upstream test agent sends.
+    /// Two modes and one select option, as the upstream test agent sends.
     fn modes() -> v1::SessionModeState {
         v1::SessionModeState::new(
             "chat",
@@ -1003,8 +805,7 @@ mod tests {
         )
     }
 
-    /// A config option whose id is literally `mode`, which is what a real agent
-    /// publishes beside its modes.
+    /// A config option whose id is literally `mode`, beside the modes.
     fn mode_option() -> v1::SessionConfigOption {
         v1::SessionConfigOption::select(
             "mode",
@@ -1027,9 +828,7 @@ mod tests {
         settings
     }
 
-    /// The surface itself, rendered — the screen and not a value on the way to
-    /// it. With an agent on the other end, which is the ordinary case; the one
-    /// that has gone is [`shown_without_an_agent`].
+    /// The surface, rendered, with an agent connected.
     fn shown(settings: acp_inspector_core::SessionSettings) -> String {
         rendered(settings, true)
     }
@@ -1041,11 +840,6 @@ mod tests {
 
     #[test]
     fn a_surface_whose_agent_has_gone_says_why_its_controls_do_nothing() {
-        // The settings outlive the agent that published them on purpose (§5),
-        // so this rail goes on describing a session whose agent has left — and
-        // the whole of what it said about that was a row of controls nobody
-        // could press. The Agent rail answers the same question with the same
-        // sentence, and this is that sentence in the same place.
         let gone = shown_without_an_agent(published(Some(modes()), Some(vec![verbosity()])));
         assert!(
             gone.contains(r#"data-slot="availability""#)
@@ -1059,10 +853,7 @@ mod tests {
             "a live agent's controls need no excuse: {live}"
         );
 
-        // And it is drawn only where there is a control it is about: a session
-        // whose agent published nothing has nothing on this rail that a
-        // connection would make pressable, and the sentence would be describing
-        // an absence that is the agent's rather than the connection's.
+        // Only where there is a control it is about.
         let empty = shown_without_an_agent(acp_inspector_core::SessionSettings::default());
         assert!(!empty.contains(r#"data-slot="availability""#), "{empty}");
     }
@@ -1158,16 +949,14 @@ mod tests {
         dioxus_ssr::render(&dom)
     }
 
-    /// What the agent last said about the mode, and what became of the last set
-    /// — the two halves of a mode row that has been driven.
+    /// The agent's stated mode and what became of the last set.
     fn asked(change: ModeChange) -> acp_inspector_core::SessionSettings {
         let mut settings = published(Some(modes()), None);
         settings.mode_change = Some(change);
         settings
     }
 
-    /// The one option the agent published, and a set it refused — of that
-    /// option or of one it never published at all.
+    /// One published option, and a refused set of it or of an unpublished one.
     fn refused(option: v1::SessionConfigId, value: &str) -> acp_inspector_core::SessionSettings {
         let mut settings = published(None, Some(vec![verbosity()]));
         settings.config_refusal = Some(ConfigRefusal {
@@ -1183,11 +972,7 @@ mod tests {
 
     #[test]
     fn every_mode_the_agent_published_is_a_full_width_row_that_would_set_it() {
-        // The drawing gives the modes the rail's whole width, one row each, the
-        // id the set carries at the near edge and the name the agent gave it at
-        // the far one. However many there are: a mode is what a reader sets
-        // immediately before prompting, and a list of three that hid itself
-        // behind a popup would cost that reader the press this rail exists for.
+        // Every mode is a visible row, however many: no popup before prompting.
         let html = shown(published(Some(modes()), None));
 
         assert_eq!(
@@ -1202,17 +987,29 @@ mod tests {
             "the modes form one keyboard-accessible group: {html}"
         );
         for mode in ["chat", "plan"] {
-            let named = format!(r#"class="mode-id">{mode}<"#);
             assert!(
-                html.contains(&named),
+                html.contains(&format!(r#"title="{mode}""#)),
                 "the id is on the row — it is what the set sends, and what a reader checks this \
                  screen against the trace by: {html}"
             );
         }
         assert!(
             html.contains(r#"class="mode-name">Chat<"#)
-                && html.contains(r#"class="mode-name">Plan<"#),
-            "and the agent's own name for it is beside the id: {html}"
+                && html.contains(r#"class="mode-name">Plan<"#)
+                && !html.contains(r#"class="mode-id""#),
+            "a name that is its id is said once: {html}"
+        );
+        let renamed = shown(published(
+            Some(v1::SessionModeState::new(
+                "code",
+                vec![v1::SessionMode::new("code", "Write code")],
+            )),
+            None,
+        ));
+        assert!(
+            renamed.contains(r#"class="mode-name">Write code<"#)
+                && renamed.contains(r#"class="mode-id">code<"#),
+            "and an id that says something else is a caption: {renamed}"
         );
 
         let many = shown(published(
@@ -1266,9 +1063,7 @@ mod tests {
 
     #[test]
     fn a_boolean_option_is_one_accessibly_named_chip_showing_the_stated_value() {
-        // A chip and not a switch: nothing is applied optimistically (§7.6), and
-        // a toggle that slid under the pointer before the agent answered would
-        // be this window stating a configuration its agent never claimed.
+        // A chip, not a switch: nothing is applied optimistically (§7.6).
         let html = shown(published(
             None,
             Some(vec![v1::SessionConfigOption::boolean("fast", "Fast", true)]),
@@ -1297,10 +1092,7 @@ mod tests {
 
     #[test]
     fn only_a_grouped_select_becomes_the_platforms_own_list() {
-        // A group is the one shape a row of chips cannot say, so it is the one
-        // shape that goes to a native select: an agent that grouped its values
-        // said something about them, and flattening the groups would be this
-        // window throwing that away.
+        // Only a grouped select goes to a native select.
         let numerous = shown(published(None, Some(vec![detailed_output()])));
         assert_eq!(
             numerous.matches(r#"class="chip""#).count(),
@@ -1390,7 +1182,7 @@ mod tests {
         let html = rendered_with_work(settings, true, true, Some(v1::SessionConfigId::new("fast")));
 
         assert!(
-            html.contains("Changing Mode with")
+            html.contains("Changing mode with")
                 && html.contains("Changing Fast with")
                 && html.matches(r#"aria-busy=true"#).count() == 2,
             "each pending setter is stated on the row it belongs to: {html}"
@@ -1430,9 +1222,7 @@ mod tests {
 
     #[test]
     fn a_refused_boolean_set_says_the_value_it_asked_for_as_the_wire_carried_it() {
-        // A rejected boolean set reads as a rejected select set does (§7.6),
-        // and what it names is the ask: a boolean, unquoted, rather than a
-        // value id the write never carried.
+        // A rejected boolean set names the ask: an unquoted boolean.
         let mut settings = published(
             None,
             Some(vec![v1::SessionConfigOption::boolean("fast", "Fast", true)]),
@@ -1479,9 +1269,7 @@ mod tests {
 
     #[test]
     fn a_refused_config_option_says_what_the_agent_said_beside_the_row() {
-        // A failed setter costs the attempt and nothing else (§7.6): the values
-        // are where the agent's last statement left them, and the refusal is
-        // beside the surface rather than only in the trace.
+        // A failed set leaves the values as the agent last stated them (§7.6).
         let html = shown(refused(v1::SessionConfigId::new("verbosity"), "shouting"));
 
         assert!(
@@ -1500,10 +1288,7 @@ mod tests {
 
     #[test]
     fn a_refusal_about_an_option_the_agent_no_longer_publishes_is_still_said() {
-        // The answer to a set is the *complete* option set, so an agent may
-        // stop publishing the very option that was refused. A refusal drawn
-        // only under a row it matched would vanish with it, which would be the
-        // window keeping the secret this surface exists to tell.
+        // The replacement set may drop the refused option; the refusal stays.
         let html = shown(refused(v1::SessionConfigId::new("colour"), "green"));
 
         assert!(
@@ -1514,10 +1299,6 @@ mod tests {
 
     #[test]
     fn the_controls_are_dead_when_the_agent_that_published_them_has_gone() {
-        // The settings outlive the connection that filled them, so the surface
-        // keeps describing the session — but a control that cannot do what it
-        // says is worse than one that says it cannot, which is the rule the
-        // agent panel's buttons already follow.
         let html = shown_without_an_agent(published(Some(modes()), None));
 
         assert_eq!(
@@ -1539,11 +1320,8 @@ mod tests {
 
     #[test]
     fn a_set_the_agent_never_restated_reads_as_acknowledged_and_unconfirmed() {
-        // The middle case of the ring (§7.6). The row keeps showing the mode
-        // the *agent* stated, and the sentence beside it says what happened to
-        // the ask — because showing the requested mode would be the inspector
-        // stating a configuration its agent never claimed, and showing nothing
-        // would read as a broken control.
+        // The row keeps the agent's stated mode; the sentence says what became
+        // of the ask (§7.6).
         let html = shown(asked(ModeChange::Acknowledged(v1::SessionModeId::new(
             "plan",
         ))));
@@ -1564,9 +1342,7 @@ mod tests {
 
     #[test]
     fn a_refused_set_says_what_the_agent_said_beside_the_row() {
-        // A failed setter costs the attempt and nothing else (§7.6): the row is
-        // where the agent's last statement left it, and the refusal is beside
-        // the surface rather than only in the trace.
+        // A failed set leaves the row as the agent last stated it (§7.6).
         let html = shown(asked(ModeChange::Refused {
             mode: v1::SessionModeId::new("architect"),
             error: CallError::Rejected(v1::Error::new(
@@ -1595,9 +1371,6 @@ mod tests {
 
     #[test]
     fn the_modes_the_agent_published_are_shown_with_the_one_it_is_in() {
-        // What the ring is for: a user could watch their agent announce a mode
-        // change and could not ask what mode the session was in, or what modes
-        // there were (§7.6).
         let html = shown(published(Some(modes()), None));
 
         assert!(html.contains("Chat") && html.contains("Plan"), "{html}");
@@ -1641,11 +1414,7 @@ mod tests {
 
     #[test]
     fn a_mode_the_agent_never_offered_is_still_the_mode_it_says_it_is_in() {
-        // The two halves can disagree, and the surface reports the
-        // disagreement rather than papering over it: an announcement names a
-        // mode, and nothing obliges an agent to have offered the one it named.
-        // A row that only marked the matching value would show a session with
-        // no mode set at all.
+        // An agent may announce a mode it never offered; it is still said.
         let modes = v1::SessionModeState::new(
             "architect",
             vec![
@@ -1667,9 +1436,7 @@ mod tests {
 
     #[test]
     fn a_setting_published_as_both_a_mode_and_a_config_option_is_two_rows() {
-        // A duplicated control is a fact about that agent and not a mess to tidy
-        // away (§7.6): an agent author who published the same setting twice
-        // finds out by seeing it twice.
+        // A setting published both ways appears twice (§7.6).
         let html = shown(published(Some(modes()), Some(vec![mode_option()])));
 
         assert_eq!(
@@ -1685,8 +1452,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_published_no_modes_gets_no_mode_control() {
-        // Gated on the advertisement and on nothing else, so the absence reads
-        // as the agent's answer rather than as an empty widget (§7.6).
+        // No modes, no mode row (§7.6).
         let html = shown(published(None, Some(vec![verbosity()])));
 
         assert!(
@@ -1720,9 +1486,7 @@ mod tests {
 
     #[test]
     fn an_empty_option_list_reads_as_the_list_it_is_rather_than_as_an_empty_control() {
-        // A list with nothing in it is a different answer from no list at all,
-        // and both of them are the agent's (§7.6). Neither draws a control, and
-        // neither is left to be inferred from a surface with nothing on it.
+        // An empty list and no list are different answers, both said (§7.6).
         let html = shown(published(None, Some(vec![])));
 
         assert!(html.contains("empty"), "{html}");
@@ -1738,14 +1502,8 @@ mod tests {
 
     #[test]
     fn a_mode_the_answer_did_not_offer_is_no_control_and_is_said_on_the_surface() {
-        // The one case the ring's two rules collide in (§7.6). `session/load`
-        // MUST replay before it answers, so a mode the agent stated crosses
-        // ahead of the answer that says whether it offered any — and the answer
-        // wins, absolutely: no advertisement, no affordance. What is left to do
-        // is say what the agent did, because inferring a control from replayed
-        // traffic would be this window deciding on the agent's behalf what it
-        // supports, and an agent author would want to know they had published
-        // one and not the other.
+        // A mode stated before an answer that offered none: the answer wins (no
+        // control), and what the agent did is said (§7.6).
         let mut settings = published(None, Some(vec![verbosity()]));
         settings.unoffered_mode = Some(v1::SessionModeId::new("plan"));
         let html = shown(settings);
@@ -1770,9 +1528,6 @@ mod tests {
 
     #[test]
     fn a_session_that_published_nothing_but_replayed_a_mode_says_both() {
-        // Two absences and one of them has an explanation: the agent published
-        // nothing, which is its answer and says so — and it stated a mode
-        // anyway, which is the asymmetry worth seeing.
         let mut settings = acp_inspector_core::SessionSettings::default();
         settings.unoffered_mode = Some(v1::SessionModeId::new("plan"));
         let html = shown(settings);
@@ -1789,17 +1544,14 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_says_it_is_a_decoded_view_and_where_the_whole_record_is() {
-        // The limit is named rather than implied (§7.6): the schema skips
-        // invalid entries in an option list, so a surface that claimed
-        // completeness would be claiming something the typed layer cannot
-        // deliver.
+    fn the_surface_says_its_controls_act_at_once() {
+        // There is no Apply: every control here sends its call when pressed.
         let html = shown(published(Some(modes()), Some(vec![verbosity()])));
 
-        assert!(html.contains("Decoded view"), "{html}");
         assert!(
-            html.contains("Complete frames remain in Trace"),
-            "and where the complete record is: {html}"
+            html.contains("Changes are sent to the agent immediately."),
+            "{html}"
         );
+        assert!(!html.contains("Decoded view"), "{html}");
     }
 }

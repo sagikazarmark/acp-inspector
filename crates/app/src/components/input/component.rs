@@ -313,6 +313,47 @@ pub fn Input(
     }
 }
 
+// `GlobalAttributes` and `input` both define `alt`, `autofocus`, `height`, `spellcheck`,
+// `tabindex` and `width`, so naming one on `Input` would be ambiguous (E0034,
+// DioxusLabs/dioxus#5271). Inherent methods win method resolution and forward to the element's own
+// attribute, as `input { .. }` resolves it. Unused, they would warn in an app that installs this
+// Component. Remove once upstream resolves the conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F> InputPropsBuilder<F>
+where
+    Self: dioxus_elements::extensions::InputExtension,
+{
+    /// The `input` element's `alt` attribute.
+    pub fn alt(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::alt(self, value)
+    }
+
+    /// The `input` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::autofocus(self, value)
+    }
+
+    /// The `input` element's `height` attribute.
+    pub fn height(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::height(self, value)
+    }
+
+    /// The `input` element's `spellcheck` attribute.
+    pub fn spellcheck(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::spellcheck(self, value)
+    }
+
+    /// The `input` element's `tabindex` attribute.
+    pub fn tabindex(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::tabindex(self, value)
+    }
+
+    /// The `input` element's `width` attribute.
+    pub fn width(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::width(self, value)
+    }
+}
+
 /// The common Field composition for a native text input.
 ///
 /// This Composition sugar intentionally has no children. Use [`Field`] and its
@@ -404,5 +445,46 @@ pub fn InputField(
             }
             FieldError { appearance: error_appearance }
         }
+    }
+}
+
+// `GlobalAttributes` and `input` both define `alt`, `autofocus`, `height`, `spellcheck`,
+// `tabindex` and `width`, so naming one on `InputField` would be ambiguous (E0034,
+// DioxusLabs/dioxus#5271). Inherent methods win method resolution and forward to the element's own
+// attribute, as `input { .. }` resolves it. Unused, they would warn in an app that installs this
+// Component. Remove once upstream resolves the conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F> InputFieldPropsBuilder<F>
+where
+    Self: dioxus_elements::extensions::InputExtension,
+{
+    /// The `input` element's `alt` attribute.
+    pub fn alt(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::alt(self, value)
+    }
+
+    /// The `input` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::autofocus(self, value)
+    }
+
+    /// The `input` element's `height` attribute.
+    pub fn height(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::height(self, value)
+    }
+
+    /// The `input` element's `spellcheck` attribute.
+    pub fn spellcheck(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::spellcheck(self, value)
+    }
+
+    /// The `input` element's `tabindex` attribute.
+    pub fn tabindex(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::tabindex(self, value)
+    }
+
+    /// The `input` element's `width` attribute.
+    pub fn width(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::InputExtension::width(self, value)
     }
 }

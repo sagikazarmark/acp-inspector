@@ -2,12 +2,12 @@
 
 The inspector's vocabulary moves out of its architecture spec into a [`CONTEXT.md`](../../CONTEXT.md)
 of its own, beside the code it describes; its decisions get this directory; and a
-[`CONTEXT-MAP.md`](../../../../CONTEXT-MAP.md) at the repository root names the two contexts and
+`CONTEXT-MAP.md` at the host repository's root names the two contexts and
 points at each glossary. The host repository's own `CONTEXT.md` is **unchanged and gains nothing** —
 it is the chat library's glossary and stays exactly that.
 
 The trigger was a word that had started meaning three things at once. The session settings ring
-([#84](https://github.com/sagikazarmark/dioxus-chat.orig/issues/84)) makes *Capability* the Agent's
+(host #84) makes *Capability* the Agent's
 claim about itself, this client's claim about itself, and — by the temptation the ring had to name
 and refuse — what a Session carries on its setup response. *Mode* became both a first-class protocol
 concept and a Config Option category in the same paragraph. Neither collision was noticed while the
@@ -61,3 +61,8 @@ governs the code in front of them.
 - The map is the file the split will delete. When `phoenix/` leaves, the inspector's `CONTEXT.md`
   and this directory travel with it unchanged, the root returns to a single context, and the map has
   no second context left to name — which is the outcome it was written for, not a defect in it.
+
+---
+
+*`host #N` cites an issue in the repository the inspector began in, which is private; see the
+[architecture spec](../architecture.md#architecture-specification--acp-inspector).*

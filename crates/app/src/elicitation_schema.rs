@@ -1,19 +1,34 @@
 //! ACP's flat form profile adapted to a generic Draft 2020-12 engine (§7.8).
 
-use schemaform::{Dialect, FormDefinition};
+use schemaform::{AssertedFormat, Dialect, FormDefinition};
 use serde_json::{Map, Value};
+
+use std::collections::BTreeSet;
 
 pub struct Prepared {
     pub definition: Result<FormDefinition, String>,
     pub unrendered: Map<String, Value>,
+    /// The unrendered properties the agent listed as required. They are taken
+    /// out of the engine's `required` so it does not report what it cannot
+    /// draw, and the host still marks them.
+    pub required_unrendered: BTreeSet<String>,
+    /// Rendered boolean properties, so a finding about one can say that an
+    /// unchecked box is "not set" rather than `false`.
+    pub booleans: BTreeSet<String>,
 }
 
 pub fn prepare(raw: &str) -> Result<Prepared, String> {
     let mut schema = Value::Object(raw_content(raw)?);
+    // ACP's requested schema is always an object. An agent that leaves the
+    // root `type` out still means one, and the engine needs it said.
+    if schema.get("type").is_none() {
+        schema["type"] = Value::String("object".into());
+    }
     if schema.get("properties").is_none() {
         schema["properties"] = Value::Object(Map::new());
     }
     let mut unrendered = Map::new();
+    let mut booleans = BTreeSet::new();
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.retain(|name, property| {
             let known = property
@@ -31,8 +46,19 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
             }
             known
         });
-        for property in properties.values_mut() {
-            if let Some(format) = property.get("format").and_then(Value::as_str) {
+        for (name, property) in properties.iter_mut() {
+            if property["type"] == "boolean" {
+                booleans.insert(name.clone());
+            }
+            if let Some(format) = property
+                .get("format")
+                .and_then(Value::as_str)
+                .filter(|format| {
+                    !CHECKED_FORMATS
+                        .iter()
+                        .any(|checked| checked.name() == *format)
+                })
+            {
                 let note = format!("Format {format}: not checked here.");
                 let description = property
                     .get("description")
@@ -49,24 +75,40 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
             }
         }
     }
+    let mut required_unrendered = BTreeSet::new();
     if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
-        required.retain(|name| {
-            !name
-                .as_str()
-                .is_some_and(|name| unrendered.contains_key(name))
+        required.retain(|name| match name.as_str() {
+            Some(name) if unrendered.contains_key(name) => {
+                required_unrendered.insert(name.to_owned());
+                false
+            }
+            _ => true,
         });
     }
     // 0.5 treats open objects as informational, so preserve the Agent's root
     // policy instead of closing it solely to suppress an advisory.
     let definition = FormDefinition::compiler(schema)
         .default_dialect(Dialect::Draft202012)
+        .assert_formats(CHECKED_FORMATS)
         .compile()
         .map_err(|error| error.to_string());
     Ok(Prepared {
         definition,
         unrendered,
+        required_unrendered,
+        booleans,
     })
 }
+
+/// The string formats ACP's form profile names. A value that does not match
+/// is an advisory finding like any other; any other format keeps a note that
+/// it is not checked.
+const CHECKED_FORMATS: [AssertedFormat; 4] = [
+    AssertedFormat::Email,
+    AssertedFormat::Uri,
+    AssertedFormat::Date,
+    AssertedFormat::DateTime,
+];
 
 /// Raw answers can contain any object, including names serde_json uses for its
 /// internal exact-number representation. Read raw fragments so those names
@@ -132,6 +174,97 @@ mod tests {
         let broken = prepare(r#"{"type":"object","properties":{"bad":{"type":"string","pattern":"["},"future":{"type":"future"}}}"#).unwrap();
         assert!(broken.definition.is_err());
         assert!(broken.unrendered.contains_key("future"));
+    }
+
+    #[test]
+    fn a_schema_without_a_root_type_is_still_an_object_form() {
+        // `{}` and a schema that lists properties but no `type` are both an
+        // object by ACP's definition; neither may lose its form.
+        let mut empty = prepare("{}")
+            .unwrap()
+            .definition
+            .expect("an empty schema is an empty form")
+            .create_form_with_defaults(json!({}))
+            .unwrap();
+        assert_eq!(
+            empty.prepare_advisory_submission().submission().form_data(),
+            &json!({})
+        );
+
+        let prepared = prepare(
+            r#"{"properties":{"name":{"type":"string","default":"Ada"}},"required":["name"]}"#,
+        )
+        .unwrap();
+        assert!(prepared.unrendered.is_empty());
+        let mut form = prepared
+            .definition
+            .expect("properties without a root type still compile")
+            .create_form_with_defaults(json!({}))
+            .unwrap();
+        assert_eq!(
+            form.prepare_advisory_submission().submission().form_data(),
+            &json!({"name":"Ada"})
+        );
+
+        // A root `type` the agent did state is left alone.
+        assert!(prepare(r#"{"type":"string"}"#).unwrap().definition.is_err());
+    }
+
+    #[test]
+    fn unrendered_required_properties_and_booleans_are_remembered() {
+        let prepared = prepare(
+            r#"{"type":"object","properties":{
+            "future":{"type":"future"},"later":{"type":"later"},"ok":{"type":"boolean"}},
+            "required":["future","ok"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.required_unrendered.iter().collect::<Vec<_>>(),
+            ["future"]
+        );
+        assert_eq!(prepared.booleans.iter().collect::<Vec<_>>(), ["ok"]);
+    }
+
+    #[test]
+    fn the_profile_formats_are_checked_and_any_other_keeps_its_note() {
+        let prepared = prepare(
+            r#"{"type":"object","properties":{
+            "email":{"type":"string","format":"email"},"site":{"type":"string","format":"uri"},
+            "day":{"type":"string","format":"date"},"when":{"type":"string","format":"date-time"},
+            "id":{"type":"string","format":"uuid"}}}"#,
+        )
+        .unwrap();
+        let definition = prepared.definition.unwrap();
+        let codes = |data: serde_json::Value| {
+            let mut form = definition.create_form(data).unwrap();
+            let submission = form.prepare_advisory_submission();
+            submission
+                .submission()
+                .findings()
+                .filter_map(|finding| match finding {
+                    schemaform::form::SubmissionBlocker::Validation(finding) => Some((
+                        finding.code().to_owned(),
+                        finding.parameters()["format"].clone(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            codes(
+                serde_json::json!({"email":"ada@example.com","site":"https://example.com",
+                "day":"2026-10-10","when":"2026-10-10T12:00:00Z","id":"not a uuid"})
+            )
+            .is_empty()
+        );
+        let mut bad = codes(serde_json::json!({"email":"ada","site":"example.com",
+            "day":"10/10/2026","when":"2026-10-10T12:00"}));
+        bad.sort_by_key(|(_, format)| format.to_string());
+        assert_eq!(
+            bad,
+            ["date", "date-time", "email", "uri"]
+                .map(|format| ("format".to_owned(), serde_json::json!(format)))
+        );
     }
 
     #[test]

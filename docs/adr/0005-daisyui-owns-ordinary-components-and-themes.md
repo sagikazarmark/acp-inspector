@@ -1,5 +1,7 @@
 # daisyUI owns ordinary components and themes
 
+> **Amended by the release plan (`docs/release-plan.md`: D3, D15, D19).** The window is set in bundled IBM Plex rather than the system font stack (the OS still owns the frame and the scrollbars, now unskinned); the radii are 6px on a control and 10px on a box; and the repaints of daisyUI's components are written into daisyUI's own base layer so its variants still win.
+
 > **Amended by [ADR 0006](0006-the-window-is-drawn-as-an-application.md)** on layout and register:
 > the regions are inset cards on the chrome ground rather than full-bleed areas divided by
 > hairlines, and the uppercase label register is retired. The palette, the themes, the contrast
@@ -52,8 +54,8 @@ a component-library name.
 - The compact geometry is a 40px toolbar, a 248px Agent rail, approximately 28px ordinary and
   toolbar controls, 12px panel gutters and 4-8px local gaps. Content may expand a row when the Agent
   provides text that must remain readable.
-- Heroicons Outline is the one icon family. It is used sparsely for the agreed toolbar, composer
-  and disclosure controls at 15px; icon-only controls use an approximately 28px square target plus
+- Lucide is the one icon family (release plan D8; it was Heroicons Outline). It is used sparsely for the agreed toolbar, composer
+  and disclosure controls at 16px with a 1.5 stroke; icon-only controls use an approximately 28px square target plus
   a tooltip, accessible name and shared visible focus treatment.
 - One keyboard focus treatment, and it is the platform's ring rather than a hairline held away from
   the control: three pixels of the accent at partial alpha, offset by one. Alpha is what lets the

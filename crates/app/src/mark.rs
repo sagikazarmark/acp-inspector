@@ -1,51 +1,33 @@
-//! The tool's mark, drawn rather than shipped.
+//! The tool's mark, drawn procedurally so the build needs no binary asset
+//! (the same argument as `docs/adr/0003-the-stylesheet-is-generated-and-committed.md`).
 //!
-//! **A procedural mark, and it is deliberate.** The alternative in this
-//! framework is `default_icon()`, which is the renderer's own logo — a window
-//! that names another project in the task switcher — and the alternative to
-//! that is a PNG in the tree, which is a binary asset for a shell whose whole
-//! build story is that `cargo run` needs nothing resolved
-//! ([ADR 0003](../../../docs/adr/0003-the-stylesheet-is-generated-and-committed.md)
-//! makes the same argument about the stylesheet).
-//!
-//! What it draws is the tool's subject: two bars crossing a rounded square in
-//! opposite directions, which is a frame going out and a frame coming back.
-//! The colours are the window's own — the accent it fills a primary control
-//! with, and the two directions the Trace draws in.
-//!
-//! **One drawing, at any size.** The window asks for it at 64px, filling the
-//! canvas, which is what a window icon does (`shell::icon`). The macOS bundle's
-//! icon is the same function at the ten sizes an `.icns` holds, on the grid
-//! macOS lays its icons out on (`examples/bundle-icon.rs`, run by `just icon`
-//! — [ADR 0010](../../../docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md)).
-//! The proportions are stated once, as sixty-fourths of the mark's side — the
-//! grid it was first drawn on, pixel by pixel — and every edge is drawn by
-//! coverage rather than by rounding to a pixel, so a size is a parameter and
-//! not a second drawing. The module is `std` only, so that the example can
-//! include it by path from a package that has no library to import it from.
+//! Two bars crossing a rounded square in opposite directions: a frame going out
+//! and one coming back, in the Trace's direction colours on the accent.
+//! Proportions are in sixty-fourths and edges are drawn by coverage, so one
+//! function serves the 64px window icon (`shell::icon`) and the bundle icon's
+//! sizes (`examples/bundle-icon.rs`). `std` only, so the example can include it
+//! by path.
 
 /// The grid the mark is drawn on: every proportion below is in these units.
 const GRID: f32 = 64.0;
 
-/// The ground: the accent, with the corners taken off at the same radius the
-/// window rounds a box that holds controls with.
+/// The ground: the accent, rounded at the window's control-box radius.
 const GROUND: [u8; 3] = [37, 78, 210];
 const RADIUS: f32 = 14.0;
 
-/// The two directions, as the Trace's own rows draw them.
+/// The two directions, in the Trace's colours.
 const OUT: [u8; 3] = [244, 186, 96];
 const BACK: [u8; 3] = [126, 200, 255];
 
-/// Both bars run between the same two columns, and the head's tip is at the
-/// end the bar points at.
+/// Both bars span the same two columns; the head's tip is at the end the bar
+/// points at.
 const BAR_FROM: f32 = 14.0;
 const BAR_TO: f32 = 50.0;
 const BAR_THICKNESS: f32 = 6.0;
 /// The out bar sits as far above the middle as the back bar sits below it.
 const OUT_CENTRE: f32 = 25.0;
 const BACK_CENTRE: f32 = 39.0;
-/// The head is a right angle at the tip: it reaches as far back along the bar
-/// as it reaches out from the bar's centre line on either side.
+/// The head is a right angle at the tip.
 const HEAD: f32 = 8.0;
 
 /// Coverage samples per pixel, per axis. An edge's alpha is the share of these
@@ -65,9 +47,8 @@ pub fn rgba(side: u32, margin: f32) -> Vec<u8> {
 
     for y in 0..side {
         for x in 0..side {
-            // How many samples fell on the ground, and of those, on each bar.
-            // The bars lie wholly on the ground, so these are nested counts
-            // and a sample is on at most one bar.
+            // Nested counts: the bars lie wholly on the ground, and a sample
+            // is on at most one bar.
             let (mut ground, mut out, mut back) = (0u32, 0u32, 0u32);
             for sy in 0..SAMPLES {
                 for sx in 0..SAMPLES {
@@ -89,8 +70,6 @@ pub fn rgba(side: u32, margin: f32) -> Vec<u8> {
                 continue;
             }
 
-            // The colour is the mix of what the covered samples saw, and the
-            // alpha is how many of the samples were covered at all.
             let (weight_out, weight_back) =
                 (out as f32 / ground as f32, back as f32 / ground as f32);
             let weight_ground = 1.0 - weight_out - weight_back;
@@ -108,8 +87,7 @@ pub fn rgba(side: u32, margin: f32) -> Vec<u8> {
     rgba
 }
 
-/// Whether a point of the grid is on the rounded square. Off the grid entirely
-/// it is not: a point past an edge is past the radius too.
+/// Whether a grid point is on the rounded square.
 fn on_ground(u: f32, v: f32) -> bool {
     let dx = (RADIUS - u).max(u - (GRID - RADIUS)).max(0.0);
     let dy = (RADIUS - v).max(v - (GRID - RADIUS)).max(0.0);
@@ -119,8 +97,7 @@ fn on_ground(u: f32, v: f32) -> bool {
 /// Whether a point of the grid is on a bar — its shaft or its head — centred
 /// on the row `centre`, pointing right if `rightwards` and otherwise left.
 fn on_bar(u: f32, v: f32, centre: f32, rightwards: bool) -> bool {
-    // Drawn pointing right; the bar that comes back is the same shape mirrored
-    // between the two columns the bars share.
+    // The back bar is the out bar mirrored between the shared columns.
     let u = if rightwards { u } else { BAR_FROM + BAR_TO - u };
     let from_centre = (v - centre).abs();
     let shaft = (BAR_FROM..=BAR_TO).contains(&u) && from_centre <= BAR_THICKNESS / 2.0;
@@ -151,8 +128,7 @@ mod tests {
         assert_eq!(pixel(&mark, side, 0, 32), opaque(GROUND), "the left edge");
         assert_eq!(pixel(&mark, side, 0, 0)[3], 0, "a corner is clear");
         assert_eq!(pixel(&mark, side, 63, 63)[3], 0, "every corner is clear");
-        // The curve between the two is where the edge is softened rather than
-        // stepped: a pixel on it is partly covered and still the ground's colour.
+        // A pixel on the curve is partly covered and still the ground's colour.
         let on_the_curve = pixel(&mark, side, 2, 5);
         assert!(
             0 < on_the_curve[3] && on_the_curve[3] < 255,
@@ -193,9 +169,7 @@ mod tests {
                 "the back bar at {x}"
             );
         }
-        // The heads: at its base a head is wider than the shaft, and at the
-        // other end of the bar there is nothing but the shaft. Which end has
-        // the head is which way the bar points.
+        // The head is at the end the bar points to.
         assert_eq!(
             pixel(&mark, side, 42, 20),
             opaque(OUT),
@@ -223,11 +197,8 @@ mod tests {
 
     #[test]
     fn it_is_the_same_drawing_at_every_size() {
-        // The claim the module makes is that a size is a parameter and not a
-        // second drawing. Drawn at twice the size and averaged back down, it
-        // is the drawing at the size — up to where the samples fell. Compared
-        // premultiplied, because a clear pixel's colour is nothing at all and
-        // must count for nothing in the average.
+        // Twice the size averaged down matches the drawing at the size.
+        // Premultiplied, so a clear pixel's colour counts for nothing.
         fn premultiplied(pixel: [u8; 4]) -> [f32; 4] {
             let alpha = pixel[3] as f32 / 255.0;
             [
@@ -253,9 +224,7 @@ mod tests {
                 }
             }
         }
-        // Two renders put their samples in different places, so an edge's
-        // coverage is allowed to differ by a sample or two; a drawing that
-        // depended on its size would differ by whole pixels.
+        // Sample positions differ between sizes, so allow a sample or two.
         let one_sample = 255.0 / (SAMPLES * SAMPLES) as f32;
         assert!(
             worst <= 2.0 * one_sample,

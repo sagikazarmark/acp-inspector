@@ -1,50 +1,32 @@
-//! The Console (`docs/architecture.md` §9): the wire, beside the turn rather
-//! than beneath it, holding the Trace and the Diagnostic channel as tabs and
-//! showing one at a time.
+//! The Console: the Trace and the Diagnostic channel, as two tabs beside the
+//! turn. See `docs/architecture.md` §9 and ADR 0009.
 //!
-//! Both of its surfaces are what was captured *below* the typed layer, which is
-//! what makes them one panel and the timeline not part of it (`CONTEXT.md`,
-//! *Console*). What changed with the three-column instrument (ADR 0009) is
-//! where the panel is: it spanned the window because a frame is a long line,
-//! and it is a column now because a frame is read *whole* in the pane at the
-//! foot of the list rather than unfolded into the row it is in. The row keeps
-//! the ordinal, the direction, the envelope and the first line; the pane has
-//! the room.
-//!
-//! The diagnostic channel carries the agent's own stderr and the transport's
-//! remarks about the connection in one list, because they are one channel and
-//! reading them apart is how "the agent explained itself and then died" stops
-//! being legible.
-//!
-//! **One escalation into it** — the connection status, through
-//! [`surfaces_diagnostics`], applied by [`App`](crate::App) so that the console
-//! is a view of a store here too. Nothing else on this panel escalates: a tab
-//! says how much of it there is and never that the reader should look.
+//! Both surfaces are what was captured below the typed layer. The diagnostic
+//! channel holds the agent's stderr and the transport's remarks in one list,
+//! so their order is kept. The only automatic switch to it is a connection
+//! status, through [`surfaces_diagnostics`], applied by [`App`](crate::App).
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
-use acp_inspector_core::{ConnectionStatus, Diagnostic, DiagnosticKind, FrameKind, TracedFrame};
+use acp_inspector_core::{
+    ConnectionStatus, Diagnostic, DiagnosticKind, Direction, FrameKind, Stop, TracedFrame,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::hi_outline_icons::{HiDownload, HiTrash},
+    icons::ld_icons::{LdDownload, LdFolderOpen, LdSquarePen, LdTrash2},
 };
 
 use crate::copy::Copy;
 use crate::time::stamp;
 use crate::trace::{Kinds, TraceView, named_kind};
+use crate::wire::Wire;
 
-/// Which of the Console's two surfaces is on screen.
-///
-/// Window-session state and nothing else: it is never written to
-/// `settings.json`, because a window that opened onto an empty Diagnostic tab
-/// because of what was being debugged yesterday would be a window whose first
-/// screen is about the last session.
+/// Which of the Console's two surfaces is on screen. Window-session state,
+/// never persisted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
-    /// Every frame that crossed the wire. The default: it is the surface that
-    /// has something to say about every agent, including one that is behaving.
+    /// Every frame that crossed the wire.
     #[default]
     Trace,
     /// Everything the transport said about the Connection that was not a Frame.
@@ -52,8 +34,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// What the tab is called in the document, so the body on screen can name
-    /// the tab that selected it.
+    /// The tab's element id, which its panel is labelled by.
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::Trace => "console-tab-trace",
@@ -81,12 +62,10 @@ impl Tab {
 #[component]
 pub fn Console(
     frames: ReadSignal<Vec<TracedFrame>>,
-    /// How many frames the trace captured and no longer holds — cleared, or
-    /// aged out of its cap. Named for what it counts, because the other surface
-    /// has one too.
+    /// How many frames the trace captured and no longer holds.
     dropped_frames: usize,
     /// What became of the last export: the file it wrote, or why it did not.
-    saved: Option<Result<PathBuf, String>>,
+    saved: Option<crate::export::Outcome>,
     #[props(default)] export_pending: bool,
     on_export: EventHandler<()>,
     on_clear: EventHandler<()>,
@@ -95,61 +74,48 @@ pub fn Console(
     dropped_lines: usize,
     tab: Tab,
     on_select: EventHandler<Tab>,
-    /// The frames a Timeline entry was made of, sent here by somebody reading
-    /// that entry — and which of the trace's frames became one, so a row can
-    /// offer the way back.
+    /// The frames a Timeline entry asked to reveal, and which frames became
+    /// entries (so a row can link back).
     revealed: ReadSignal<Vec<u64>>,
     decoded: ReadSignal<HashSet<u64>>,
     on_seek: EventHandler<u64>,
+    /// Pairing, pending calls, sending by hand and opened traces (`crate::wire`).
+    #[props(default)]
+    wire: Option<Wire>,
 ) -> Element {
-    // Whether there is anything to export or clear. Read here rather than in
-    // the Trace because the controls are here, and it is the same question the
-    // tab's own count answers.
     let nothing_traced = frames.read().is_empty();
     let cannot_export = nothing_traced || export_pending;
-    // And whether the surface in front of the reader has captured anything at
-    // all, which is what decides whether there is anything to narrow.
+    let viewing = wire.is_some_and(|wire| wire.view.is_open());
+    // The export notice, until the reader puts it away.
+    let mut dismissed = use_signal(|| None::<u64>);
+    let saved = saved.filter(|outcome| dismissed() != Some(outcome.id));
+    let saved_id = saved.as_ref().map(|outcome| outcome.id);
+    let composing = wire.is_some_and(|wire| (wire.composing)()) && !viewing;
     let empty = match tab {
         Tab::Trace => nothing_traced,
         Tab::Diagnostics => lines.read().is_empty(),
     };
 
-    // What the reader is looking for, narrowing whichever surface is on screen.
-    //
-    // **Presentation and nothing else** (§5): both stores keep everything, both
-    // counts on the tabs go on saying how much there is, and an export writes
-    // the whole trace whatever is typed here.
-    //
-    // One box for both surfaces rather than one each. They are two views of one
-    // connection behind two tabs in one panel, and a reader who narrows to a
-    // session id and switches tabs is asking the same question of the other
-    // account of it.
+    // One filter for both surfaces. Presentation only: stores, tab counts and
+    // exports are unaffected.
     let mut filter = use_signal(String::new);
-    // And which envelope shapes the Trace is showing, which is the same kind of
-    // narrowing said as chips because the answers are a closed set (`trace.rs`).
     let mut kinds = use_signal(Kinds::default);
-    // Which frame the pane under the list is reading. The Console's rather than
-    // the Trace's, because arriving from the Timeline changes it and that
-    // request is delivered to the panel.
+    let mut directions = use_signal(Directions::default);
+    // Held here, not in the Trace, because a reveal from the Timeline sets it.
     let mut selected = use_signal(|| None::<u64>);
 
-    // Except when somebody arrives from the Timeline. A row asked for by
-    // ordinal is a row this panel has been told to *show*, and a narrowing it
-    // does not match would answer that by showing nothing at all — so both
-    // narrowings give way to the request, and the frame it named is the one the
-    // pane reads.
+    // A reveal clears every narrowing, so the requested frame is shown.
     use_effect(move || {
         if let Some(first) = revealed().first().copied() {
             filter.set(String::new());
             kinds.set(Kinds::default());
+            directions.set(Directions::default());
             selected.set(Some(first));
         }
     });
 
-    // Whether any frame is in none of the envelope's four shapes, which is what
-    // decides whether the fifth chip is worth drawing: a chip that can hide
-    // nothing is chrome, and one missing for traffic that exists would be a
-    // surface able to hide frames with nothing to press to bring them back.
+    // The Unreadable chip is drawn only when some frame has none of the four
+    // envelope shapes.
     let unreadable = frames.read().iter().any(|traced| {
         !matches!(
             traced.frame.summary().kind,
@@ -178,12 +144,40 @@ pub fn Console(
                 }
                 span { class: "grow" }
 
-                // What a reader does with a trace once they have one, on the bar
-                // that already names it — and only on the surface they act on:
-                // the diagnostic channel is neither exported nor cleared, and a
-                // control that did nothing on the tab in front of you is worse
-                // than one that is not there.
+                // Trace-only actions: the diagnostic channel is neither exported
+                // nor cleared.
                 if tab == Tab::Trace {
+                    if let Some(wire) = wire {
+                        if !viewing {
+                            button {
+                                class: "btn btn-xs btn-quiet",
+                                "data-slot": "compose",
+                                r#type: "button",
+                                aria_expanded: composing,
+                                aria_label: "Send by hand",
+                                title: "Write a request or notification by hand and send it to the agent",
+                                onclick: move |_| {
+                                    let mut composing = wire.composing;
+                                    let now = !composing();
+                                    composing.set(now);
+                                },
+                                Icon { class: "icon", width: 16, height: 16, icon: LdSquarePen }
+                                span { class: "btn-label", "Send…" }
+                            }
+                        }
+                        if crate::view::CAN_OPEN {
+                            button {
+                                class: "btn btn-xs btn-quiet",
+                                "data-slot": "open-trace",
+                                r#type: "button",
+                                aria_label: "Open a trace",
+                                title: "Open an exported trace, read-only",
+                                onclick: move |_| wire.view.choose(wire.live()),
+                                Icon { class: "icon", width: 16, height: 16, icon: LdFolderOpen }
+                                span { class: "btn-label", "Open…" }
+                            }
+                        }
+                    }
                     button {
                         class: "btn btn-xs btn-quiet",
                         "data-slot": "export",
@@ -197,41 +191,54 @@ pub fn Console(
                                 on_export.call(());
                             }
                         },
-                        Icon { class: "icon", icon: HiDownload }
-                        "export"
+                        Icon { class: "icon", width: 16, height: 16, icon: LdDownload }
+                        span { class: "btn-label", "Export…" }
                     }
-                    button {
-                        class: "btn btn-xs btn-quiet btn-bad",
-                        "data-slot": "clear",
-                        r#type: "button",
-                        aria_label: "Clear the trace",
-                        aria_disabled: nothing_traced.then_some("true"),
-                        tabindex: nothing_traced.then_some("-1"),
-                        // Said on the control, because it is the one thing
-                        // about clearing that surprises people: a file already
-                        // written is not this trace's any more.
-                        title: "Drop the frames captured so far; exports already written are untouched",
-                        onclick: move |_| {
-                            if !nothing_traced {
-                                on_clear.call(());
+                    if let Some(wire) = wire {
+                        label {
+                            class: "export-stderr",
+                            "data-slot": "export-stderr",
+                            title: "Also write the agent's stderr lines into the export, interleaved by time",
+                            input {
+                                r#type: "checkbox",
+                                class: "checkbox checkbox-xs",
+                                aria_label: "Export with stderr",
+                                checked: (wire.include_stderr)(),
+                                onchange: move |event| {
+                                    let mut include = wire.include_stderr;
+                                    include.set(event.checked());
+                                },
                             }
-                        },
-                        Icon { class: "icon", icon: HiTrash }
-                        "clear"
+                            span { class: "btn-label", "with stderr" }
+                        }
+                    }
+                    if !viewing {
+                        ClearTrace { nothing_traced, on_clear }
                     }
                 }
             }
 
             if export_pending {
-                p { class: "saved", role: "status", "Writing Trace snapshot…" }
+                p { class: "saved", role: "status", "Writing the trace…" }
             }
 
-            // Only where there is something to narrow. A surface that has
-            // captured nothing says so in its own empty state, and a filter box
-            // over it is a control that can do nothing.
             if !empty {
                 div { class: "wire-filters",
                     if tab == Tab::Trace {
+                        for direction in Directions::ALL {
+                            button {
+                                key: "{Directions::named(direction)}",
+                                class: "chip",
+                                "data-slot": "direction",
+                                "data-direction": Directions::named(direction),
+                                r#type: "button",
+                                aria_pressed: directions().shows(direction),
+                                title: if direction == Direction::ToAgent { "Show or hide frames sent to the agent" } else { "Show or hide frames received from the agent" },
+                                onclick: move |_| directions.set(directions().toggled(direction)),
+                                {crate::disclosure::icon(if direction == Direction::ToAgent { crate::disclosure::Role::Outgoing } else { crate::disclosure::Role::Incoming })}
+                                "{Directions::named(direction)}"
+                            }
+                        }
                         for kind in Kinds::ALL {
                             if kind != FrameKind::Unreadable || unreadable {
                                 button {
@@ -247,6 +254,34 @@ pub fn Console(
                                 }
                             }
                         }
+                        if let Some(wire) = wire {
+                            button {
+                                class: "chip",
+                                "data-slot": "pending",
+                                r#type: "button",
+                                aria_pressed: (wire.pending_only)(),
+                                title: "Show only requests nothing has answered yet",
+                                onclick: move |_| {
+                                    let mut pending = wire.pending_only;
+                                    let now = !pending();
+                                    pending.set(now);
+                                },
+                                "pending"
+                            }
+                            button {
+                                class: "chip",
+                                "data-slot": "merged",
+                                r#type: "button",
+                                aria_pressed: (wire.merged)(),
+                                title: "Show the agent's stderr lines among the frames, by when each was read",
+                                onclick: move |_| {
+                                    let mut merged = wire.merged;
+                                    let now = !merged();
+                                    merged.set(now);
+                                },
+                                "stderr"
+                            }
+                        }
                     }
                     input {
                         class: "input",
@@ -255,16 +290,17 @@ pub fn Console(
                         value: "{filter}",
                         spellcheck: false,
                         aria_label: "Filter the console",
-                        title: "Show only rows containing this text",
-                        placeholder: "filter method…",
+                        title: if tab == Tab::Trace {
+                            "Show only rows containing this text. method:NAME and id:N match those fields of the envelope."
+                        } else {
+                            "Show only rows containing this text"
+                        },
+                        placeholder: "Filter rows…",
                         oninput: move |event| filter.set(event.value()),
                     }
                 }
             }
 
-            // Both panel identities stay in the document, so each tab's
-            // `aria-controls` always resolves. Only the selected one renders
-            // its live list.
             // Both panel identities stay in the document, so each tab's
             // `aria-controls` always resolves; only the selected one renders a
             // live list.
@@ -275,17 +311,31 @@ pub fn Console(
                 aria_labelledby: Tab::Trace.id(),
                 hidden: tab != Tab::Trace,
                 if tab == Tab::Trace {
+                    if let Some(wire) = wire.filter(|_| composing) {
+                        crate::raw::Composer {
+                            wire,
+                            frames,
+                            dropped: dropped_frames,
+                            on_show: move |ordinal| selected.set(Some(ordinal)),
+                        }
+                    }
                     TraceView {
                         frames,
                         dropped: dropped_frames,
                         saved,
+                        on_dismiss_saved: move |()| dismissed.set(saved_id),
+                        wire,
+                        lines: Some(lines),
+                        dropped_lines,
                         filter: filter(),
                         kinds: kinds(),
+                        directions: directions(),
                         revealed,
                         decoded,
                         selected: selected(),
                         on_choose: move |ordinal| selected.set(Some(ordinal)),
                         on_seek,
+                        on_filter: move |query: String| filter.set(query),
                     }
                 }
             }
@@ -303,28 +353,128 @@ pub fn Console(
     }
 }
 
-/// One tab: what it selects, and how much of it there is.
-///
-/// One control for both, so that "tabs carry counts and nothing else" (§9) is
-/// something this file says once rather than twice: what each tab counts is its
-/// own, and what a tab is allowed to be is not.
+/// How long an armed Clear waits for its confirmation before it disarms.
+const CONFIRM_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Clear, confirmed in two steps: the trace store cannot restore cleared
+/// frames, so there is no Undo. Cancel, Escape or a timeout disarm it, and the
+/// label changes on the same button so focus stays put.
+#[component]
+fn ClearTrace(nothing_traced: bool, on_clear: EventHandler<()>) -> Element {
+    let mut armed = use_signal(|| false);
+    let mut arming = use_signal(|| 0_u64);
+    let armed_now = armed() && !nothing_traced;
+
+    rsx! {
+        span { class: "clear-trace", "data-armed": "{armed_now}",
+            onkeydown: move |event| {
+                if event.key() == Key::Escape && armed() {
+                    event.stop_propagation();
+                    armed.set(false);
+                }
+            },
+            button {
+                class: if armed_now { "btn btn-xs btn-filled btn-bad confirm" } else { "btn btn-xs btn-quiet btn-bad" },
+                "data-slot": "clear",
+                r#type: "button",
+                aria_label: if armed_now { "Confirm clearing the trace" } else { "Clear the trace" },
+                aria_disabled: nothing_traced.then_some("true"),
+                tabindex: nothing_traced.then_some("-1"),
+                title: "Drop the frames captured so far; exports already written are untouched",
+                onclick: move |_| {
+                    if nothing_traced {
+                        return;
+                    }
+                    if armed() {
+                        armed.set(false);
+                        on_clear.call(());
+                        return;
+                    }
+                    armed.set(true);
+                    let this = arming() + 1;
+                    arming.set(this);
+                    spawn(async move {
+                        tokio::time::sleep(CONFIRM_FOR).await;
+                        if arming() == this {
+                            armed.set(false);
+                        }
+                    });
+                },
+                Icon { class: "icon", width: 16, height: 16, icon: LdTrash2 }
+                span { class: "btn-label", if armed_now { "Confirm clear" } else { "Clear" } }
+            }
+            if armed_now {
+                button {
+                    class: "btn btn-xs btn-quiet",
+                    "data-slot": "cancel-clear",
+                    r#type: "button",
+                    aria_label: "Keep the trace",
+                    onclick: move |_| armed.set(false),
+                    "Cancel"
+                }
+            }
+        }
+    }
+}
+
+/// Which directions the Trace shows, as two chips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Directions {
+    pub sent: bool,
+    pub received: bool,
+}
+
+impl Default for Directions {
+    fn default() -> Self {
+        Self {
+            sent: true,
+            received: true,
+        }
+    }
+}
+
+impl Directions {
+    pub const ALL: [Direction; 2] = [Direction::ToAgent, Direction::FromAgent];
+
+    pub fn shows(self, direction: Direction) -> bool {
+        match direction {
+            Direction::ToAgent => self.sent,
+            Direction::FromAgent => self.received,
+        }
+    }
+
+    #[must_use]
+    pub fn toggled(mut self, direction: Direction) -> Self {
+        match direction {
+            Direction::ToAgent => self.sent = !self.sent,
+            Direction::FromAgent => self.received = !self.received,
+        }
+        self
+    }
+
+    /// What the chip says.
+    pub fn named(direction: Direction) -> &'static str {
+        match direction {
+            Direction::ToAgent => "sent",
+            Direction::FromAgent => "received",
+        }
+    }
+}
+
+/// One tab and its counts. Tabs carry counts and nothing else (§9).
 #[component]
 fn TabControl(
     tab: Tab,
-    /// Which tab the panel is showing — this one, or the other.
     selected: Tab,
-    /// How much of the surface there is to read.
     held: usize,
-    /// And how much of it was captured and is no longer held. Absent when there
-    /// is none, because a count that is not the whole session should never look
-    /// like one.
+    /// Captured and no longer held; drawn only when non-zero.
     gone: usize,
     on_select: EventHandler<Tab>,
 ) -> Element {
     rsx! {
         button {
             id: tab.id(),
-            class: "wire-tab",
+            class: "tab wire-tab",
             r#type: "button",
             role: "tab",
             aria_selected: tab == selected,
@@ -340,9 +490,6 @@ fn TabControl(
                 focus_tab(chosen);
             },
             "{tab.label()}"
-            // Nothing where there is nothing. A surface that has captured none
-            // of anything says so in the empty state the tab selects, and a
-            // badge reading zero is a count of the times it has said it.
             if held > 0 {
                 span { class: "count", "data-slot": "count", "{held}" }
             }
@@ -350,99 +497,188 @@ fn TabControl(
                 span {
                     class: "count gone",
                     "data-slot": "gone",
-                    title: "captured, and no longer held — cleared, or aged out of the surface's cap",
-                    "−{gone}"
+                    title: "Captured, and no longer held: cleared, or aged out of the surface's cap",
+                    "{gone} dropped"
                 }
             }
         }
     }
 }
 
-fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
-    match key {
-        Key::ArrowLeft | Key::ArrowRight => Some(match selected {
-            Tab::Trace => Tab::Diagnostics,
-            Tab::Diagnostics => Tab::Trace,
-        }),
-        Key::Home => Some(Tab::Trace),
-        Key::End => Some(Tab::Diagnostics),
+pub(crate) fn tab_for_key(selected: Tab, key: &Key) -> Option<Tab> {
+    const ORDER: [Tab; 2] = [Tab::Trace, Tab::Diagnostics];
+    let at = ORDER.iter().position(|tab| *tab == selected).unwrap_or(0);
+    step(ORDER.len(), at, key, Axis::Horizontal).map(|next| ORDER[next])
+}
+
+fn focus_tab(tab: Tab) {
+    focus_id(tab.id());
+}
+
+/// How a roving-focus set is laid out, and so which arrows move through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Axis {
+    /// A tablist: ←/→ move and wrap, the WAI-ARIA tabs pattern.
+    Horizontal,
+}
+
+/// Where a key moves focus in a set of `len` items from `at`, or `None`. Used by
+/// the tab sets drawn in Rust; the Timeline and Trace lists use [`ROVE`].
+pub(crate) fn step(len: usize, at: usize, key: &Key, axis: Axis) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len - 1;
+    let at = at.min(last);
+    match (axis, key) {
+        (_, Key::Home) => Some(0),
+        (_, Key::End) => Some(last),
+        (Axis::Horizontal, Key::ArrowRight) => Some(if at == last { 0 } else { at + 1 }),
+        (Axis::Horizontal, Key::ArrowLeft) => Some(if at == 0 { last } else { at - 1 }),
         _ => None,
     }
 }
 
-fn focus_tab(tab: Tab) {
-    // The id is one of the two literals above, never content from the Agent.
-    let _ = document::eval(&format!(
-        "document.getElementById({:?})?.focus();",
-        tab.id()
-    ));
+/// One Tab stop for a long list: ↑/↓ move by on-screen position, Home/End to
+/// the ends, Enter presses the row's `activate` control.
+///
+/// In the page because only it knows which element a key landed on; keys in a
+/// field inside a row stay the field's. The screen renders which row holds
+/// `tabindex="0"`; this only moves focus.
+const ROVE: &str = r#"
+const [listSelector, rowSelector, activateSelector] = await dioxus.recv();
+await new Promise(requestAnimationFrame);
+const list = document.querySelector(listSelector);
+if (!list || list.dataset.roving === "true") return;
+list.dataset.roving = "true";
+list.addEventListener("keydown", (event) => {
+  const row = event.target;
+  if (!(row instanceof HTMLElement) || !row.matches(rowSelector)) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === "Enter" && activateSelector) {
+    const control = row.querySelector(activateSelector);
+    if (control) { event.preventDefault(); control.click(); }
+    return;
+  }
+  const rows = Array.from(list.querySelectorAll(rowSelector))
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  const at = rows.indexOf(row);
+  let next;
+  switch (event.key) {
+    case "ArrowDown": next = rows[Math.min(at + 1, rows.length - 1)]; break;
+    case "ArrowUp": next = rows[Math.max(at - 1, 0)]; break;
+    case "Home": next = rows[0]; break;
+    case "End": next = rows[rows.length - 1]; break;
+    default: return;
+  }
+  event.preventDefault();
+  if (next && next !== row) {
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "nearest" });
+  }
+});
+"#;
+
+/// Makes the list `list` (a selector) rove between its `row`s, once.
+pub(crate) fn rove(list: &str, row: &str, activate: Option<&str>) {
+    let roving = document::eval(ROVE);
+    let _ = roving.send((list.to_owned(), row.to_owned(), activate.map(str::to_owned)));
 }
 
-/// Whether a row survives what the reader typed into the Console's bar.
-///
-/// **Case-insensitive substring, and deliberately nothing cleverer.** A glob or
-/// a regular expression is a language to get wrong in a box with no room to say
-/// what went wrong in, and what is typed here is a method name, a session id or
-/// a word out of a stderr line — all of which are found by containing them. An
-/// empty filter matches everything, which is what makes this one expression the
-/// whole of the feature rather than a branch at every call site.
+/// Moves focus to the element with this id once it is in the document. The id
+/// is sent as data, never written into the script.
+pub(crate) fn focus_id(id: &str) {
+    let focusing = document::eval(
+        "const id = await dioxus.recv(); requestAnimationFrame(() => document.getElementById(id)?.focus());",
+    );
+    let _ = focusing.send(id.to_owned());
+}
+
+/// Whether a row matches the Console filter: a case-insensitive substring, and
+/// an empty filter matches everything.
 pub(crate) fn matching(text: &str, filter: &str) -> bool {
     let filter = filter.trim();
-    filter.is_empty() || text.to_lowercase().contains(&filter.to_lowercase())
+    filter.is_empty() || contains_folded(text, &filter.to_lowercase())
 }
 
-/// What a narrowing is hiding, said where the rows it hid would have been.
+/// Whether `text` contains `needle` (already lowercase), ignoring case.
 ///
-/// **A surface that is narrowed says so.** The tab's count goes on saying how
-/// much the surface holds — it is a fact about the connection and not about the
-/// reader — so without this line a filter that matched nothing would be
-/// indistinguishable from an agent that had gone quiet, on the one panel whose
-/// job is to say what crossed the wire.
-///
-/// `narrowing` rather than the filter text, because the Trace has two of them:
-/// a box that is typed in and a row of chips that are pressed, and a surface
-/// missing rows says so whichever took them (`trace.rs`).
+/// An ASCII needle is compared with ASCII folding so a megabyte frame is not
+/// copied per keystroke; anything else falls back to Unicode lowercasing.
+pub(crate) fn contains_folded(text: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return text.to_lowercase().contains(needle);
+    }
+    let needle = needle.as_bytes();
+    text.as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// What a narrowing is hiding, so an empty filter result is not mistaken for a
+/// quiet agent. `narrowing` covers both the filter box and the Trace's chips.
 pub(crate) fn narrowed(shown: usize, held: usize, what: &str, narrowing: bool) -> Element {
     if !narrowing || held == 0 {
         return rsx! {};
     }
 
+    let count = if shown == 0 {
+        format!("No {what} match.")
+    } else {
+        format!("{shown} of {held} {what}.")
+    };
+
     rsx! {
-        p { class: "narrowed", "data-slot": "narrowed", role: "status", aria_live: "polite",
-            if shown == 0 {
-                "No {what} match. "
-            } else {
-                "{shown} of {held} {what}. "
-            }
+        p { class: "narrowed", "data-slot": "narrowed",
+            "{count} "
             span { class: "hint", "The whole surface is still captured, exported and counted." }
+            // Announced once typing settles, not per keystroke.
+            Settled { text: count.clone() }
         }
     }
 }
 
-/// The diagnostic log, by the name the scroll watcher and its control know it
-/// under (`tail.rs`).
+/// How long a changing count must hold still before it is announced.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A polite live region that says `text` once it has stopped changing.
+#[component]
+fn Settled(text: String) -> Element {
+    let mut said = use_signal(String::new);
+    let mut latest = use_signal(|| 0_u64);
+    use_effect(use_reactive!(|text| {
+        let this = *latest.peek() + 1;
+        latest.set(this);
+        spawn(async move {
+            tokio::time::sleep(SETTLE).await;
+            if *latest.peek() == this {
+                said.set(text);
+            }
+        });
+    }));
+    rsx! {
+        span { class: "sr-only", "data-slot": "announced", role: "status", aria_live: "polite", "{said}" }
+    }
+}
+
+/// The diagnostic log's name for the tail watcher (`tail.rs`).
 pub(crate) const LINES: &str = "lines";
 
 /// The diagnostic log, newest at the bottom.
 #[component]
-fn Diagnostics(
-    lines: ReadSignal<Vec<Diagnostic>>,
-    dropped: usize,
-    /// What the Console's bar is narrowing both surfaces to.
-    filter: String,
-) -> Element {
+fn Diagnostics(lines: ReadSignal<Vec<Diagnostic>>, dropped: usize, filter: String) -> Element {
     let anchor = use_signal(|| None);
     let held_lines = lines.read();
     let held = held_lines.len();
-    // The line as it is *rendered*, which is what the reader is looking at and
-    // therefore what they are searching: the transport's own remarks are part
-    // of this channel, and a filter that only read the agent's stderr would
-    // hide the line saying the agent never started.
+    // Filter the rendered text, which includes the transport's remarks.
     let ordinals: Vec<_> = held_lines
         .iter()
         .enumerate()
         .filter(|(_, diagnostic)| {
-            filter.trim().is_empty() || matching(&diagnostic.to_string(), &filter)
+            filter.trim().is_empty() || matching(&said(&diagnostic.kind), &filter)
         })
         .map(|(position, _)| (dropped + position) as u64)
         .collect();
@@ -458,33 +694,31 @@ fn Diagnostics(
                 "Everything the transport said about this connection that was not a frame."
             }
         } else {
-            ul { class: "lines", "data-slot": "diagnostics", "data-tail": LINES,
+            div { class: "lines-scroll", "data-tail": LINES,
                 "data-page-latest": "{range.end == ordinals.len()}",
-                // Newest first in the DOM, oldest first on screen: the list is
-                // laid out bottom-up, which is what keeps a streaming console
-                // pinned to its latest line without a scroll script.
-                //
-                // Keyed by the ordinal the line was captured under, the way the
-                // Trace's rows are, even as the retention budgets rotate it.
-                for ordinal in ordinals[range.clone()].iter().copied().rev() {
+            ul { class: "lines", "data-slot": "diagnostics",
+                // Oldest first; the scroller is bottom-up, so it stays pinned to
+                // the latest line. Keyed by capture ordinal, stable under
+                // retention.
+                for ordinal in ordinals[range.clone()].iter().copied() {
                     { let diagnostic = &held_lines[ordinal as usize - dropped]; rsx! {
                     li { key: "{ordinal}", class: "line {tone(&diagnostic.kind).line_class()}",
                         span { class: "frame-at", "{stamp(diagnostic.at)}" }
                         span { class: "dot dot-{tone(&diagnostic.kind).dot()}", aria_hidden: "true" }
                         span { class: "sr-only", "{diagnostic_source(&diagnostic.kind)}: " }
-                        DiagnosticEvidence { text: std::sync::Arc::<str>::from(diagnostic.to_string()) }
+                        DiagnosticEvidence { text: std::sync::Arc::<str>::from(said(&diagnostic.kind)) }
                     }
                     } }
                 }
+            }
             }
             {crate::tail::to_latest(LINES, "line", Some(anchor))}
         }
     }
 }
 
-/// Ordinary rows carry only a literal prefix. Opening one mounts a bounded
-/// byte-window reader; Copy shares the original text and materializes it only
-/// on activation, never the preview or the current window.
+/// A line's text: long lines show a prefix and open a bounded reader; Copy
+/// takes the whole original text.
 #[component]
 fn DiagnosticEvidence(text: std::sync::Arc<str>) -> Element {
     let mut open = use_signal(|| false);
@@ -511,21 +745,14 @@ fn DiagnosticEvidence(text: std::sync::Arc<str>) -> Element {
     }
 }
 
-/// Whether a connection status is one the reader is owed the diagnostic channel
-/// for (§9).
-///
-/// The MCP Inspector flow worth copying verbatim: an agent that is gone without
-/// being asked to go puts its own reason on screen, so a launch that failed
-/// cannot be mistaken for one that is taking a while. Two states mean that —
-/// one for an agent that never ran, one for an agent that ran and died — and
-/// core is where they are told apart.
+/// Whether a status switches the Console to Diagnostics: an agent that failed
+/// to start or was lost, so its reason is on screen (§9).
 pub fn surfaces_diagnostics(status: ConnectionStatus) -> bool {
     diagnostics_announcement(status).is_some()
 }
 
-/// What the persistent live region says when a status automatically surfaces
-/// Diagnostics. One policy decides both the surface change and its words so a
-/// future status cannot do one without the other.
+/// What the live region says when a status surfaces Diagnostics. One policy
+/// decides both the switch and its words.
 pub fn diagnostics_announcement(status: ConnectionStatus) -> Option<&'static str> {
     match status {
         ConnectionStatus::FailedToStart => Some("Failed to start. Diagnostics opened."),
@@ -561,10 +788,53 @@ impl Tone {
     }
 }
 
+/// A line's text: the agent's stderr verbatim, the transport's remarks as
+/// sentences.
+pub(crate) fn said(kind: &DiagnosticKind) -> String {
+    use crate::trace::size;
+    match kind {
+        DiagnosticKind::Stderr(line) => line.clone(),
+        DiagnosticKind::FrameDropped { limit, length } => format!(
+            "The agent sent a frame of {}, over the {} limit. It was dropped; a placeholder marks where it was in the trace.",
+            size(*length),
+            size(*limit)
+        ),
+        DiagnosticKind::StderrLineCut { limit, length } => format!(
+            "The stderr line above was too long: only its first {} of {} are kept.",
+            size(*limit),
+            size(*length)
+        ),
+        DiagnosticKind::StderrLineLossy => {
+            "The stderr line above wasn't valid UTF-8. Invalid bytes are shown as \u{FFFD}."
+                .to_owned()
+        }
+        DiagnosticKind::Stopped { by, status } => {
+            let how = match by {
+                Stop::AlreadyExited => "The agent had already exited.",
+                Stop::StdinClosed => "The agent stopped when its input was closed.",
+                Stop::Terminated => "The agent stopped when asked to terminate (SIGTERM).",
+                Stop::Killed => "The agent didn't stop when asked, and was killed (SIGKILL).",
+                _ => "The agent stopped.",
+            };
+            match status {
+                Some(status) => format!("{how} ({status})"),
+                None => how.to_owned(),
+            }
+        }
+        DiagnosticKind::DrainAbandoned => "Stopped reading the agent's output: the agent exited, but another process still holds its output open.".to_owned(),
+        other => other.to_string(),
+    }
+}
+
 fn tone(kind: &DiagnosticKind) -> Tone {
     match kind {
         DiagnosticKind::Stderr(_) => Tone::Agent,
-        DiagnosticKind::SpawnFailed { .. } | DiagnosticKind::TransportFailed(_) => Tone::Bad,
+        DiagnosticKind::SpawnFailed { .. }
+        | DiagnosticKind::TransportFailed(_)
+        | DiagnosticKind::FrameDropped { .. }
+        | DiagnosticKind::Stopped {
+            by: Stop::Killed, ..
+        } => Tone::Bad,
         // An agent that exits reporting failure is the line the reader is
         // looking for; one that exits cleanly is a remark.
         DiagnosticKind::AgentExited(status) if !status.success() => Tone::Bad,
@@ -572,8 +842,7 @@ fn tone(kind: &DiagnosticKind) -> Tone {
     }
 }
 
-/// Whose voice a Diagnostic line is in. The Agent's stderr stays verbatim; all
-/// other variants are the transport's account of the Connection.
+/// Whose voice a Diagnostic line is in.
 fn diagnostic_source(kind: &DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::Stderr(_) => "Agent stderr",
@@ -686,8 +955,7 @@ mod tests {
 
     use super::*;
 
-    /// One line on the diagnostic channel, in one of the two tones the console
-    /// draws: the agent talking, and the connection's bad news.
+    /// One diagnostic line: the agent's stderr, or the connection's bad news.
     #[derive(Clone, PartialEq)]
     enum Said {
         Ordinary,
@@ -706,9 +974,7 @@ mod tests {
         }
     }
 
-    /// One frame. Which frame it is matters to nothing below: what the Console
-    /// says about the trace is how many of them there are and what shapes they
-    /// were in.
+    /// One frame; only its count and shape matter below.
     fn frame(json: &str) -> TracedFrame {
         TracedFrame {
             at: SystemTime::UNIX_EPOCH,
@@ -718,13 +984,11 @@ mod tests {
         }
     }
 
-    /// What the Console is being asked to show: which tab, and what each of the
-    /// two surfaces holds.
+    /// Which tab is shown, and what each surface holds.
     #[derive(Clone, PartialEq, Default)]
     struct Screen {
         tab: Tab,
-        /// The frames, by what each one said — which is how a test asks for a
-        /// shape without carrying a value that cannot be compared.
+        /// The frames, by their JSON text.
         frames: Vec<String>,
         dropped: usize,
         said: Vec<Said>,
@@ -801,8 +1065,7 @@ mod tests {
             html.contains(r#"data-slot="trace""#) && !html.contains(r#"data-slot="diagnostics""#),
             "and the surface a window opens on is the one with something to say about every agent: {html}"
         );
-        // Tabs carry counts and nothing else — no unread badge, no activity
-        // dot, no severity mark when a bad diagnostic line arrives.
+        // Tabs carry counts and nothing else.
         assert!(
             html.contains(r#"data-slot="count""#) && html.contains(">2</span>"),
             "the count is the fact: {html}"
@@ -834,17 +1097,14 @@ mod tests {
             ..Screen::default()
         });
         assert!(
-            html.contains(r#"data-slot="gone""#) && html.contains("−12"),
+            html.contains(r#"data-slot="gone""#) && html.contains("12 dropped"),
             "a count that is not the whole session must never look like one: {html}"
         );
     }
 
     #[test]
     fn the_traces_verbs_are_on_the_console_bar_and_only_on_its_own_surface() {
-        // One strip of chrome for one panel, and the two verbs of one surface:
-        // the Diagnostic channel is neither exported nor cleared, and a control
-        // that did nothing on the tab in front of you is worse than one that is
-        // not there.
+        // The Diagnostic channel is neither exported nor cleared.
         let traced = shown(Screen {
             frames: Screen::traced(1),
             ..Screen::default()
@@ -862,9 +1122,7 @@ mod tests {
             "clearing says the one thing about it that surprises people: {clear}"
         );
 
-        // Unavailable rather than absent while there is nothing to act on, and
-        // ARIA-disabled rather than natively so, which is the rule every other
-        // guarded control here follows.
+        // Nothing to act on: ARIA-disabled, not absent and not natively disabled.
         let empty = shown(Screen::default());
         let export = action(&empty, "export").expect("the export control stays in the document");
         assert!(
@@ -909,21 +1167,17 @@ mod tests {
             unreadable.contains(r#"data-kind="other""#),
             "and traffic in none of the four shapes has one, so nothing can be hidden with no way back: {unreadable}"
         );
-        // Every chip starts pressed: a surface that opened narrowed would be
-        // hiding traffic nobody asked it to hide.
+        // Every chip starts pressed, so nothing is hidden by default.
         assert_eq!(
             ordinary.matches(r#"aria-pressed=true"#).count(),
-            4,
+            6,
             "a surface opens showing everything: {ordinary}"
         );
     }
 
     #[test]
     fn the_filter_narrows_the_surface_in_front_of_the_reader_and_nothing_else() {
-        // One box for both surfaces: they are two views of one connection
-        // behind two tabs in one panel, and a reader who narrows to a session id
-        // and switches tabs is asking the same question of the other account of
-        // it.
+        // One filter box serves both surfaces.
         let html = shown(Screen {
             tab: Tab::Diagnostics,
             said: vec![Said::Ordinary],
@@ -942,19 +1196,87 @@ mod tests {
             "the filter is one accessibly named field on the panel's own bar: {filter}"
         );
 
-        // Presentation and nothing else, which is what `matching` is: an empty
-        // filter matches everything, and what is typed is found by containing
-        // it rather than by a language to get wrong.
+        // An empty filter matches everything; otherwise a substring match.
         assert!(matching("session/prompt", ""));
         assert!(matching("session/prompt", "PROMPT"));
         assert!(!matching("session/prompt", "cancel"));
     }
 
     #[test]
+    fn folded_matching_needs_no_lowercased_copy_and_agrees_with_one() {
+        for (text, needle) in [
+            (r#"{"method":"Session/Prompt"}"#, "session/prompt"),
+            ("ÉCOLE élève", "élève"),
+            ("abc", ""),
+        ] {
+            assert!(contains_folded(text, needle), "{text} / {needle}");
+            assert_eq!(
+                contains_folded(text, needle),
+                text.to_lowercase().contains(needle)
+            );
+        }
+        assert!(!contains_folded("short", "much longer needle"));
+    }
+
+    #[tokio::test]
+    async fn clearing_the_trace_takes_a_second_press() {
+        use std::{any::Any, rc::Rc};
+
+        use dioxus::core::{AttributeValue, Mutation, NoOpMutations};
+        use dioxus::html::{PlatformEventData, SerializedMouseData};
+
+        #[component]
+        fn Host() -> Element {
+            let mut cleared = use_signal(|| 0);
+            rsx! {
+                ClearTrace { nothing_traced: false, on_clear: move |()| cleared += 1 }
+                span { "data-slot": "cleared", "{cleared}" }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let click = || {
+            Event::new(
+                Rc::new(PlatformEventData::new(Box::<SerializedMouseData>::default()))
+                    as Rc<dyn Any>,
+                true,
+            )
+        };
+        let mut dom = VirtualDom::new(Host);
+        let edits = dom.rebuild_to_vec().edits;
+        let clear = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::SetAttribute {
+                    name: "aria-label",
+                    value: AttributeValue::Text(text),
+                    id,
+                    ..
+                } if text == "Clear the trace" => Some(*id),
+                _ => None,
+            })
+            .expect("the clear control");
+        dom.runtime().handle_event("click", click(), clear);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains("Confirm clear")
+                && html.contains(r#"data-slot="cancel-clear""#)
+                && html.contains(r#"data-slot="cleared">0"#),
+            "{html}"
+        );
+        dom.runtime().handle_event("click", click(), clear);
+        dom.render_immediate(&mut NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"data-slot="cleared">1"#) && !html.contains("Confirm clear"),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn a_narrowed_surface_says_what_it_is_hiding() {
-        // Without this line a filter that matched nothing would be
-        // indistinguishable from an agent that had gone quiet, on the one panel
-        // whose job is to say what crossed the wire.
+        // A filter that matched nothing must not look like a quiet agent.
         let none = dioxus_ssr::render_element(narrowed(0, 12, "frames", true));
         assert!(
             none.contains("No frames match")
@@ -987,8 +1309,7 @@ mod tests {
             html.contains(r#"class="line agent"#) && html.contains(r#"class="line bad"#),
             "and the tone repeats what the row already says: {html}"
         );
-        // The agent's own words about why it would not start are the thing a
-        // reader pastes into an issue.
+        // The agent's own words about why it would not start.
         assert_eq!(
             html.matches(r#"aria-label="Copy this line""#).count(),
             2,
@@ -997,10 +1318,54 @@ mod tests {
     }
 
     #[test]
+    fn the_transports_remarks_about_the_record_are_said_in_plain_words() {
+        let said_of = |kind: DiagnosticKind| said(&kind);
+        assert_eq!(
+            said_of(DiagnosticKind::FrameDropped {
+                limit: 10 * 1024 * 1024,
+                length: 20 * 1024 * 1024,
+            }),
+            "The agent sent a frame of 20.0 MiB, over the 10.0 MiB limit. It was dropped; a placeholder marks where it was in the trace."
+        );
+        assert!(
+            said_of(DiagnosticKind::StderrLineCut {
+                limit: 1024 * 1024,
+                length: 3 * 1024 * 1024,
+            })
+            .contains("only its first 1.0 MiB of 3.0 MiB are kept")
+        );
+        assert!(said_of(DiagnosticKind::StderrLineLossy).contains("wasn't valid UTF-8"));
+        assert_eq!(
+            said_of(DiagnosticKind::Stopped {
+                by: Stop::StdinClosed,
+                status: None,
+            }),
+            "The agent stopped when its input was closed."
+        );
+        assert!(
+            said_of(DiagnosticKind::Stopped {
+                by: Stop::Killed,
+                status: None,
+            })
+            .contains("was killed (SIGKILL)")
+        );
+        assert!(said_of(DiagnosticKind::DrainAbandoned).contains("another process"));
+        assert_eq!(
+            said_of(DiagnosticKind::Stderr("verbatim".into())),
+            "verbatim"
+        );
+        assert!(matches!(
+            tone(&DiagnosticKind::FrameDropped {
+                limit: 1,
+                length: 2
+            }),
+            Tone::Bad
+        ));
+    }
+
+    #[test]
     fn an_automatic_surface_change_is_a_connection_state_and_never_a_volume() {
-        // The MCP Inspector flow worth copying verbatim: an agent that is gone
-        // without being asked to go puts its own reason on screen. Two states
-        // mean that, and core is where they are told apart.
+        // An agent gone without being asked to go puts its reason on screen.
         for status in [ConnectionStatus::FailedToStart, ConnectionStatus::Lost] {
             assert!(surfaces_diagnostics(status));
             assert!(diagnostics_announcement(status).is_some());

@@ -1,11 +1,5 @@
-//! What a driven method answers with when there is no answer.
-//!
-//! Its own module because it belongs to neither of the two layers that use it:
-//! the envelope (`rpc`) knows how a call fails on the wire, the typed layer
-//! (`client`) knows how one fails against ACP, and the screen that reports it
-//! has one question — did the thing I asked for happen? One flat enum is what
-//! that question deserves; four error types would only make every caller match
-//! on all of them.
+//! What a driven method answers with when there is no answer: one flat enum
+//! shared by the envelope (`rpc`) and the typed layer (`client`).
 
 use agent_client_protocol_schema::v1;
 
@@ -30,30 +24,25 @@ pub enum CallError {
     UnsupportedPromptContent,
     /// The bounded outgoing queue cannot accept a prompt immediately.
     OutgoingBusy,
-    /// The session's working directory could not be named. ACP wants an
-    /// absolute path (§7.1) and the form is a place where people type `.` or
-    /// nothing at all, so the answer has to be made out of where the inspector
-    /// itself is — and a process whose own working directory has been deleted
-    /// underneath it cannot say. Naming a plausible directory instead is the
-    /// one thing this tool may not do.
+    /// The session's absolute working directory could not be determined: the
+    /// form's path is relative and the inspector's own working directory is
+    /// unknown (e.g. deleted).
     NoWorkingDirectory,
     /// Inspector-supplied MCP input is incomplete; no Session call was made.
     InvalidMcp(String),
-    /// The blocking request was not waiting for this answer, so it was not
-    /// sent: it has one already, or the turn it blocked ended without it. The
-    /// agent asked once and is told once — a second response to an id already
-    /// answered is a frame JSON-RPC has no shape for — and an answer chosen as
-    /// the turn was cancelled out from under it is the usual way to arrive
-    /// here.
+    /// The blocking request was not waiting for this answer, so nothing was
+    /// sent: it was already answered, or the turn it blocked ended. Each id is
+    /// answered at most once.
     NotWaiting,
-    /// The agent answered, and the answer was an error. Carried whole — the
-    /// `-32000 auth_required` state the spec asks the UI to surface (§7.1) is
-    /// this arm with a code in it, not a special case here.
+    /// The agent answered with an error, carried whole (including
+    /// `-32000 auth_required`).
     Rejected(v1::Error),
-    /// The agent answered with a result v1 could not read. The frame is in the
-    /// trace, verbatim, like every other (§8); this is what the decoder said
-    /// about it.
+    /// The agent answered with a result v1 could not read; this is the
+    /// decoder's message. The frame is in the trace verbatim.
     Undecodable(String),
+    /// The agent's answer was longer than the transport carries, so it was
+    /// dropped; `length` is its size in bytes. A placeholder is in the trace.
+    AnswerDropped { length: usize },
 }
 
 impl std::fmt::Display for CallError {
@@ -89,6 +78,10 @@ impl std::fmt::Display for CallError {
             Self::Undecodable(problem) => {
                 write!(f, "the agent's answer could not be read as v1: {problem}")
             }
+            Self::AnswerDropped { length } => write!(
+                f,
+                "the agent's answer was {length} bytes, too long to carry, and was dropped"
+            ),
         }
     }
 }

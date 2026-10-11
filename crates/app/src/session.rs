@@ -1,22 +1,6 @@
-//! Where sessions are opened, switched and ended (`docs/architecture.md` §9).
-//!
-//! **It is reached from the Timeline's own header, because a session is what
-//! the Timeline draws.** Opening one, switching to one and closing one all
-//! change what is on the screen the control sits on, which is the one place a
-//! reader can see what the click did. It was a group of the Agent screen, where
-//! it collided with that screen's own `Sessions` heading — the capability run of
-//! the same name, 320px below it — and where every act on a session was a tab
-//! away from the session.
-//!
-//! **A dialog and not a menu.** The sketch this came from was a dropdown, and
-//! the rows would not have it: a listed session carries `session/load` or
-//! `session/resume` with its own `additionalDirectories` control, `session/close`
-//! and `session/delete`, the directory it was opened in, when it was last
-//! updated, and a page cursor under all of it (§7.5). A menu holding that is a
-//! panel wearing a menu's clothes, and a menu that dropped it would be
-//! abridging the affordances §7.5 gates one at a time. What the platform's
-//! `<dialog>` gives is what `crate::connect` already relies on it for: a focus
-//! trap, a backdrop, Escape, and focus handed back to the button that opened it.
+//! The Sessions dialog, opened from the Timeline's header: where sessions are
+//! opened, switched and ended. A `<dialog>` rather than a menu, because each row
+//! carries several calls and a roots control. See `docs/architecture.md` §7.5, §9.
 
 use crate::agent::Claims;
 use dioxus::prelude::*;
@@ -24,20 +8,16 @@ use dioxus::prelude::*;
 #[cfg(test)]
 use acp_inspector_core::v1;
 
-/// The dialog, by the name the two scripts below reach it under.
+/// The dialog's element id.
 const DIALOG: &str = "sessions-dialog";
 
-/// Open it. See [`crate::connect::open`] for why this is a call and not an
-/// attribute, and why no signal shadows it.
-///
-/// Nothing the agent said reaches this string: the only value interpolated is a
-/// `const` this crate wrote.
+/// Opens it modally. See [`crate::connect::open`] for why this is a call and
+/// not an attribute. Only a crate `const` is interpolated into the script.
 pub fn open() {
     document::eval(&format!("document.getElementById({DIALOG:?})?.showModal()"));
 }
 
-/// Shut it, for the one thing that shuts it which is not the reader: a session
-/// that opened, which is the answer every control in here was pressed for.
+/// Closes it; called when a session opens.
 pub fn close() {
     document::eval(&format!("document.getElementById({DIALOG:?})?.close()"));
 }
@@ -45,9 +25,8 @@ pub fn close() {
 /// The sessions this agent has, and the four calls that act on them.
 #[component]
 pub fn Sessions(claims: Claims) -> Element {
-    // What the roots control beside `session/new` holds (§7.7). A hook, so it
-    // is taken before any branch, and it lives here rather than beside the
-    // button so that a dialog shut and reopened comes back to what was typed.
+    // The `session/new` roots control's text. Held here so it survives the
+    // dialog being shut and reopened.
     let creating = use_signal(String::new);
     let count = claims
         .listing
@@ -59,23 +38,16 @@ pub fn Sessions(claims: Claims) -> Element {
             id: DIALOG,
             class: "modal sessions-dialog",
             "data-slot": "session-manager",
-            // **Focus lands on the dialog and not on a control.** `showModal`
-            // gives the keyboard to the first focusable thing it finds, which
-            // here was the close button — so opening the surface lit a ring on
-            // *Close*, which is both the least likely thing a reader came for
-            // and the one whose accidental Enter undoes the opening. A
-            // container that can hold focus and does nothing with it puts the
-            // reader at the top of the dialog, where the heading is, with the
-            // tab order still ahead of them.
+            aria_labelledby: "sessions-title",
+            // Focus lands on the box, not on Close, which `showModal` would
+            // otherwise pick as the first focusable element.
             div {
                 class: "modal-box dialog-box sessions-box",
                 tabindex: "-1",
                 autofocus: true,
                 header { class: "dialog-head",
-                    h2 { "Sessions" }
-                    // The agent's own count, kept at nought: a nought here is
-                    // what the agent answered rather than an empty surface
-                    // (ADR 0006).
+                    h2 { id: "sessions-title", "Sessions" }
+                    // Zero is shown: it is the agent's answer (ADR 0006).
                     if let Some(count) = count {
                         span { class: "dialog-count", "{count}" }
                     }
@@ -91,21 +63,24 @@ pub fn Sessions(claims: Claims) -> Element {
                     }
                 }
 
-                {
-                    crate::agent::sessions(
-                        claims.listing(),
-                        claims.connected,
-                        claims.failed.as_ref(),
-                        creating,
-                        claims.on_new_session,
-                    )
+                div { class: "dialog-body",
+                    {
+                        crate::agent::sessions(
+                            claims.listing(),
+                            claims.connected,
+                            claims.failed.as_ref(),
+                            creating,
+                            claims.on_new_session,
+                        )
+                    }
+                    crate::mcp::McpEditor { prefix:"sessions" }
                 }
-                crate::mcp::McpEditor { prefix:"sessions" }
             }
 
-            // The click outside, which `showModal` does not give (`connect.rs`).
+            // The click outside, which `showModal` does not give. Out of the
+            // Tab order: Escape and Close are the keyboard's ways out.
             form { method: "dialog", class: "modal-backdrop",
-                button { "data-slot": "dismiss", "close" }
+                button { "data-slot": "dismiss", tabindex: "-1", "close" }
             }
         }
     }
@@ -115,8 +90,7 @@ pub fn Sessions(claims: Claims) -> Element {
 mod tests {
     use super::*;
 
-    /// An agent that advertised everything this dialog gates a control on, so
-    /// that a control missing from the markup is a control this moved and lost.
+    /// An agent that advertised everything this dialog gates a control on.
     fn described() -> v1::InitializeResponse {
         v1::InitializeResponse::new(acp_inspector_core::ProtocolVersion::V1).agent_capabilities(
             v1::AgentCapabilities::new()
@@ -131,9 +105,8 @@ mod tests {
         )
     }
 
-    /// The dialog, rendered. The fixture is built *inside* a component because
-    /// `Claims` carries `EventHandler`s, and one made outside a running
-    /// VirtualDom has no runtime to belong to.
+    /// The dialog, rendered. Built inside a component because `Claims` carries
+    /// `EventHandler`s, which need a runtime.
     fn shown(agent: Option<v1::InitializeResponse>) -> String {
         #[component]
         fn Host(agent: Option<v1::InitializeResponse>) -> Element {
@@ -163,9 +136,6 @@ mod tests {
 
     #[test]
     fn every_affordance_the_group_had_survives_the_move() {
-        // The move is a move and never an abridgement: a dialog that dropped
-        // `session/close` or the roots control would be narrowing what §7.5
-        // gates one claim at a time, under cover of a layout change.
         let html = shown(Some(described()));
 
         for affordance in ["session/new", "session/list", "additionalDirectories"] {
@@ -181,20 +151,20 @@ mod tests {
     fn the_platform_is_given_the_click_outside_and_the_first_focus() {
         let html = shown(Some(described()));
 
-        // A click on the backdrop closes a dialog in every application anybody
-        // has used, and `showModal` does not do it. A form that submits to the
-        // dialog is the platform's own way out rather than a listener this
-        // window attaches, removes and has to reason about.
+        // A form submitting to the dialog closes it on a backdrop click.
         assert!(
             html.contains(r#"<form method="dialog" class="modal-backdrop">"#)
                 && html.contains(r#"data-slot="dismiss""#),
             "the click outside is a form that closes the dialog: {html}"
         );
+        assert!(
+            html.contains(r#"aria-labelledby="sessions-title""#)
+                && html.contains(r#"id="sessions-title""#)
+                && html.contains(r#"data-slot="dismiss" tabindex="-1""#),
+            "the dialog is named by its heading and the backdrop is not a Tab stop: {html}"
+        );
 
-        // And the keyboard arrives at the dialog rather than on its Close
-        // button, which is where `showModal` puts it by default: the least
-        // likely thing a reader came for, and the one whose accidental Enter
-        // undoes the opening.
+        // The first focus is the box, not Close.
         let box_ = html
             .split_once(r#"class="modal-box dialog-box sessions-box""#)
             .expect("the dialog's box")

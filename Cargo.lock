@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acp-inspector"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "acp-inspector-core",
  "base64",
@@ -14,9 +14,11 @@ dependencies = [
  "dioxus-html",
  "dioxus-primitives",
  "dioxus-ssr",
+ "dirs",
  "jiff",
  "open",
  "png 0.18.1",
+ "rfd",
  "schemaform",
  "schemaform-dioxus",
  "serde",
@@ -26,8 +28,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acp-inspector-cli"
+version = "0.1.0"
+dependencies = [
+ "acp-inspector-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "acp-inspector-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "agent-client-protocol-schema",
  "dirs",
@@ -50,9 +62,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.7.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca98360c7bb8cc97d7acd49e2a8a851c3f7bee6b2f0535036d8ab86b5fcd223d"
+checksum = "3d9a84a76a4f44721e0d8dabcd85b219893c43d6171a4a033d84844d85880823"
 dependencies = [
  "anyhow",
  "derive_more 2.1.1",
@@ -1385,9 +1397,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-field"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad9469fcc2a21612f5dca5fe2120108b2ebebf5b334495ec4a9f4c6d99828968"
+checksum = "dd5260b30c6186f46fb499a639a31ac1fa70405327e1a3e49f4526033d40d587"
 dependencies = [
  "dioxus",
  "dioxus-core",
@@ -3218,9 +3230,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7070bf0681439ff992bb94947cb3a361f57c880561c1e9e90ddb5941c7ec2d04"
+checksum = "f622c574a29fb3034a0a90645afee194dfedc75fc124228801b6e77041075bd1"
 dependencies = [
  "ahash",
  "bytecount",
@@ -3248,9 +3260,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-macros"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09bf2cff6a323e13ecc331d319d8062dc07992c12e6db20b3d6284730f3efd23"
+checksum = "5553b59276ad81f2f49c80cd381a6d6d873e74139cdeb2bef0f9eb28a2ded2b6"
 dependencies = [
  "jsonschema-macros-core",
  "proc-macro2",
@@ -3258,9 +3270,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-macros-core"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7d537fa1bbdc3aa5be9343fecad25202c73e501535d9a0f9879d0c2c9c3a328"
+checksum = "bf3ebe067f2c25a981a7d1b2f696fc213e10dbf80ba5fe997f7dc2e4fe261f26"
 dependencies = [
  "fancy-regex",
  "indexmap 2.14.0",
@@ -3277,18 +3289,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6525f2f72c37c1a09f59a6d0d33f60ecf8beabd00be92fe8d49555cae15289c"
+checksum = "a968fffd387b2ab005bf00c1851f5d26e90df05b6f7ad609ed0d620033cca5e7"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4309c6b52390b1ebdd2053e513e9f23d4bb18d0c3c2df8142eded3eb188a85bf"
+checksum = "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96"
 dependencies = [
  "ahash",
  "bytecount",
@@ -5040,9 +5052,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.54.0"
+version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0304d4734d208eaf24528093715e2cb5260c977b1be1eb81cd487f601e3ff35d"
+checksum = "558f3855529c0a7e78a48e409fa653456e55f1b167eab4109c16a255b7727e3f"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -5208,9 +5220,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
  "ring",
@@ -5232,9 +5244,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -5273,9 +5285,9 @@ dependencies = [
 
 [[package]]
 name = "schemaform"
-version = "0.5.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f501053ee89fdfb402771328c0db88ac8d8904a90854a19e183af7f24628b7cd"
+checksum = "7fa679e39730601aaf4dc8e4331513199a8c08ab453beaba11bde3a7c32e70b5"
 dependencies = [
  "jsonptr",
  "jsonschema",
@@ -5289,9 +5301,9 @@ dependencies = [
 
 [[package]]
 name = "schemaform-dioxus"
-version = "0.5.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d139f27e242e339443d07e27d682590114ee384253d422d1a7836c16fb4410b2"
+checksum = "cbfcdca2a7f91205796fc175a1b005d8fb4c770ee6ce938e6d0b55c54ea9d0ec"
 dependencies = [
  "dioxus",
  "dioxus-core",

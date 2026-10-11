@@ -354,6 +354,21 @@ pub fn NativeSelect<T: Clone + PartialEq + 'static>(
     }
 }
 
+// `GlobalAttributes` and `select` both define `autofocus`, so naming it on `NativeSelect` would be
+// ambiguous (E0034, DioxusLabs/dioxus#5271). Inherent methods win method resolution and forward to
+// the element's own attribute, as `select { .. }` resolves it. Unused, they would warn in an app
+// that installs this Component. Remove once upstream resolves the conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F, T: Clone + PartialEq + 'static> NativeSelectPropsBuilder<F, T>
+where
+    Self: dioxus_elements::extensions::SelectExtension,
+{
+    /// The `select` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::SelectExtension::autofocus(self, value)
+    }
+}
+
 /// The common Field composition for a native select.
 ///
 /// This Composition sugar intentionally has no children. Use [`Field`] and its
@@ -448,5 +463,20 @@ pub fn NativeSelectField<T: Clone + PartialEq + 'static>(
             }
             FieldError { appearance: error_appearance }
         }
+    }
+}
+
+// `GlobalAttributes` and `select` both define `autofocus`, so naming it on `NativeSelectField`
+// would be ambiguous (E0034, DioxusLabs/dioxus#5271). Inherent methods win method resolution and
+// forward to the element's own attribute, as `select { .. }` resolves it. Unused, they would warn
+// in an app that installs this Component. Remove once upstream resolves the conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F, T: Clone + PartialEq + 'static> NativeSelectFieldPropsBuilder<F, T>
+where
+    Self: dioxus_elements::extensions::SelectExtension,
+{
+    /// The `select` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::SelectExtension::autofocus(self, value)
     }
 }

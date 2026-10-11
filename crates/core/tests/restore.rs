@@ -273,7 +273,7 @@ async fn an_agent_that_advertises_only_resume_offers_resume() {
     // The other half of the preference, and the case the screen has something
     // to say about: this agent can reopen the session and cannot show what was
     // said in it. Core answers *which call*; saying so in words is the
-    // window's, beside the button (`crates/app/src/agent.rs`).
+    // window's, beside the button (`crates/app/src/agent/roots.rs`).
     let inspector = Inspector::new();
     inspector.connect(&advertising(r#"{"sessionCapabilities":{"resume":{}}}"#, &[]).factory());
     assert_eq!(

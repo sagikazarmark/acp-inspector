@@ -11,7 +11,6 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use dioxus_field::{Binding, ChangeOrigin, FieldMetaValues};
-use dioxus_primitives::checkbox::CheckboxState;
 use schemaform_dioxus::{
     BooleanEdit, ChoiceEdit, ChoiceIdentity, ControlFacets, NodePresentation, TextEdit,
     render::{FindingDescriptor, FindingKind},
@@ -25,7 +24,7 @@ use schemaform_dioxus::{
 /// interchangeably, so only they make up the identity: a binding built from the same control on
 /// a later render compares equal even after such a change.
 #[derive(Clone, PartialEq)]
-struct EditHandles<V: 'static, W: 'static> {
+pub(crate) struct EditHandles<V: 'static, W: 'static> {
     value: ReadSignal<V>,
     write: Callback<W>,
     blur: Callback<()>,
@@ -33,13 +32,13 @@ struct EditHandles<V: 'static, W: 'static> {
 
 /// The Commit capability of every binding here: a no-op, because the core applies each edit as
 /// it happens and has no separate interaction unit.
-fn use_no_commit() -> Callback<()> {
+pub(crate) fn use_no_commit() -> Callback<()> {
     use_callback(|()| {})
 }
 
 /// The Focus Exit capability of every binding here: marks the control touched through the
 /// edit's `blur`.
-fn use_focus_exit(blur: Callback<()>) -> Callback<()> {
+pub(crate) fn use_focus_exit(blur: Callback<()>) -> Callback<()> {
     use_callback(move |()| blur.call(()))
 }
 
@@ -86,27 +85,6 @@ pub fn use_boolean_binding(edit: BooleanEdit) -> Binding<Option<bool>> {
         .with_focus_exit_using_identity(focus_exit)
 }
 
-/// Adapts a [`BooleanEdit`] to the registry `Checkbox`'s tri-state binding, with JSON null
-/// shown as the indeterminate state.
-///
-/// This is a hook: call it unconditionally in the renderer's child component, after
-/// [`schemaform_dioxus::use_boolean_edit`]. The `CheckboxState` mapping lives here and nowhere
-/// else: `Some(true)` is checked, `Some(false)` is unchecked, `None` is indeterminate, and a
-/// write in either direction follows the same table, so writing indeterminate sets null.
-/// Commit is a no-op and Focus Exit marks the control touched, as for
-/// [`use_boolean_binding`].
-pub fn use_checkbox_binding(edit: BooleanEdit) -> Binding<CheckboxState> {
-    let state = use_memo(move || checkbox_state(edit.checked.cloned()));
-    let read = use_hook(|| ReadSignal::new(state));
-    let write = use_callback(move |(state, _origin): (CheckboxState, ChangeOrigin)| {
-        edit.set.call(checked_of(state));
-    });
-    let commit = use_no_commit();
-    let focus_exit = use_focus_exit(edit.blur);
-    Binding::new_with_identity(read, write, commit, boolean_handles(edit))
-        .with_focus_exit_using_identity(focus_exit)
-}
-
 /// A boolean edit's handles, the identity of every binding built from it.
 fn boolean_handles(edit: BooleanEdit) -> EditHandles<Option<bool>, Option<bool>> {
     EditHandles {
@@ -116,26 +94,8 @@ fn boolean_handles(edit: BooleanEdit) -> EditHandles<Option<bool>, Option<bool>>
     }
 }
 
-/// The checkbox state that shows a boolean edit's tri-state: null is indeterminate.
-fn checkbox_state(checked: Option<bool>) -> CheckboxState {
-    match checked {
-        Some(true) => CheckboxState::Checked,
-        Some(false) => CheckboxState::Unchecked,
-        None => CheckboxState::Indeterminate,
-    }
-}
-
-/// The boolean edit's tri-state a checkbox state writes: indeterminate is null.
-fn checked_of(state: CheckboxState) -> Option<bool> {
-    match state {
-        CheckboxState::Checked => Some(true),
-        CheckboxState::Unchecked => Some(false),
-        CheckboxState::Indeterminate => None,
-    }
-}
-
-/// Adapts a [`ChoiceEdit`] to the binding a registry `NativeSelect` or `Select` over
-/// [`ChoiceIdentity`] speaks.
+/// Adapts a [`ChoiceEdit`] to the binding a registry `NativeSelect` (or, in an add-on, the
+/// compound `Select`) over [`ChoiceIdentity`] speaks.
 ///
 /// This is a hook: call it unconditionally in the renderer's child component, after
 /// [`schemaform_dioxus::use_choice_edit`]. The value is the selected option's opaque identity,
@@ -157,44 +117,8 @@ pub fn use_choice_binding(edit: ChoiceEdit) -> Binding<Option<ChoiceIdentity>> {
         .with_focus_exit_using_identity(focus_exit)
 }
 
-/// Adapts a [`ChoiceEdit`] to the string binding a registry `RadioGroup` speaks.
-///
-/// This is a hook: call it unconditionally in the renderer's child component, after
-/// [`schemaform_dioxus::use_choice_edit`]. The value is the selected option's identity as
-/// [`ChoiceIdentity::as_str`], or the empty string while nothing is selected, so an item whose
-/// `value` is its option's identity string is the checked one. Write maps the string back to the
-/// option carrying it and selects that option; a string no option carries selects nothing, which
-/// the edit treats as a no-op. Commit and Focus Exit behave as for [`use_choice_binding`].
-pub fn use_radio_binding(edit: ChoiceEdit) -> Binding<String> {
-    let selected = edit.selected;
-    let value = use_memo(move || {
-        selected
-            .read()
-            .as_ref()
-            .map(|identity| identity.as_str().to_owned())
-            .unwrap_or_default()
-    });
-    let read = use_hook(|| ReadSignal::new(value));
-    let identity = choice_handles(&edit);
-    let select = edit.select;
-    let blur = edit.blur;
-    // `use_callback` keeps the handle and replaces the closure on every render, so the lookup
-    // always sees the option list of the latest render.
-    let options = edit.options;
-    let write = use_callback(move |(value, _origin): (String, ChangeOrigin)| {
-        let identity = options
-            .iter()
-            .find(|option| option.identity.as_str() == value)
-            .map(|option| option.identity.clone());
-        select.call(identity);
-    });
-    let commit = use_no_commit();
-    let focus_exit = use_focus_exit(blur);
-    Binding::new_with_identity(read, write, commit, identity)
-        .with_focus_exit_using_identity(focus_exit)
-}
-
-fn choice_handles(
+/// A choice edit's handles, the identity of every binding built from it.
+pub(crate) fn choice_handles(
     edit: &ChoiceEdit,
 ) -> EditHandles<Option<ChoiceIdentity>, Option<ChoiceIdentity>> {
     EditHandles {
