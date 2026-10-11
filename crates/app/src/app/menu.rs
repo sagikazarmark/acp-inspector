@@ -77,6 +77,7 @@ pub(crate) fn use_menu(inspector: &Inspector, menu: Menu) {
             navigation.console(Tab::Diagnostics);
         }
         shell::command::TOGGLE_CONSOLE => navigation.layout(spine().other()),
+        shell::command::PALETTE => crate::palette::toggle(),
         _ => {}
     });
     // An item that would do nothing is disabled rather than silent.

@@ -108,7 +108,10 @@ fn App() -> Element {
     use_effect(|| {
         document::eval(tail::WATCH);
     });
-    // The palette's keystroke works wherever focus is (`palette.rs`).
+    // The palette's keystroke in a browser. On desktop it is the View menu's
+    // accelerator (`shell.rs`), which the page never sees, so installing this
+    // too could toggle the palette twice.
+    #[cfg(not(feature = "desktop"))]
     use_effect(|| {
         document::eval(&palette::watch());
     });

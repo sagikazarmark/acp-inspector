@@ -91,6 +91,7 @@ pub mod shortcut {
 ///
 /// ⌘K on macOS and Ctrl+K elsewhere: Ctrl+K on a Mac is a text-editing key.
 /// Only this crate's `const`s are interpolated, never anything an agent said.
+#[cfg_attr(feature = "desktop", allow(dead_code))]
 pub fn watch() -> String {
     format!(
         r#"
@@ -129,6 +130,20 @@ fn opening() -> String {
 palette?.showModal();
 palette?.querySelector({QUERY:?})?.focus();"
     )
+}
+
+/// Opens it, or shuts it if it is open: what the menu's ⌘K does.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub fn toggle() {
+    document::eval(&format!(
+        "const palette = document.getElementById({DIALOG:?});
+if (palette?.open) {{
+  palette.close();
+}} else {{
+{}
+}}",
+        opening()
+    ));
 }
 
 /// Shut it, which is what running a command does.

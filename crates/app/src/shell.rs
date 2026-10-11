@@ -347,6 +347,7 @@ pub mod command {
     pub const SHOW_TRACE: &str = "view-trace";
     pub const SHOW_DIAGNOSTICS: &str = "view-diagnostics";
     pub const TOGGLE_CONSOLE: &str = "view-console";
+    pub const PALETTE: &str = "view-palette";
     pub const QUIT: &str = "app-quit";
 }
 
@@ -474,6 +475,14 @@ pub fn menu() -> Option<Menu> {
 
     let view = Submenu::new("View", true);
     view.append_items(&[
+        // A menu item rather than a page listener, as every other shortcut
+        // is: the accelerator reaches the window whatever has focus.
+        &item(
+            command::PALETTE,
+            "Command Palette\u{2026}",
+            Some(shortcut::PALETTE),
+        ),
+        &PredefinedMenuItem::separator(),
         &item(command::SHOW_TRACE, "Trace", Some(shortcut::SHOW_TRACE)),
         &item(
             command::SHOW_DIAGNOSTICS,
@@ -652,7 +661,7 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("pub const "))
             .filter_map(|line| line.split_once(':').map(|(name, _)| name))
             .collect::<Vec<_>>();
-        assert_eq!(declared.len(), 11, "every command is found: {declared:?}");
+        assert_eq!(declared.len(), 12, "every command is found: {declared:?}");
 
         for name in declared {
             assert!(
