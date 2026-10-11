@@ -1129,7 +1129,8 @@ p.alert { display: block; }
 .mode-cycle:hover { color: var(--txt); border-color: var(--line2); }
 .mode-cycle[aria-disabled="true"] { opacity: 0.4; }
 /* What is attached to the prompt before it is sent. */
-.prompt-attachment-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; }
+/* Attach sits in the foot beside the mode, with the draft's total after it. */
+.prompt-attach { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .attach:focus-within { outline: 2px solid var(--acc); outline-offset: 2px; }
 .attach[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
 .prompt-attachments { max-height: 180px; overflow-y: auto; min-width: 0; }

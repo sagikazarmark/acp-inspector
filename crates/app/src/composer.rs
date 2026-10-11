@@ -446,71 +446,6 @@ pub fn Composer(
             }
 
             div { class: "prompt-box",
-                if attachments_advertised {
-                    div { class: "prompt-attachment-picker",
-                        // One line: the rules are in the button's tooltip.
-                        label { class: "btn btn-xs btn-quiet attach",
-                            title: attachment_rules(embedded_advertised, image_advertised),
-                            aria_disabled: (!ready || running).then_some("true"),
-                            "Attach files\u{2026}"
-                            input { id: picker_id.clone(), class: "sr-only", name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
-                                onmounted: {
-                                    let id = picker_id.clone();
-                                    move |_| { let bridge = document::eval(ATTACHMENT_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
-                                },
-                                aria_label: "Attach media", disabled: !ready || running,
-                                onchange: move |event| {
-                                    let files = event.files();
-                                    let reset = document::eval("const id = await dioxus.recv(); const input = document.getElementById(id); if (input) input.value = ''; ");
-                                    let _ = reset.send(picker_id.clone());
-                                    ingest.call(files);
-                                },
-                            }
-                        }
-                        span { class: "hint",
-                            if image_advertised { "or drop or paste · 8 files, 5 MiB each" } else { "or drop · 8 files, 5 MiB each" }
-                        }
-                        if !draft.read().entries().is_empty() {
-                            span { class: "hint", "data-slot": "attachment-total",
-                                "{files(draft.read().entries().len())} · {megabytes(draft.read().bytes() as u64)} of 6 MB"
-                            }
-                        }
-                    }
-                }
-                if let Some(problem) = attachment_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
-                if let Some(problem) = overflow() {
-                    div { class: "detail detail-warn", role: "status", "{problem}"
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Dismiss the attachment limit notice", onclick: move |_| overflow.set(None), "Dismiss" }
-                    }
-                }
-                div { class: "prompt-attachments",
-                for entry in draft.read().entries().to_vec() {
-                    div { key: "{entry.id}", class: "prompt-attachment", "data-slot": "attachment", "data-attachment-id": "{entry.id}",
-                        match &entry.state {
-                            AttachmentState::Ready(held) => rsx! {
-                                {match held.preview() {
-                                    AttachmentPreview::Pdf => rsx! { span { class: "hint", "PDF · original file embedded" } },
-                                    AttachmentPreview::Text { excerpt } => rsx! { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{excerpt}" } } },
-                                    AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
-                                    AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
-                                    AttachmentPreview::Blob => rsx! { span { class: "hint", "Binary file · original bytes embedded" } },
-                                    AttachmentPreview::Link => rsx! { span { class: "hint", "Resource link · the agent is sent the URI, not the contents" } },
-                                }}
-                                span { "{held.describe()}" }
-                            },
-                            AttachmentState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
-                            AttachmentState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
-                        }
-                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove attachment {entry.id}: {entry.name}",
-                            onclick: move |_| {
-                                draft.write().remove(entry.id);
-                                if let Some(bridge) = clipboard_bridge() { let _ = bridge.send(serde_json::json!({"cancel":entry.id})); }
-                                queued.write().retain(|(id, _)| *id != entry.id);
-                            }, "Remove"
-                        }
-                    }
-                }
-                }
                 textarea {
                     rows: 3,
                     value: "{text}",
@@ -573,6 +508,40 @@ pub fn Composer(
                         }
                     },
                 }
+                if let Some(problem) = attachment_problem() { p { class: "detail detail-warn", role: "status", "{problem}" } }
+                if let Some(problem) = overflow() {
+                    div { class: "detail detail-warn", role: "status", "{problem}"
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Dismiss the attachment limit notice", onclick: move |_| overflow.set(None), "Dismiss" }
+                    }
+                }
+                div { class: "prompt-attachments",
+                for entry in draft.read().entries().to_vec() {
+                    div { key: "{entry.id}", class: "prompt-attachment", "data-slot": "attachment", "data-attachment-id": "{entry.id}",
+                        match &entry.state {
+                            AttachmentState::Ready(held) => rsx! {
+                                {match held.preview() {
+                                    AttachmentPreview::Pdf => rsx! { span { class: "hint", "PDF · original file embedded" } },
+                                    AttachmentPreview::Text { excerpt } => rsx! { details { summary { "Text preview" } pre { class: "prompt-text-preview", "{excerpt}" } } },
+                                    AttachmentPreview::Audio { src } => rsx! { AudioPreview { name: held.name.clone(), src } },
+                                    AttachmentPreview::Image { src } => rsx! { img { src, alt: "Selected image: {held.name}" } },
+                                    AttachmentPreview::Blob => rsx! { span { class: "hint", "Binary file · original bytes embedded" } },
+                                    AttachmentPreview::Link => rsx! { span { class: "hint", "Resource link · the agent is sent the URI, not the contents" } },
+                                }}
+                                span { "{held.describe()}" }
+                            },
+                            AttachmentState::Reading => rsx! { span { role: "status", "{entry.name} · Reading file…" } },
+                            AttachmentState::Failed(problem) => rsx! { span { class: "detail detail-warn", role: "status", "{entry.name} · {problem}" } },
+                        }
+                        button { r#type: "button", class: "btn btn-ghost btn-xs", aria_label: "Remove attachment {entry.id}: {entry.name}",
+                            onclick: move |_| {
+                                draft.write().remove(entry.id);
+                                if let Some(bridge) = clipboard_bridge() { let _ = bridge.send(serde_json::json!({"cancel":entry.id})); }
+                                queued.write().retain(|(id, _)| *id != entry.id);
+                            }, "Remove"
+                        }
+                    }
+                }
+                }
 
                 // Always drawn, so the field's height does not change with the
                 // hint.
@@ -597,6 +566,35 @@ pub fn Composer(
                                 }
                             },
                             "mode: {mode.id}"
+                        }
+                    }
+                    if attachments_advertised {
+                        div { class: "prompt-attach",
+                            // The limits and the other ways in are the tooltip's.
+                            label { class: "btn btn-sm btn-quiet attach",
+                                title: attachment_rules(embedded_advertised, image_advertised),
+                                aria_disabled: (!ready || running).then_some("true"),
+                                {icon(Role::Attach)}
+                                "Attach"
+                                input { id: picker_id.clone(), class: "sr-only", name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
+                                    onmounted: {
+                                        let id = picker_id.clone();
+                                        move |_| { let bridge = document::eval(ATTACHMENT_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
+                                    },
+                                    aria_label: "Attach media", disabled: !ready || running,
+                                    onchange: move |event| {
+                                        let files = event.files();
+                                        let reset = document::eval("const id = await dioxus.recv(); const input = document.getElementById(id); if (input) input.value = ''; ");
+                                        let _ = reset.send(picker_id.clone());
+                                        ingest.call(files);
+                                    },
+                                }
+                            }
+                            if !draft.read().entries().is_empty() {
+                                span { class: "hint", "data-slot": "attachment-total",
+                                    "{files(draft.read().entries().len())} · {megabytes(draft.read().bytes() as u64)} of 6 MB"
+                                }
+                            }
                         }
                     }
                     if show_shortcut {
@@ -817,7 +815,9 @@ fn naming_a_command(draft: &str, dismissed: bool) -> bool {
 
 /// The attachment rules, in full, for the picker's tooltip.
 fn attachment_rules(embedded: bool, image: bool) -> String {
-    let mut rules = "Up to 8 attachments, 5 MiB each and 6 MiB in total.".to_owned();
+    let mut rules =
+        "Or drop files on the prompt. Up to 8 attachments, 5 MiB each and 6 MiB in total."
+            .to_owned();
     if embedded {
         rules.push_str(" UTF-8 text files are embedded as text, PDFs and other files as binary contents. Text preview shows the first 2000 characters.");
     }

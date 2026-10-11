@@ -53,6 +53,8 @@ pub(crate) enum Role {
     Send,
     /// Stop a turn.
     Stop,
+    /// Attach files to a prompt.
+    Attach,
     /// The first-run card: start an agent.
     Start,
     /// Sent to the agent.
@@ -66,7 +68,8 @@ pub(crate) enum Role {
 pub(crate) fn icon(role: Role) -> Element {
     use dioxus_free_icons::icons::ld_icons::{
         LdArrowLeft, LdArrowRight, LdArrowUp, LdBookOpen, LdCircleHelp, LdCircleStop, LdHand,
-        LdInfo, LdLightbulb, LdListChecks, LdMessageSquare, LdSparkles, LdSquareTerminal, LdWrench,
+        LdInfo, LdLightbulb, LdListChecks, LdMessageSquare, LdPaperclip, LdSparkles,
+        LdSquareTerminal, LdWrench,
     };
 
     let drawn = match role {
@@ -81,6 +84,7 @@ pub(crate) fn icon(role: Role) -> Element {
         Role::Note => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdInfo } },
         Role::Send => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdArrowUp } },
         Role::Stop => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdCircleStop } },
+        Role::Attach => rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdPaperclip } },
         Role::Start => {
             rsx! { Icon { class: "icon", width: 16, height: 16, icon: LdSquareTerminal } }
         }

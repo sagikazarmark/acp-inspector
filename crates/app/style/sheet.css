@@ -4412,12 +4412,11 @@ p.alert {
 .mode-cycle[aria-disabled="true"] {
   opacity: 0.4;
 }
-.prompt-attachment-picker {
+.prompt-attach {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  min-width: 0;
 }
 .attach:focus-within {
   outline: 2px solid var(--acc);
