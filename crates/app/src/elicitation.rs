@@ -946,7 +946,10 @@ mod tests {
         let mut dom = VirtualDom::new(host);
         dom.rebuild_in_place();
         let before = dioxus_ssr::render(&dom);
-        assert!(before.contains("<select") && before.contains("<button"), "{before}");
+        assert!(
+            before.contains("<select") && before.contains("<button"),
+            "{before}"
+        );
         let mut waiting = WAITING.with(|slot| slot.borrow().expect("the host ran"));
         dom.in_runtime(|| waiting.set(false));
         for _ in 0..4 {
@@ -956,7 +959,10 @@ mod tests {
         let after = dioxus_ssr::render(&dom);
         PROBLEMS.with(|problems| assert!(problems.borrow().is_empty(), "{:?}", problems.borrow()));
         for editable in ["<input", "<select", "<textarea", "<button"] {
-            assert!(!after.contains(editable), "{editable} after the answer: {after}");
+            assert!(
+                !after.contains(editable),
+                "{editable} after the answer: {after}"
+            );
         }
         assert!(after.contains(">Ada</output>"), "{after}");
     }
