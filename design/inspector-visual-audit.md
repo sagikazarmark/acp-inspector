@@ -700,6 +700,9 @@ INSPECTOR_MOCK=target/mock cargo test -p acp-inspector mock::writes
 
 Each page was captured with headless Chromium at a window 87px taller than the
 viewport (`--headless=new` reserves that much) and cropped to the viewport.
+Last recaptured on 2026-10-11, after schemaform 0.6.1 and the registry reinstall:
+quiet buttons that say which way they go (Decline, Disconnect, Stop, Delete) carry
+their tone again, which the interim presence-button rule had overridden.
 
 - Populated, 1440 x 900: [light](redesign/populated-1440-light.png), [dark](redesign/populated-1440-dark.png)
 - First run, 1440 x 900: [light](redesign/first-run-1440-light.png), [dark](redesign/first-run-1440-dark.png)
