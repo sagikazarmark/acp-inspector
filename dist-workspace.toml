@@ -9,7 +9,7 @@
 # for (a Linux build needs the WebKitGTK development packages below; a Windows
 # build needs the MSVC toolchain). The binary needs the same libraries at run
 # time: WebKitGTK 4.1 on Linux, and WebView2 on Windows (present on current
-# Windows 10 and 11). See README, "Releasing".
+# Windows 10 and 11). See docs/development.md, "Releasing".
 [workspace]
 members = ["cargo:."]
 

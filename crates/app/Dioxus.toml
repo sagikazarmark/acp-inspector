@@ -47,7 +47,7 @@ icon = ["bundle/icon.icns"]
 # differs. 11.0 (Big Sur) because it is the oldest macOS on Apple Silicon, so
 # both architectures get the same floor; wry/tao support older. Building inside
 # the devenv shell stamps its SDK's 14.0 instead, which is why release bundles
-# are built with Xcode's Command Line Tools (README, "Releasing").
+# are built with Xcode's Command Line Tools (docs/development.md, "Releasing").
 minimum_system_version = "11.0"
 # Required for notarization. Signing itself is not configured here — an
 # identity is a person's, not the project's — and is applied by `codesign` in

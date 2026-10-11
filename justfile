@@ -7,7 +7,7 @@ default: testy test
 #
 # Plain `cargo run`, no `dx`: nothing is resolved as an asset and nothing is
 # bundled, and keeping it that way is what makes the shell buildable by anyone
-# with a Rust toolchain and the WebView libraries (see the README). The
+# with a Rust toolchain and the WebView libraries (see docs/development.md). The
 # stylesheet is generated Tailwind/daisyUI output, committed to the tree and
 # compiled in rather than resolved (docs/adr/0003-the-stylesheet-is-generated-and-committed.md),
 # so Node changes the stylesheet and CI verifies it; it is not required to
@@ -23,7 +23,7 @@ run:
 
 # Run the headless CLI: `just cli -- run --prompt hi -- AGENT [ARGS...]`.
 #
-# The same core without a window (README, "Headless CLI"). The leading `--`
+# The same core without a window (docs/cli.md). The leading `--`
 # keeps `just` from reading the CLI's own flags, and is dropped here; the
 # arguments are passed positionally so a prompt with spaces stays one argument.
 [positional-arguments]
@@ -153,7 +153,7 @@ licenses out="dist/THIRD_PARTY_LICENSES.html":
 # from `/nix/store` and its SDK sets a deployment target of macOS 14, so a
 # bundle built there starts only on Macs that have that store path. Release
 # bundles are built with Xcode's Command Line Tools, rustup (which reads
-# `rust-toolchain.toml`), `dx` 0.7 and cargo-about on PATH (README, "Releasing");
+# `rust-toolchain.toml`), `dx` 0.7 and cargo-about on PATH (docs/development.md, "Releasing");
 # the recipe refuses a Nix shell up front, and `scripts/check-macos-bundle.sh`
 # checks the result either way.
 #
@@ -184,7 +184,7 @@ bundle-macos identity="" notary="":
     if [ -n "${IN_NIX_SHELL:-}" ] || [ -n "${DEVENV_ROOT:-}" ] || [ "${cc_path#/nix/store/}" != "$cc_path" ]; then
         echo "bundle-macos: this is a Nix shell (cc is ${cc_path:-missing}). A bundle built here links /nix/store" >&2
         echo "  libraries and targets the shell's SDK, and no other Mac can start it. Run it from a plain" >&2
-        echo "  terminal with Xcode's Command Line Tools and rustup (README, \"Releasing\")." >&2
+        echo "  terminal with Xcode's Command Line Tools and rustup (docs/development.md, \"Releasing\")." >&2
         exit 1
     fi
 
@@ -314,7 +314,7 @@ dist-plan:
     dist plan
 
 # Untested on CI, and never uploads: `dist-workspace.toml` configures no CI. On
-# Linux it needs the WebKitGTK development packages (README, "Building"); on
+# Linux it needs the WebKitGTK development packages (docs/development.md, "Prerequisites"); on
 # Windows, the MSVC toolchain. Ship `just licenses` beside it (L5).
 #
 #   just dist-build                              # this machine's target

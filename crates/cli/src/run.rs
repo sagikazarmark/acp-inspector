@@ -129,7 +129,7 @@ pub enum Answer {
 }
 
 impl Report {
-    /// The process's exit code (README, "Headless CLI").
+    /// The process's exit code (docs/cli.md, "Exit codes").
     pub fn exit_code(&self) -> u8 {
         match &self.ending {
             Ending::Interrupted => 130,

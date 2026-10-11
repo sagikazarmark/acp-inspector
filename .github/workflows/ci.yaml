@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # The desktop shell's WebView and the libraries dioxus-desktop links on
-      # Linux (README, "Running it"). macOS needs nothing: WKWebView and
+      # Linux (docs/development.md, "Prerequisites"). macOS needs nothing: WKWebView and
       # Security come with the system SDK.
       - name: Install WebKitGTK and the desktop shell's system libraries
         if: runner.os == 'Linux'
@@ -126,7 +126,7 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@v2
-      # Windows is built from source and not packaged or tested (README,
+      # Windows is built from source and not packaged or tested (docs/guide.md,
       # "Supported platforms"); this keeps it compiling.
       - name: Check
         run: cargo check --workspace --all-targets --locked

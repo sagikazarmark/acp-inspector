@@ -41,7 +41,7 @@ foreign="$(otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/S
 if [ -n "$foreign" ]; then
     echo "check-macos-bundle: $binary links libraries another Mac does not have:" >&2
     echo "$foreign" | sed 's/^/  /' >&2
-    echo "  Build the bundle outside the devenv shell, with Xcode's Command Line Tools as the C toolchain (README, \"Releasing\")." >&2
+    echo "  Build the bundle outside the devenv shell, with Xcode's Command Line Tools as the C toolchain (docs/development.md, \"Releasing\")." >&2
     failed=1
 fi
 
