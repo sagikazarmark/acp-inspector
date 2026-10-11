@@ -923,6 +923,44 @@ mod tests {
         assert!(html.contains(r#"tabindex="0""#), "{html}");
     }
 
+    #[tokio::test]
+    async fn a_form_answered_while_shown_turns_read_only_in_every_control() {
+        use std::{cell::RefCell, time::Duration};
+        thread_local! {
+            static WAITING: RefCell<Option<Signal<bool>>> = const { RefCell::new(None) };
+            static PROBLEMS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        }
+        fn host() -> Element {
+            let waiting = use_signal(|| true);
+            use_hook(|| WAITING.with(|slot| *slot.borrow_mut() = Some(waiting)));
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","properties":{
+                    "name":{"type":"string","default":"Ada"},"agree":{"type":"boolean"},
+                    "size":{"type":"string","enum":["s","m"]},
+                    "tags":{"type":"array","items":{"type":"string","enum":["a","b"]}},
+                    "notes":{"type":"array","items":{"type":"string"}}}}).to_string(),
+                waiting: waiting(), on_ready: |_| {},
+                on_problem: |error: String| PROBLEMS.with(|problems| problems.borrow_mut().push(error)),
+            } }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        let before = dioxus_ssr::render(&dom);
+        assert!(before.contains("<select") && before.contains("<button"), "{before}");
+        let mut waiting = WAITING.with(|slot| slot.borrow().expect("the host ran"));
+        dom.in_runtime(|| waiting.set(false));
+        for _ in 0..4 {
+            let _ = tokio::time::timeout(Duration::from_millis(50), dom.wait_for_work()).await;
+            dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        }
+        let after = dioxus_ssr::render(&dom);
+        PROBLEMS.with(|problems| assert!(problems.borrow().is_empty(), "{:?}", problems.borrow()));
+        for editable in ["<input", "<select", "<textarea", "<button"] {
+            assert!(!after.contains(editable), "{editable} after the answer: {after}");
+        }
+        assert!(after.contains(">Ada</output>"), "{after}");
+    }
+
     #[test]
     fn a_default_beyond_engine_limits_keeps_the_raw_fallback_local() {
         let html = form_of(
