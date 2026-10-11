@@ -956,6 +956,11 @@ p.alert { display: block; }
   line-height: 1.55;
   white-space: pre-wrap;
 }
+/* A quoted block with its Copy in the top corner, clear of the text. */
+.quoted-block { position: relative; }
+.quoted-block > .quoted { padding-right: 48px; }
+.quoted-copy { position: absolute; top: 4px; right: 8px; }
+.quoted-copy .copy { --btn-bg: var(--sunk); }
 /* A diff: the path, then each side on a wash of its own tone with a rule down
    its edge (D14), so which side is which is a ground and an edge as well as a
    word read out to a screen reader. */

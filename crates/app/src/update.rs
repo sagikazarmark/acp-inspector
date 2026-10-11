@@ -380,12 +380,17 @@ fn raw(
                     {disclosure::chevron()}
                     "{what}"
                 }
-                Windowed {
-                    text: crate::indent::drawn(&disclosure, false, &value.to_string()),
-                    class: "quoted",
+                // Copy in the block's corner, where it stays as the block scrolls.
+                div { class: "quoted-block",
+                    Windowed {
+                        text: crate::indent::drawn(&disclosure, false, &value.to_string()),
+                        class: "quoted",
+                    }
+                    div { class: "quoted-copy",
+                        // The value as it arrived, whatever the layout above says.
+                        Copy { text: value.to_string(), what: "raw {what}" }
+                    }
                 }
-                // The value as it arrived, whatever the layout above says.
-                Copy { text: value.to_string(), what: "raw {what}" }
             }
         }
     }

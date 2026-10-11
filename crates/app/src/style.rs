@@ -869,6 +869,7 @@ mod tests {
                         ".reach",
                         ".rail",
                         ".body.drawer-open .rail-backdrop",
+                        ".quoted-copy",
                     ]
                     .contains(&selector.as_str()),
                     "`{selector}` is out of flow and is not one of the things that may be"
@@ -879,6 +880,11 @@ mod tests {
             declared(".composer-inner", "position").as_deref(),
             Some("relative"),
             "the commands are positioned against the composer"
+        );
+        assert_eq!(
+            declared(".quoted-block", "position").as_deref(),
+            Some("relative"),
+            "a quoted block's Copy is positioned against the block"
         );
     }
 

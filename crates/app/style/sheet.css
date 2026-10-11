@@ -4004,6 +4004,20 @@ p.alert {
   line-height: 1.55;
   white-space: pre-wrap;
 }
+.quoted-block {
+  position: relative;
+}
+.quoted-block > .quoted {
+  padding-right: 48px;
+}
+.quoted-copy {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+}
+.quoted-copy .copy {
+  --btn-bg: var(--sunk);
+}
 .diff {
   display: flex;
   flex-direction: column;
