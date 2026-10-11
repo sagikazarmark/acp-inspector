@@ -99,6 +99,13 @@ pub(crate) fn TopBar(
     /// rail is one.
     #[props(default)]
     on_drawer: Option<EventHandler<()>>,
+    /// Whether the rail is hidden on a wide window.
+    #[props(default)]
+    collapsed: bool,
+    /// Hides or shows the rail on a wide window. The stylesheet draws the
+    /// button only where the rail sits beside the screens.
+    #[props(default)]
+    on_collapse: Option<EventHandler<()>>,
 ) -> Element {
     let (tone, said) = connection_state(status);
 
@@ -120,6 +127,19 @@ pub(crate) fn TopBar(
                     aria_controls: navigation::RAIL,
                     title: if drawer { "Close the details" } else { "Show the connection, session and capabilities" },
                     onclick: move |_| on_drawer.call(()),
+                    dioxus_free_icons::Icon { class: "icon", width: 16, height: 16, icon: dioxus_free_icons::icons::ld_icons::LdPanelLeft }
+                }
+            }
+            if let Some(on_collapse) = on_collapse {
+                button {
+                    class: "btn btn-sm btn-quiet btn-square bar-collapse",
+                    "data-slot": "rail-collapse",
+                    r#type: "button",
+                    aria_label: "Details",
+                    aria_expanded: "{!collapsed}",
+                    aria_controls: navigation::RAIL,
+                    title: if collapsed { "Show the connection, session and capabilities" } else { "Hide the details" },
+                    onclick: move |_| on_collapse.call(()),
                     dioxus_free_icons::Icon { class: "icon", width: 16, height: 16, icon: dioxus_free_icons::icons::ld_icons::LdPanelLeft }
                 }
             }

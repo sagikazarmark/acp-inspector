@@ -15,6 +15,8 @@ pub(crate) struct Navigation {
     /// Whether the rail is open as a drawer, as it is on narrow windows. Only the
     /// narrow layout reads it.
     pub drawer: Signal<bool>,
+    /// Whether the rail is hidden on a wide window. Only the wide layout reads it.
+    pub collapsed: Signal<bool>,
 }
 
 /// The toolbar button that opens the drawer; focus returns here on close.
@@ -31,6 +33,7 @@ pub(crate) fn use_navigation() -> Navigation {
         revealed: use_signal(Vec::new),
         sought: use_signal(|| None),
         drawer: use_signal(|| false),
+        collapsed: use_signal(|| false),
     }
 }
 
@@ -109,6 +112,7 @@ impl Navigation {
 
     pub fn rail(mut self, chosen: rail::Tab) {
         self.region.set(Focus::Rail);
+        self.collapsed.set(false);
         self.rail.set(chosen);
         Destination::Control { id: chosen.id() }.focus();
     }
@@ -132,6 +136,12 @@ impl Navigation {
             },
         }
         .focus();
+    }
+
+    /// Hides or shows the rail on a wide window. Focus stays on the button.
+    pub fn toggle_rail(mut self) {
+        let collapsed = !(self.collapsed)();
+        self.collapsed.set(collapsed);
     }
 
     /// Closes the drawer and returns focus to the toolbar button.

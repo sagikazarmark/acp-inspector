@@ -310,6 +310,10 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-weight: var(--font-weight-label);
 }
 .btn-quiet:hover:not([aria-disabled="true"]) { --btn-bg: var(--panel2); --btn-fg: var(--txt); }
+/* Pressed: the button gives under the pointer. daisyUI's own pressed ground
+   is in a layer, so the unlayered variants above would paint over it. */
+.btn:active:not(:disabled, [aria-disabled="true"]) { translate: 0 1px; }
+.btn-quiet:active:not(:disabled, [aria-disabled="true"]) { --btn-bg: var(--sunk); --btn-fg: var(--txt); }
 /* The same control, saying which way it goes. */
 .btn-go { --btn-fg: var(--acc); }
 .btn-bad { --btn-fg: var(--err); }
@@ -523,6 +527,11 @@ p.alert { display: block; }
 /* The button that opens the rail as a drawer, drawn only where the rail is
    one (D18). */
 .bar-drawer { display: none; flex: none; }
+/* Its wide-window twin: hides the rail and gives the screens its width. */
+.bar-collapse { display: inline-flex; flex: none; }
+@media (min-width: 1181px) {
+  .body.rail-collapsed :is(.rail, .rail-resize) { display: none; }
+}
 
 .body { position: relative; display: flex; flex: 1; min-height: 0; }
 
@@ -1077,6 +1086,8 @@ p.alert { display: block; }
 .composer-inner { position: relative; max-width: 760px; margin: 0 auto; }
 .turn-state { display: flex; align-items: baseline; gap: 8px; padding-bottom: 8px; min-width: 0; }
 .turn-state .detail { color: var(--dim2); font-size: var(--text-meta); }
+/* An ended turn's word in the Timeline's header: text, not a capsule. */
+.turn-word { color: var(--dim); font-size: var(--text-row); font-weight: var(--font-weight-label); }
 .prompt-box {
   padding: 12px 12px 8px;
   border: 1px solid var(--line2);
@@ -1118,8 +1129,9 @@ p.alert { display: block; }
 .mode-cycle:hover { color: var(--txt); border-color: var(--line2); }
 .mode-cycle[aria-disabled="true"] { opacity: 0.4; }
 /* What is attached to the prompt before it is sent. */
-.prompt-attachment-picker { padding: 8px 12px; }
-.prompt-attachment-picker label { display: grid; gap: 4px; }
+.prompt-attachment-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; }
+.attach:focus-within { outline: 2px solid var(--acc); outline-offset: 2px; }
+.attach[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
 .prompt-attachments { max-height: 180px; overflow-y: auto; min-width: 0; }
 .prompt-attachment { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
 .prompt-attachment:has(audio), .prompt-attachment:has(details) { flex-wrap: wrap; }
@@ -1147,6 +1159,7 @@ p.alert { display: block; }
 .slash-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .slash-count { margin-left: auto; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
 .slash-list { max-height: 210px; overflow: auto; }
+.slash-empty { margin: 0; padding: 8px 12px; }
 .slash-row {
   display: flex;
   align-items: center;
@@ -1491,6 +1504,8 @@ p.alert { display: block; }
 .claim-refused { color: var(--err); }
 .frame-answers { color: var(--dim2); }
 .btn-filled.btn-bad { --btn-bg: var(--err); --btn-fg: var(--on-hue); }
+.btn-filled:active:not(:disabled, [aria-disabled="true"]) { --btn-bg: color-mix(in oklab, var(--acc-fill), var(--ink-shadow) 14%); }
+.btn-filled.btn-bad:active:not(:disabled, [aria-disabled="true"]) { --btn-bg: color-mix(in oklab, var(--err), var(--ink-shadow) 14%); }
 .export-stderr {
   display: inline-flex;
   align-items: center;
@@ -1840,6 +1855,7 @@ li[data-dropped="true"] .frame-peek { color: var(--dim2); font-style: italic; }
 
 @media (max-width: 1180px) {
   .bar-drawer { display: inline-flex; }
+  .bar-collapse { display: none; }
   .rail-resize { display: none; }
   .rail {
     position: absolute;

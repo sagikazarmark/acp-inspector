@@ -2998,6 +2998,13 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   --btn-bg: var(--panel2);
   --btn-fg: var(--txt);
 }
+.btn:active:not(:disabled, [aria-disabled="true"]) {
+  translate: 0 1px;
+}
+.btn-quiet:active:not(:disabled, [aria-disabled="true"]) {
+  --btn-bg: var(--sunk);
+  --btn-fg: var(--txt);
+}
 .btn-go {
   --btn-fg: var(--acc);
 }
@@ -3233,6 +3240,15 @@ p.alert {
 .bar-drawer {
   display: none;
   flex: none;
+}
+.bar-collapse {
+  display: inline-flex;
+  flex: none;
+}
+@media (min-width: 1181px) {
+  .body.rail-collapsed :is(.rail, .rail-resize) {
+    display: none;
+  }
 }
 .body {
   position: relative;
@@ -4331,6 +4347,11 @@ p.alert {
   color: var(--dim2);
   font-size: var(--text-meta);
 }
+.turn-word {
+  color: var(--dim);
+  font-size: var(--text-row);
+  font-weight: var(--font-weight-label);
+}
 .prompt-box {
   padding: 12px 12px 8px;
   border: 1px solid var(--line2);
@@ -4392,11 +4413,19 @@ p.alert {
   opacity: 0.4;
 }
 .prompt-attachment-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
 }
-.prompt-attachment-picker label {
-  display: grid;
-  gap: 4px;
+.attach:focus-within {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+.attach[aria-disabled="true"] {
+  opacity: 0.4;
+  pointer-events: none;
 }
 .prompt-attachments {
   max-height: 180px;
@@ -4471,6 +4500,10 @@ p.alert {
 .slash-list {
   max-height: 210px;
   overflow: auto;
+}
+.slash-empty {
+  margin: 0;
+  padding: 8px 12px;
 }
 .slash-row {
   display: flex;
@@ -5198,6 +5231,18 @@ p.alert {
   --btn-bg: var(--err);
   --btn-fg: var(--on-hue);
 }
+.btn-filled:active:not(:disabled, [aria-disabled="true"]) {
+  --btn-bg: var(--acc-fill);
+  @supports (color: color-mix(in lab, red, red)) {
+    --btn-bg: color-mix(in oklab, var(--acc-fill), var(--ink-shadow) 14%);
+  }
+}
+.btn-filled.btn-bad:active:not(:disabled, [aria-disabled="true"]) {
+  --btn-bg: var(--err);
+  @supports (color: color-mix(in lab, red, red)) {
+    --btn-bg: color-mix(in oklab, var(--err), var(--ink-shadow) 14%);
+  }
+}
 .export-stderr {
   display: inline-flex;
   align-items: center;
@@ -5840,6 +5885,9 @@ li[data-dropped="true"] .frame-peek {
 @media (max-width: 1180px) {
   .bar-drawer {
     display: inline-flex;
+  }
+  .bar-collapse {
+    display: none;
   }
   .rail-resize {
     display: none;

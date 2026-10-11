@@ -281,6 +281,8 @@ fn App() -> Element {
             waiting: blocked(),
             drawer: drawer(),
             on_drawer: move |()| navigation.toggle_drawer(stores.connected() || described.read().is_some() || session().is_some()),
+            collapsed: (navigation.collapsed)(),
+            on_collapse: move |()| navigation.toggle_rail(),
             on_spine: move |chosen| navigation.layout(chosen),
             on_choose: move |chosen| kept.choose_appearance(chosen),
             on_indent: move |chosen| kept.choose_indentation(chosen),
@@ -362,7 +364,12 @@ fn App() -> Element {
             }),
         })) }
 
-        div { class: if drawer() { format!("{} drawer-open", focus().class()) } else { focus().class().to_owned() },
+        div { class: format!(
+                "{}{}{}",
+                focus().class(),
+                if drawer() { " drawer-open" } else { "" },
+                if (navigation.collapsed)() { " rail-collapsed" } else { "" },
+            ),
             style: "--rail-width: {rail_width}px",
             Rail {
                 status: status(),

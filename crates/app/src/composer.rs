@@ -314,6 +314,10 @@ pub fn Composer(
     let show_shortcut = ready && !running;
     let presentation = presented(&turn, blocked, problem.as_ref(), ready, connected);
     let matches = matching(&commands, &text(), dismissed());
+    // A `/word` is being typed: the list opens even when nothing matches, so
+    // the slash never does nothing.
+    let slashing = ready && naming_a_command(&text(), dismissed());
+    let offers_commands = !commands.is_empty();
     let highlight = highlighted().min(matches.len().saturating_sub(1));
 
     let mut send = move || {
@@ -404,11 +408,22 @@ pub fn Composer(
             }
 
             // The command list overlays the box it completes.
-            if !matches.is_empty() {
+            if slashing {
                 div { class: "slash", "data-slot": "commands",
                     div { class: "slash-head",
                         span { class: "heading", title: "available_commands_update", "Agent commands" }
                         span { class: "slash-count", "{matches.len()} of {commands.len()}" }
+                    }
+                    if matches.is_empty() {
+                        p { class: "slash-empty hint", "data-slot": "no-commands",
+                            if offers_commands {
+                                "No command the agent published starts with that."
+                            } else {
+                                "The agent hasn't published any commands. It can, at any time, with "
+                                code { "available_commands_update" }
+                                "."
+                            }
+                        }
                     }
                     div { class: "slash-list", role: "listbox", aria_label: "Commands the agent published",
                         for (position, command) in matches.iter().enumerate() {
@@ -433,11 +448,12 @@ pub fn Composer(
             div { class: "prompt-box",
                 if attachments_advertised {
                     div { class: "prompt-attachment-picker",
-                        label { class: "hint",
-                            "Add or drop files · 8 attachments · 5 MiB each · 6 MiB total"
-                            if embedded_advertised { span { "UTF-8 text files are embedded as text, PDFs and other files as binary contents. Text preview shows the first 2000 characters." } }
-                            if image_advertised { span { "Images can also be pasted from the clipboard." } }
-                            input { id: picker_id.clone(), name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
+                        // One line: the rules are in the button's tooltip.
+                        label { class: "btn btn-xs btn-quiet attach",
+                            title: attachment_rules(embedded_advertised, image_advertised),
+                            aria_disabled: (!ready || running).then_some("true"),
+                            "Attach files\u{2026}"
+                            input { id: picker_id.clone(), class: "sr-only", name: "prompt-attachment", r#type: "file", accept: accepted_attachments(image_advertised, audio_advertised, embedded_advertised), multiple: true,
                                 onmounted: {
                                     let id = picker_id.clone();
                                     move |_| { let bridge = document::eval(ATTACHMENT_DROP_BRIDGE); let _ = bridge.send((id.clone(), cfg!(all(feature = "desktop", target_os = "windows")))); }
@@ -450,6 +466,9 @@ pub fn Composer(
                                     ingest.call(files);
                                 },
                             }
+                        }
+                        span { class: "hint",
+                            if image_advertised { "or drop or paste · 8 files, 5 MiB each" } else { "or drop · 8 files, 5 MiB each" }
                         }
                         if !draft.read().entries().is_empty() {
                             span { class: "hint", "data-slot": "attachment-total",
@@ -500,7 +519,8 @@ pub fn Composer(
                     aria_label: "Prompt",
                     aria_describedby: show_shortcut.then_some("prompt-shortcut"),
                     placeholder: match (ready, connected) {
-                        (true, _) => "Send a prompt to the agent…  type / for commands",
+                        (true, _) if offers_commands => "Send a prompt to the agent…  type / for commands",
+                        (true, _) => "Send a prompt to the agent…",
                         (false, true) => "Open a session to start prompting.",
                         (false, false) => "Start your agent to open a session.",
                     },
@@ -511,7 +531,12 @@ pub fn Composer(
                     },
                     onkeydown: move |event| {
                         // While the command list is open, arrows move, Enter or
-                        // Tab fills, and Escape dismisses it.
+                        // Tab fills, and Escape dismisses it, empty or not.
+                        if slashing && event.key() == Key::Escape {
+                            event.prevent_default();
+                            dismissed.set(true);
+                            return;
+                        }
                         if !matches.is_empty() {
                             match event.key() {
                                 Key::ArrowDown => {
@@ -578,7 +603,7 @@ pub fn Composer(
                         span {
                             id: "prompt-shortcut",
                             class: "prompt-hint",
-                            "↵ send · ⇧↵ newline · ↑↓ commands"
+                            if offers_commands { "↵ send · ⇧↵ newline · ↑↓ commands" } else { "↵ send · ⇧↵ newline" }
                         }
                     }
 
@@ -755,6 +780,13 @@ pub(crate) fn badge(presentation: &TurnPresentation) -> Element {
     let tone = presentation.tone;
     let label = presentation.label;
 
+    // An ended turn is a fact rather than a state to act on: a word, so a grey
+    // capsule is not taken for a button.
+    if component_tone.is_empty() {
+        return rsx! {
+            span { class: "turn-word {tone}", "data-slot": "turn-state", "{label}" }
+        };
+    }
     rsx! {
         span { class: "badge badge-soft {component_tone} badge-sm {tone}", "data-slot": "turn-state",
             "{label}"
@@ -775,19 +807,33 @@ fn state(presentation: &TurnPresentation) -> Element {
     }
 }
 
+/// Whether the draft is a single `/word` the list has not been waved away from.
+fn naming_a_command(draft: &str, dismissed: bool) -> bool {
+    !dismissed
+        && draft
+            .strip_prefix('/')
+            .is_some_and(|typed| !typed.contains(char::is_whitespace))
+}
+
+/// The attachment rules, in full, for the picker's tooltip.
+fn attachment_rules(embedded: bool, image: bool) -> String {
+    let mut rules = "Up to 8 attachments, 5 MiB each and 6 MiB in total.".to_owned();
+    if embedded {
+        rules.push_str(" UTF-8 text files are embedded as text, PDFs and other files as binary contents. Text preview shows the first 2000 characters.");
+    }
+    if image {
+        rules.push_str(" Images can also be pasted from the clipboard.");
+    }
+    rules
+}
+
 /// The commands whose names the draft begins, only while the draft is a single
 /// `/word`. Owned, because the keydown handler outlives the render.
 fn matching(commands: &[Command], draft: &str, dismissed: bool) -> Vec<Command> {
-    if dismissed {
+    if !naming_a_command(draft, dismissed) {
         return Vec::new();
     }
-    let Some(typed) = draft.strip_prefix('/') else {
-        return Vec::new();
-    };
-    if typed.contains(char::is_whitespace) {
-        return Vec::new();
-    }
-    let typed = typed.to_lowercase();
+    let typed = draft[1..].to_lowercase();
 
     commands
         .iter()
@@ -1490,9 +1536,12 @@ mod tests {
             "the Prompt and its Send Affordance retain durable accessible names: {ready}"
         );
         assert!(
-            ready.contains("Send a prompt to the agent\u{2026}  type / for commands")
+            // No commands published: the hints promise neither / nor ↑↓.
+            ready.contains(r#"placeholder="Send a prompt to the agent…""#)
+                && !ready.contains("type / for commands")
                 && ready.contains(r#"aria-describedby="prompt-shortcut""#)
-                && ready.contains("↵ send · ⇧↵ newline · ↑↓ commands")
+                && ready.contains("↵ send · ⇧↵ newline<")
+                && !ready.contains("↑↓ commands")
                 && ready.contains(r#"aria-disabled="true""#)
                 && ready.contains(r#"tabindex="-1""#),
             "blank-prompt prevention and inset keyboard guidance remain visible: {ready}"
@@ -1540,13 +1589,14 @@ mod tests {
                 TurnState::Ended(v1::StopReason::Refusal),
                 false,
                 "Refused",
-                "badge badge-soft",
+                // An ended turn is a word, not a capsule.
+                r#"class="turn-word off""#,
             ),
             (
                 TurnState::Ended(v1::StopReason::EndTurn),
                 false,
                 ">Done<",
-                "badge badge-soft",
+                r#"class="turn-word off""#,
             ),
             (
                 TurnState::Failed(CallError::Disconnected),
@@ -1646,6 +1696,9 @@ mod tests {
             offering(published(), "/nope").is_empty(),
             "a name no agent published matches nothing"
         );
+        assert!(naming_a_command("/", false) && naming_a_command("/co", false));
+        assert!(!naming_a_command("/co x", false) && !naming_a_command("co", false));
+        assert!(!naming_a_command("/co", true));
         // Waved away, and the draft is left exactly as it was.
         assert!(matching(&published(), "/c", true).is_empty());
     }

@@ -635,6 +635,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
             on_indent: move |_| {},
             drawer: scene == Scene::Drawer,
             on_drawer: move |()| {},
+            on_collapse: move |()| {},
         }
         crate::view::Banner { view: wire.view }
         connect::Connect {
