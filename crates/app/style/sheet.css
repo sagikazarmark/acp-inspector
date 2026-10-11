@@ -3128,6 +3128,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   line-height: var(--text-row--line-height);
   box-shadow: none;
 }
+p.alert {
+  display: block;
+}
 #main {
   display: flex;
   flex-direction: column;
@@ -3674,7 +3677,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
   flex-direction: column;
   flex: 1.45;
   min-width: 0;
-  background: var(--bg);
+  background: var(--panel);
   border-right: 1px solid var(--line);
 }
 .wire {
@@ -4896,6 +4899,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) {
 .sessions-box {
   width: min(680px, 94vw);
   max-height: 74vh;
+}
+.sessions-content {
+  display: contents;
 }
 .form-field {
   display: flex;

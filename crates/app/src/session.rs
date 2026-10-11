@@ -63,16 +63,18 @@ pub fn Sessions(claims: Claims) -> Element {
                     }
                 }
 
-                {
-                    crate::agent::sessions(
-                        claims.listing(),
-                        claims.connected,
-                        claims.failed.as_ref(),
-                        creating,
-                        claims.on_new_session,
-                    )
+                div { class: "dialog-body",
+                    {
+                        crate::agent::sessions(
+                            claims.listing(),
+                            claims.connected,
+                            claims.failed.as_ref(),
+                            creating,
+                            claims.on_new_session,
+                        )
+                    }
+                    crate::mcp::McpEditor { prefix:"sessions" }
                 }
-                crate::mcp::McpEditor { prefix:"sessions" }
             }
 
             // The click outside, which `showModal` does not give. Out of the

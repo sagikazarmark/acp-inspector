@@ -48,7 +48,9 @@ pub(crate) fn sessions(
         .collect();
 
     rsx! {
-        div { class: "dialog-body", "data-slot": "sessions",
+        // The dialog's body holds this and the MCP editor, so both get its
+        // padding and scroll together.
+        div { class: "sessions-content", "data-slot": "sessions",
             // The listing outlives the agent on purpose (§5); say why its
             // controls are unavailable.
             if !connected {
@@ -722,7 +724,7 @@ mod tests {
             Some(reporting_roots()),
         );
         assert!(
-            panel.contains(r#"class="dialog-body" data-slot="sessions""#)
+            panel.contains(r#"class="sessions-content" data-slot="sessions""#)
                 && !panel.contains("card"),
             "the Session lifecycle is flat content of its dialog rather than a card in it: {panel}"
         );

@@ -429,6 +429,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   line-height: var(--text-row--line-height);
   box-shadow: none;
 }
+/* A paragraph notice is running text: as a flex box, every text run and
+   `code` in it would be its own column. */
+p.alert { display: block; }
 
 /* ---------------------------------------------------------------------------
    The shell: a 52px bar, and everything else under it.
@@ -723,7 +726,9 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   flex-direction: column;
   flex: 1.45;
   min-width: 0;
-  background: var(--bg);
+  /* The ground the rail and the wire have: on `--bg` the panel2 evidence
+     boxes and the text between them ran together. */
+  background: var(--panel);
   border-right: 1px solid var(--line);
 }
 /* The wire is a container, so its rows can drop what does not fit at the
@@ -1346,6 +1351,8 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
 .dialog-foot .btn { height: 32px; border-radius: var(--radius-control); }
 .connect-box { width: min(620px, 92vw); }
 .sessions-box { width: min(680px, 94vw); max-height: 74vh; }
+/* The listing's rows sit directly in the dialog body, beside the MCP editor. */
+.sessions-content { display: contents; }
 
 /* A field in a dialog: the key it goes out under, what it is for, and the box
    — the box the dialog's full width (D13). */
