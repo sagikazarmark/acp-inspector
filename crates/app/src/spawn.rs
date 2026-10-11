@@ -14,7 +14,6 @@ use dioxus_free_icons::{
     Icon,
     icons::ld_icons::{LdEraser, LdPlay, LdX},
 };
-use dioxus_primitives::dioxus_attributes::attributes;
 
 use crate::components::{
     checkbox::Checkbox,
@@ -449,15 +448,10 @@ pub fn SpawnForm(
                         class: "mono",
                         on_change: move |_| clear_recall_confirmation(),
                         on_focus_exit: move |()| left_command.set(true),
-                        // String keys: `autofocus` and `spellcheck` are on both
-                        // attribute sets the component extends, so the typed
-                        // names are ambiguous.
-                        attributes: attributes!(input {
-                            "autofocus": true,
-                            "spellcheck": "false",
-                            autocomplete: "off",
-                            placeholder: "npx",
-                        }),
+                        autofocus: true,
+                        spellcheck: "false",
+                        autocomplete: "off",
+                        placeholder: "npx",
                     }
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "Executable name or path, without arguments or shell quotes."
@@ -505,11 +499,9 @@ pub fn SpawnForm(
                     Textarea {
                         class: "mono",
                         on_change: move |_| clear_recall_confirmation(),
-                        attributes: attributes!(textarea {
-                            rows: 3,
-                            "spellcheck": "false",
-                            placeholder: "@zed-industries/claude-code-acp",
-                        }),
+                        rows: 3,
+                        spellcheck: "false",
+                        placeholder: "@zed-industries/claude-code-acp",
                     }
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "One per line. Put a flag and its value on separate lines. No shell quoting or expansion."
@@ -523,11 +515,9 @@ pub fn SpawnForm(
                     Textarea {
                         class: "mono",
                         on_change: move |_| clear_recall_confirmation(),
-                        attributes: attributes!(textarea {
-                            rows: 2,
-                            "spellcheck": "false",
-                            placeholder: "ACP_LOG=debug",
-                        }),
+                        rows: 2,
+                        spellcheck: "false",
+                        placeholder: "ACP_LOG=debug",
                     }
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "One NAME=value per line, added to the inspector's own environment."
@@ -569,11 +559,9 @@ pub fn SpawnForm(
                     Textarea {
                         class: "mono",
                         on_change: move |_| clear_recall_confirmation(),
-                        attributes: attributes!(textarea {
-                            rows: 2,
-                            "spellcheck": "false",
-                            placeholder: "OPENAI_API_KEY",
-                        }),
+                        rows: 2,
+                        spellcheck: "false",
+                        placeholder: "OPENAI_API_KEY",
                     }
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "One name per line, left out of the inherited environment."
@@ -612,11 +600,9 @@ pub fn SpawnForm(
                     Input {
                         class: "mono",
                         on_change: move |_| clear_recall_confirmation(),
-                        attributes: attributes!(input {
-                            "spellcheck": "false",
-                            autocomplete: "off",
-                            placeholder: "the inspector's own",
-                        }),
+                        spellcheck: "false",
+                        autocomplete: "off",
+                        placeholder: "the inspector's own",
                     }
                     FieldDescription { appearance: FieldDescriptionAppearance::None, class: "hint",
                         "Empty uses the inspector's own; relative paths resolve against it. The agent starts here, and the session gets it as an absolute path."

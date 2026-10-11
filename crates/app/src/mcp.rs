@@ -19,7 +19,6 @@ use dioxus_free_icons::{
     Icon,
     icons::ld_icons::{LdArrowDown, LdArrowUp, LdTrash2},
 };
-use dioxus_primitives::dioxus_attributes::attributes;
 
 use crate::components::{
     field::{Field, FieldError, FieldLabel},
@@ -442,7 +441,7 @@ fn McpText(
                 class: if mono { "mono" } else { "" },
                 on_change: move |value| on_input.call(value),
                 on_focus_exit: move |()| on_blur.call(()),
-                attributes: attributes!(input { "spellcheck": "false" }),
+                spellcheck: "false",
             }
             FieldError {}
         }

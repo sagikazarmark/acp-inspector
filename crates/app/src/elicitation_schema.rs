@@ -1,6 +1,6 @@
 //! ACP's flat form profile adapted to a generic Draft 2020-12 engine (§7.8).
 
-use schemaform::{Dialect, FormDefinition};
+use schemaform::{AssertedFormat, Dialect, FormDefinition};
 use serde_json::{Map, Value};
 
 use std::collections::BTreeSet;
@@ -50,8 +50,16 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
             if property["type"] == "boolean" {
                 booleans.insert(name.clone());
             }
-            if let Some(format) = property.get("format").and_then(Value::as_str) {
-                let note = format_note(format);
+            if let Some(format) = property
+                .get("format")
+                .and_then(Value::as_str)
+                .filter(|format| {
+                    !CHECKED_FORMATS
+                        .iter()
+                        .any(|checked| checked.name() == *format)
+                })
+            {
+                let note = format!("Format {format}: not checked here.");
                 let description = property
                     .get("description")
                     .and_then(Value::as_str)
@@ -81,6 +89,7 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
     // policy instead of closing it solely to suppress an advisory.
     let definition = FormDefinition::compiler(schema)
         .default_dialect(Dialect::Draft202012)
+        .assert_formats(CHECKED_FORMATS)
         .compile()
         .map_err(|error| error.to_string());
     Ok(Prepared {
@@ -91,16 +100,15 @@ pub fn prepare(raw: &str) -> Result<Prepared, String> {
     })
 }
 
-/// The note added to a property's description for a `format` the form does
-/// not check. `date-time` says more: its picker yields a local time with no
-/// zone, which is not RFC 3339 (sagikazarmark/schemaform#61), so Raw is the
-/// way to send a conformant value.
-fn format_note(format: &str) -> String {
-    match format {
-        "date-time" => "Format date-time: the picker gives a local time with no time zone, which is not RFC 3339. Use Raw to send a conformant value, such as 2026-01-31T09:30:00Z.".to_owned(),
-        _ => format!("Format {format}: not checked here."),
-    }
-}
+/// The string formats ACP's form profile names. A value that does not match
+/// is an advisory finding like any other; any other format keeps a note that
+/// it is not checked.
+const CHECKED_FORMATS: [AssertedFormat; 4] = [
+    AssertedFormat::Email,
+    AssertedFormat::Uri,
+    AssertedFormat::Date,
+    AssertedFormat::DateTime,
+];
 
 /// Raw answers can contain any object, including names serde_json uses for its
 /// internal exact-number representation. Read raw fragments so those names
@@ -218,10 +226,45 @@ mod tests {
     }
 
     #[test]
-    fn a_date_time_note_says_the_picker_is_local_and_raw_is_conformant() {
-        assert!(format_note("date-time").contains("no time zone"));
-        assert!(format_note("date-time").contains("Use Raw"));
-        assert_eq!(format_note("email"), "Format email: not checked here.");
+    fn the_profile_formats_are_checked_and_any_other_keeps_its_note() {
+        let prepared = prepare(
+            r#"{"type":"object","properties":{
+            "email":{"type":"string","format":"email"},"site":{"type":"string","format":"uri"},
+            "day":{"type":"string","format":"date"},"when":{"type":"string","format":"date-time"},
+            "id":{"type":"string","format":"uuid"}}}"#,
+        )
+        .unwrap();
+        let definition = prepared.definition.unwrap();
+        let codes = |data: serde_json::Value| {
+            let mut form = definition.create_form(data).unwrap();
+            let submission = form.prepare_advisory_submission();
+            submission
+                .submission()
+                .findings()
+                .filter_map(|finding| match finding {
+                    schemaform::form::SubmissionBlocker::Validation(finding) => Some((
+                        finding.code().to_owned(),
+                        finding.parameters()["format"].clone(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            codes(
+                serde_json::json!({"email":"ada@example.com","site":"https://example.com",
+                "day":"2026-10-10","when":"2026-10-10T12:00:00Z","id":"not a uuid"})
+            )
+            .is_empty()
+        );
+        let mut bad = codes(serde_json::json!({"email":"ada","site":"example.com",
+            "day":"10/10/2026","when":"2026-10-10T12:00"}));
+        bad.sort_by_key(|(_, format)| format.to_string());
+        assert_eq!(
+            bad,
+            ["date", "date-time", "email", "uri"]
+                .map(|format| ("format".to_owned(), serde_json::json!(format)))
+        );
     }
 
     #[test]

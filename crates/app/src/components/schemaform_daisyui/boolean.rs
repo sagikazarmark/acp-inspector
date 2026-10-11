@@ -8,34 +8,39 @@ use dioxus_field::{
     use_focus_registration,
 };
 use dioxus_primitives::dioxus_attributes::attributes;
+use schemaform::form::ScalarValueState;
 use schemaform_dioxus::{ControlRenderContext, use_boolean_edit};
 
 use super::Appearance;
-use super::mapping::{use_boolean_binding, use_checkbox_binding};
+use super::mapping::use_boolean_binding;
 use super::parts::{WidgetLayout, editable, editable_field, kind_name};
-use crate::components::checkbox::Checkbox;
+use crate::components::field::FieldDescription;
 use crate::components::native_select::{NativeSelect, NativeSelectOption};
 
 /// One daisyUI boolean control: the renderer's hook-safe child component.
 ///
 /// A write-only boolean is a replacement select over the localized false and true labels, so the
-/// value it holds is never shown; the tri-state binding never reads a value for it either. A
-/// nullable boolean is the registry's `Checkbox` bound to the tri-state view of the edit, so
-/// JSON null shows as the indeterminate state and the set-null affordance is how it is reached;
-/// a click from either boolean state makes it a boolean again, as the widget defines toggling.
-/// A non-nullable boolean is a native checkbox carrying daisyUI's `checkbox` class, which keeps
-/// the built-in's native semantics; its two-state view of the edit is the tri-state binding with
-/// null read as unchecked, which such a node never holds.
+/// value it holds is never shown; the tri-state binding never reads a value for it either. Every
+/// other boolean, nullable or not, is a native checkbox carrying daisyUI's `checkbox` class, which
+/// keeps the built-in's native semantics. While the data holds no boolean, missing or null, it is
+/// indeterminate; a nullable one reaches null through the set-null affordance, and a click from
+/// any state makes it a boolean, as the native control defines toggling.
 #[component]
 pub(super) fn BooleanControl(context: ControlRenderContext, appearance: Appearance) -> Element {
     let edit = use_boolean_edit(&context);
     let binding = use_boolean_binding(edit);
-    let checkbox = use_checkbox_binding(edit);
-    if let Err(rendered) = editable(&context, appearance) {
-        return rendered;
-    }
+    let projection = match editable(&context, appearance) {
+        Ok(projection) => projection,
+        Err(rendered) => return rendered,
+    };
     let control = context.control();
     let kind = kind_name(control.kind);
+    // The edit reads a missing value as unchecked, which is indistinguishable from false; the
+    // projection still says no boolean is there.
+    let unset = matches!(
+        projection.value_state,
+        Some(ScalarValueState::Missing | ScalarValueState::Null)
+    );
 
     if let Some(replacement) = control.write_only_replacement.clone() {
         // The value must not be echoed, so the widget is a replacement select that the edit hook
@@ -64,28 +69,37 @@ pub(super) fn BooleanControl(context: ControlRenderContext, appearance: Appearan
         );
     }
 
-    if control.nullable {
-        return editable_field(
-            &context,
-            appearance,
-            checkbox,
-            WidgetLayout::Row,
-            rsx! {
-                Checkbox { "data-schemaform-control": kind }
-            },
-        );
-    }
-
     editable_field(
         &context,
         appearance,
         binding,
         WidgetLayout::Row,
         rsx! {
-            NativeCheckbox { "data-schemaform-control": kind }
+            NativeCheckbox { indeterminate: unset, "data-schemaform-control": kind }
+            {unset_description(&context, unset)}
         },
     )
 }
+
+/// What an indeterminate checkbox means, for assistive technology: it announces the state as
+/// mixed, and no finding describes it before the user or a submission touches the field. A
+/// fixed English string, like the package's other prose; the dash is the visible cue.
+fn unset_description(context: &ControlRenderContext, unset: bool) -> Element {
+    let id = format!("{}-unset", context.presentation().element_id);
+    rsx! {
+        if unset {
+            FieldDescription {
+                id: Rc::from(id.as_str()),
+                class: "sr-only",
+                "data-schemaform-unset": "",
+                "{UNSET}"
+            }
+        }
+    }
+}
+
+/// The description of a checkbox that holds no boolean.
+const UNSET: &str = "Not set";
 
 /// A native checkbox styled with daisyUI's `checkbox` class and bound the way the registry's
 /// widgets are: it resolves the tri-state binding and the metadata from the surrounding `Field`,
@@ -96,8 +110,17 @@ pub(super) fn BooleanControl(context: ControlRenderContext, appearance: Appearan
 /// built-in does: a native `required` on a checkbox would demand the checked state rather than
 /// a present value. Classes passed by the caller concatenate with the checkbox's own; every
 /// other attribute the caller passes overrides the checkbox's.
+///
+/// `indeterminate` is the native property of that name, which has no HTML attribute, so it is set
+/// on the element by id after every render that changes it and after every input: the browser
+/// clears it on a click, and a write the core rejects leaves the node without a boolean. A click
+/// from the indeterminate state checks the box, so the first write is `true`.
 #[component]
-fn NativeCheckbox(#[props(extends = GlobalAttributes)] attributes: Vec<Attribute>) -> Element {
+fn NativeCheckbox(
+    /// Whether the checkbox shows that it holds no boolean.
+    indeterminate: bool,
+    #[props(extends = GlobalAttributes)] attributes: Vec<Attribute>,
+) -> Element {
     let binding = use_binding::<Option<bool>>(None, None);
     let meta = use_field_meta(None);
     let mut control: Signal<Option<Rc<MountedData>>> = use_signal(|| None);
@@ -109,6 +132,13 @@ fn NativeCheckbox(#[props(extends = GlobalAttributes)] attributes: Vec<Attribute
         }
     });
     use_focus_registration(focus_control);
+    let mut inputs = use_signal(|| 0u32);
+    use_effect(use_reactive!(|indeterminate| {
+        // Read for the subscription: every input re-asserts the state.
+        inputs();
+        let eval = document::eval(INDETERMINATE_SCRIPT);
+        let _ = eval.send((meta.id().to_string(), indeterminate));
+    }));
 
     let checked = (binding.read)().unwrap_or(false);
     let color = if meta.invalid() { "checkbox-error" } else { "" };
@@ -128,9 +158,17 @@ fn NativeCheckbox(#[props(extends = GlobalAttributes)] attributes: Vec<Attribute
             onmounted: move |event: MountedEvent| control.set(Some(event.data())),
             oninput: move |event: FormEvent| {
                 write_binding.write(Some(event.checked()), ChangeOrigin::User);
+                inputs += 1;
             },
             onfocusout: move |_| focus_exit_binding.focus_exit(),
             ..merged,
         }
     }
 }
+
+/// Sets the native `indeterminate` property of the element with the received id.
+const INDETERMINATE_SCRIPT: &str = r#"
+const [id, indeterminate] = await dioxus.recv();
+const control = document.getElementById(id);
+if (control) control.indeterminate = indeterminate;
+"#;

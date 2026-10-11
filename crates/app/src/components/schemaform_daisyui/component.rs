@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 
 use dioxus::prelude::*;
 use schemaform::{
-    AdvisorySubmission, SubmissionSnapshot, WidgetSymbol,
+    AdvisorySubmission, SubmissionSnapshot,
     definition::{DefinitionNodeView, SemanticKind},
 };
 use schemaform_dioxus::{
@@ -14,28 +14,28 @@ use schemaform_dioxus::{
     SchemaForm, StructureRenderers, SubmissionMode,
 };
 
-use super::Appearance;
 use super::boolean::BooleanControl;
-use super::choice::{NativeSelectControl, RadioGroupControl, SelectControl};
-use super::collection::DaisyuiCollection;
+use super::choice::NativeSelectControl;
 use super::constant::ConstantControl;
 use super::findings::DaisyuiFindings;
 use super::multiple_choice::MultipleChoiceControl;
 use super::shell::DaisyuiShell;
 use super::text::TextControl;
-use super::{Density, density::DensityScope};
+use super::{Addons, Appearance, ButtonClasses, Options};
+use super::{Density, density::ControlScope};
 
 /// A form rendered through every seam this package fills: the daisyUI control registry, the
-/// structure bundle, and the finding presenter in both presenter slots.
+/// structure bundle, and the finding presenter in both presenter slots, with any [`Addons`].
 ///
 /// The form is bound once, when the component mounts, as the adapter requires of structure
 /// renderers; changing the form handle means remounting. A host that wants one seam to differ —
-/// its own shell, say, or the built-in controls under the daisyUI collection — composes a
+/// its own shell, say, or the built-in controls under the daisyUI shell — composes a
 /// [`RenderConfiguration`] from [`controls`], [`structure`], and [`findings`] instead and renders
 /// `SchemaForm` itself; [`configuration`] is the composition this component uses.
 ///
 /// A bind failure is a render error: it reports a definition the renderers cannot present, which
-/// is a programming error of the host rather than a state of the form.
+/// is a programming error of the host rather than a state of the form. A UI schema naming a
+/// widget symbol whose add-on is not among `addons` is one.
 #[component]
 pub fn SchemaformDaisyui(
     /// The form to present.
@@ -57,9 +57,17 @@ pub fn SchemaformDaisyui(
     /// Field layout, fixed at mount like the renderer configuration.
     #[props(default)]
     density: Density,
+    /// Classes for the buttons the renderers draw themselves, fixed at mount like the rest.
+    #[props(default)]
+    buttons: ButtonClasses,
+    /// Opt-in renderers for the radio and compound select widgets and for homogeneous arrays,
+    /// read once at mount like the rest.
+    #[props(default)]
+    addons: Addons,
 ) -> Element {
     let bound = use_hook(|| {
-        configuration_with_density(appearance, density)
+        let options = Options::from(appearance).density(density).buttons(buttons);
+        configuration_with_addons(options, &addons)
             .bind(&form)
             .map_err(Rc::new)
     });
@@ -72,24 +80,36 @@ pub fn SchemaformDaisyui(
     }
 }
 
-/// The render configuration [`SchemaformDaisyui`] binds a form with: [`controls`] as the control
-/// registry, [`structure`] as the structure bundle, and [`findings`] in both presenter slots.
+/// The render configuration [`SchemaformDaisyui`] binds a form with when it has no add-ons:
+/// [`controls`] as the control registry, [`structure`] as the structure bundle, and [`findings`]
+/// in both presenter slots.
 pub fn configuration() -> RenderConfiguration {
     configuration_with(Appearance::default())
 }
 
-/// [`configuration`] with every renderer at `appearance`.
-pub fn configuration_with(appearance: Appearance) -> RenderConfiguration {
-    configuration_with_density(appearance, Density::Default)
+/// [`configuration`] with every renderer built with `options`: an [`Appearance`] alone, or
+/// [`Options`] carrying density and button classes as well.
+pub fn configuration_with(options: impl Into<Options>) -> RenderConfiguration {
+    configuration_with_addons(options, &Addons::default())
 }
 
-/// Configure field density without changing collection or shell presentation.
+/// [`configuration_with`] at `appearance` and `density`.
 pub fn configuration_with_density(appearance: Appearance, density: Density) -> RenderConfiguration {
+    configuration_with(Options::from(appearance).density(density))
+}
+
+/// [`configuration_with`] with each of `addons` applied to the control registry and the
+/// structure bundle, built with the same `options`.
+pub fn configuration_with_addons(
+    options: impl Into<Options>,
+    addons: &Addons,
+) -> RenderConfiguration {
+    let options = options.into();
     RenderConfiguration::builder()
-        .controls(controls_with_density(appearance, density))
-        .structure(structure_with(appearance))
-        .summary_presenter(findings_with(appearance))
-        .local_presenter(findings_with(appearance))
+        .controls(addons.controls(controls_with(options), options))
+        .structure(addons.structure(structure_with(options), options))
+        .summary_presenter(findings_with(options.appearance))
+        .local_presenter(findings_with(options.appearance))
         .build()
 }
 
@@ -99,76 +119,56 @@ pub fn configuration_with_density(appearance: Appearance, density: Density) -> R
 /// and the built-in keeps the rest.
 pub const DAISYUI_CONTROL_PRIORITY: i32 = BUILTIN_CONTROL_PRIORITY + 10;
 
-/// The widget symbol a UI schema control names to render a choice as a radio group.
-pub const RADIO_WIDGET: &str = "daisyui:radio";
-
-/// The widget symbol a UI schema control names to render a choice as the registry's compound
-/// select rather than the native one.
-pub const SELECT_WIDGET: &str = "daisyui:select";
-
 /// A control registry in which every control kind renders as a daisyUI field.
 ///
 /// The registry starts from the built-ins, so structural nodes keep their built-in
 /// presentation and a control the daisyUI renderer does not accept still renders. Choices render
-/// as a native select unless the UI schema names [`RADIO_WIDGET`] or [`SELECT_WIDGET`] for them.
+/// as a native select; the radio group and the compound select are add-ons that register a widget
+/// symbol each.
 pub fn controls() -> ControlRegistry {
     controls_with(Appearance::default())
 }
 
-/// [`controls`] with every renderer at `appearance`.
-pub fn controls_with(appearance: Appearance) -> ControlRegistry {
-    controls_with_density(appearance, Density::Default)
-}
-
-/// Controls with an explicit, bind-fixed field density.
+/// [`controls_with`] at `appearance` and `density`.
 pub fn controls_with_density(appearance: Appearance, density: Density) -> ControlRegistry {
-    let renderer = |choice| {
-        DaisyuiControlRenderer::with_choice_widget(choice)
-            .appearance(appearance)
-            .density(density)
-    };
-    ControlRegistry::with_builtins()
-        .matcher(
-            DAISYUI_CONTROL_PRIORITY,
-            Arc::new(DaisyuiControls),
-            Arc::new(renderer(ChoiceWidget::NativeSelect)),
-        )
-        .widget(
-            widget_symbol(RADIO_WIDGET),
-            Arc::new(renderer(ChoiceWidget::RadioGroup)),
-        )
-        .widget(
-            widget_symbol(SELECT_WIDGET),
-            Arc::new(renderer(ChoiceWidget::Select)),
-        )
+    controls_with(Options::from(appearance).density(density))
 }
 
-/// The registry key for one of this component's widget symbols.
-fn widget_symbol(symbol: &str) -> WidgetSymbol {
-    WidgetSymbol::parse(symbol).expect("the daisyUI widget symbols are non-empty")
+/// [`controls`] with every renderer built with `options`: an [`Appearance`] alone, or [`Options`]
+/// carrying density and button classes as well.
+pub fn controls_with(options: impl Into<Options>) -> ControlRegistry {
+    ControlRegistry::with_builtins().matcher(
+        DAISYUI_CONTROL_PRIORITY,
+        Arc::new(DaisyuiControls),
+        Arc::new(DaisyuiControlRenderer::from(options.into())),
+    )
 }
 
-/// The structure renderers this component ships: the daisyUI form shell and homogeneous-array
-/// collection.
+/// The structure renderers this component ships: the daisyUI form shell.
 ///
 /// Every slot the component does not implement stays the built-in, so a form bound with this
 /// bundle degrades to the adapter's accessible unstyled output for those node kinds rather than
-/// losing a region.
+/// losing a region. Homogeneous arrays are one: the `schemaform_daisyui_collection` add-on fills
+/// that slot.
 pub fn structure() -> StructureRenderers {
     structure_with(Appearance::default())
 }
 
-/// [`structure`] with both renderers at `appearance`.
-pub fn structure_with(appearance: Appearance) -> StructureRenderers {
-    StructureRenderers::default()
-        .with_shell(DaisyuiShell::default().appearance(appearance))
-        .with_collection(DaisyuiCollection::default().appearance(appearance))
+/// [`structure`] with the shell built with `options`: an [`Appearance`] alone, or [`Options`]
+/// carrying button classes as well. The shell has no density.
+pub fn structure_with(options: impl Into<Options>) -> StructureRenderers {
+    let options = options.into();
+    StructureRenderers::default().with_shell(
+        DaisyuiShell::default()
+            .appearance(options.appearance)
+            .buttons(options.buttons),
+    )
 }
 
 /// The finding presenter for both presenter slots of a render configuration.
 ///
 /// Wire it as the summary presenter for the alert and as the local presenter so the findings a
-/// built-in container or this component's collection renders through
+/// built-in container or an add-on's collection renders through
 /// `NodePresentation::present_findings` are daisyUI-styled as well.
 pub fn findings() -> Arc<dyn FindingCollectionPresenter> {
     findings_with(Appearance::default())
@@ -200,54 +200,42 @@ impl ControlMatcher for DaisyuiControls {
     }
 }
 
-/// The widget a [`DaisyuiControlRenderer`] presents a selectable choice with.
-///
-/// An exact widget request never reaches the renderer at render time, so the registry carries
-/// one renderer per symbol and the symbol's meaning travels here.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ChoiceWidget {
-    /// The registry's `NativeSelect`: a native `select` at native-control weight.
-    #[default]
-    NativeSelect,
-    /// The registry's `RadioGroup`: one `RadioItem` per option.
-    RadioGroup,
-    /// The registry's compound `Select`: a trigger and a dropdown listbox.
-    Select,
-}
-
 /// Renders every control kind with the registry's `Field` parts and widgets.
 ///
 /// The renderer owns the whole control region: label, widget, help, findings, and presence
-/// affordances. Unknown future kinds fail visibly rather than silently losing daisyUI presentation.
+/// affordances. Choices are a native select. Unknown future kinds fail visibly rather than
+/// silently losing daisyUI presentation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DaisyuiControlRenderer {
-    choice: ChoiceWidget,
     appearance: Appearance,
     density: Density,
+    buttons: ButtonClasses,
 }
 
 impl DaisyuiControlRenderer {
-    /// A renderer presenting choices with `choice`; [`Default`] presents them natively.
-    pub fn with_choice_widget(choice: ChoiceWidget) -> Self {
-        Self {
-            choice,
-            appearance: Appearance::default(),
-            density: Density::default(),
-        }
-    }
-
     /// The same renderer at `appearance`.
     pub fn appearance(self, appearance: Appearance) -> Self {
         Self { appearance, ..self }
     }
 
+    /// The same renderer at `density`.
     pub fn density(self, density: Density) -> Self {
         Self { density, ..self }
     }
-}
 
-impl ControlRenderer for DaisyuiControlRenderer {
-    fn render(&self, context: ControlRenderContext) -> Element {
+    /// The same renderer with `buttons` for the presence operations it draws.
+    pub fn buttons(self, buttons: ButtonClasses) -> Self {
+        Self { buttons, ..self }
+    }
+
+    /// Renders `context` as [`ControlRenderer::render`] does, except that a choice is `choice`'s
+    /// widget: how a widget add-on presents its choices with every other kind, the density, and
+    /// the button classes unchanged.
+    pub(crate) fn render_with_choice(
+        &self,
+        context: ControlRenderContext,
+        choice: fn(ControlRenderContext, Appearance) -> Element,
+    ) -> Element {
         let appearance = self.appearance;
         // The kind is definition-stable, so a node always renders the same child component and
         // the hooks inside it are called unconditionally.
@@ -256,16 +244,29 @@ impl ControlRenderer for DaisyuiControlRenderer {
                 rsx! { TextControl { context, appearance } }
             }
             ControlKind::Boolean => rsx! { BooleanControl { context, appearance } },
-            ControlKind::Choice => match self.choice {
-                ChoiceWidget::NativeSelect => rsx! { NativeSelectControl { context, appearance } },
-                ChoiceWidget::RadioGroup => rsx! { RadioGroupControl { context, appearance } },
-                ChoiceWidget::Select => rsx! { SelectControl { context, appearance } },
-            },
+            ControlKind::Choice => choice(context, appearance),
             ControlKind::Constant => rsx! { ConstantControl { context, appearance } },
             ControlKind::MultipleChoice => rsx! { MultipleChoiceControl { context, appearance } },
             // The upstream enum is non-exhaustive, so stable Rust requires this guard.
             kind => panic!("schemaform_daisyui does not yet present control kind {kind:?}"),
         };
-        rsx! { DensityScope { density: self.density, {body} } }
+        rsx! { ControlScope { density: self.density, buttons: self.buttons, {body} } }
+    }
+}
+
+impl From<Options> for DaisyuiControlRenderer {
+    fn from(options: Options) -> Self {
+        Self::default()
+            .appearance(options.appearance)
+            .density(options.density)
+            .buttons(options.buttons)
+    }
+}
+
+impl ControlRenderer for DaisyuiControlRenderer {
+    fn render(&self, context: ControlRenderContext) -> Element {
+        self.render_with_choice(context, |context, appearance| {
+            rsx! { NativeSelectControl { context, appearance } }
+        })
     }
 }

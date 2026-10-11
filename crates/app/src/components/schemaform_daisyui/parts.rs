@@ -1,23 +1,30 @@
 //! Presentation parts shared by every daisyUI control kind: the editable frame around a widget,
 //! the read-only field, the descriptions and errors under a widget, and the presence affordances.
 
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use dioxus::prelude::*;
-use dioxus_field::{Binding, FieldContext, FieldMeta, FieldMetaIdRegistration, use_field_meta};
+use dioxus_field::{Binding, FieldContext, use_error_id_registration, use_field_meta};
 use schemaform_dioxus::{
     ControlFacets, ControlKind, ControlRenderContext, NodePresentation, NodeProjection,
+    SubmissionMode,
     render::{Affordance, FindingDescriptor, Help},
 };
 
 use super::Appearance;
+use super::buttons::{self, ButtonClasses, ButtonRole};
 use super::mapping::{field_meta_values, is_field_error};
-use super::shell::advisory_presentation;
 use crate::components::button::{Button, ButtonSize};
 use crate::components::field::{Field, FieldDescription, FieldLabel, FieldRow};
 
+/// Whether the form presents findings as advice: in advisory submission mode nothing is refused,
+/// so no finding is an error. A reactive read, so the control follows a mode switch.
+pub(super) fn is_advisory(presentation: &NodePresentation) -> bool {
+    presentation.submission_mode() == SubmissionMode::Advisory
+}
+
 /// The kind's name for the `data-schemaform-control` marker the built-in also emits.
-pub(super) fn kind_name(kind: ControlKind) -> &'static str {
+pub(crate) fn kind_name(kind: ControlKind) -> &'static str {
     match kind {
         ControlKind::String => "string",
         ControlKind::Number => "number",
@@ -60,7 +67,7 @@ pub(super) fn widget_label(presentation: &NodePresentation, control: &ControlFac
 /// Call it after the component's hooks, so the hook order is the same on every render. The
 /// read-only rule lives here once: a read-only node is noninteractive `output` of its display
 /// text with no presence affordances, as the built-in offers none for it.
-pub(super) fn editable(
+pub(crate) fn editable(
     context: &ControlRenderContext,
     appearance: Appearance,
 ) -> Result<NodeProjection, Element> {
@@ -74,6 +81,7 @@ pub(super) fn editable(
             appearance,
             projection.display_text(),
             &[],
+            true,
         ));
     }
     Ok(projection)
@@ -81,7 +89,7 @@ pub(super) fn editable(
 
 /// Where an editable widget sits relative to its label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WidgetLayout {
+pub(crate) enum WidgetLayout {
     /// The label above the widget, as for an input or a select.
     Stacked,
     /// A checkable widget beside its label in a `FieldRow`.
@@ -96,7 +104,7 @@ pub(super) enum WidgetLayout {
 /// node's label. The readout is [`NodePresentation::incompatible_value`], so a widget that cannot
 /// show the data it would replace (an input holding a number where the schema wants a string, a
 /// checkbox holding a string) still tells the user what the replace affordance discards.
-pub(super) fn editable_field<T: 'static>(
+pub(crate) fn editable_field<T: 'static>(
     context: &ControlRenderContext,
     appearance: Appearance,
     binding: Binding<T>,
@@ -120,7 +128,7 @@ pub(super) fn editable_field<T: 'static>(
                     if compact {
                         div { "data-schemaform-field-header": "", class: appearance.utilities("flex min-w-0 flex-wrap items-center justify-between gap-2"),
                             FieldLabel { id: label_id, class: label_class, "{label}" }
-                            {presence_affordances(&presentation.presence, appearance)}
+                            {presence_affordances(&presentation.presence, appearance, buttons::current())}
                         }
                     } else { FieldLabel { id: label_id, class: label_class, "{label}" } }
                     {widget}
@@ -129,7 +137,7 @@ pub(super) fn editable_field<T: 'static>(
                     FieldRow {
                         {widget}
                         FieldLabel { id: label_id, class: label_class, "{label}" }
-                        if compact { {presence_affordances(&presentation.presence, appearance)} }
+                        if compact { {presence_affordances(&presentation.presence, appearance, buttons::current())} }
                     }
                 },
             }
@@ -142,8 +150,11 @@ pub(super) fn editable_field<T: 'static>(
 /// A description part per finding, each carrying the finding's stable id so every id the
 /// adapter hands out resolves to an element, plus `data-finding` (the code) and `data-blocking`
 /// as the finding presenter emits them.
-fn finding_descriptions(findings: Vec<FindingDescriptor>, appearance: Appearance) -> Element {
-    let advisory = advisory_presentation();
+fn finding_descriptions(
+    findings: Vec<FindingDescriptor>,
+    advisory: bool,
+    appearance: Appearance,
+) -> Element {
     rsx! {
         for finding in findings {
             FieldDescription {
@@ -165,7 +176,7 @@ fn finding_descriptions(findings: Vec<FindingDescriptor>, appearance: Appearance
 /// through `aria-errormessage`; every other finding is a description the control references
 /// through `aria-describedby`. Both kinds of element carry the finding's stable id.
 pub(super) fn supplements(presentation: &NodePresentation, appearance: Appearance) -> Element {
-    let advisory = advisory_presentation();
+    let advisory = is_advisory(presentation);
     let help = presentation.help.clone();
     let (errors, descriptions): (Vec<_>, Vec<_>) = presentation
         .findings
@@ -175,9 +186,9 @@ pub(super) fn supplements(presentation: &NodePresentation, appearance: Appearanc
     let errors_id = format!("{}-errors", presentation.element_id);
     rsx! {
         {help_description(help)}
-        {finding_descriptions(descriptions, appearance)}
+        {finding_descriptions(descriptions, advisory, appearance)}
         FindingErrors { id: errors_id, findings: errors, appearance }
-        if !super::density::compact() { {presence_affordances(&presentation.presence, appearance)} }
+        if !super::density::compact() { {presence_affordances(&presentation.presence, appearance, buttons::current())} }
     }
 }
 
@@ -195,8 +206,9 @@ fn help_description(help: Option<Help>) -> Element {
 /// finding carrying the finding's stable id.
 ///
 /// The registry's `FieldError` reads its text from the field metadata and renders it without
-/// ids, so this part registers the same error id with the surrounding `Field`'s metadata and
-/// renders the findings itself. It is always mounted so the live region exists before the first
+/// ids, so this part registers the same error id with the surrounding `Field`'s metadata through
+/// `dioxus-field`'s `use_error_id_registration`, as `FieldError` does, and renders the findings
+/// itself. It is always mounted so the live region exists before the first
 /// error arrives; it is empty while nothing blocks.
 #[component]
 fn FindingErrors(id: String, findings: Vec<FindingDescriptor>, appearance: Appearance) -> Element {
@@ -222,31 +234,6 @@ fn FindingErrors(id: String, findings: Vec<FindingDescriptor>, appearance: Appea
     }
 }
 
-/// Keeps `id` registered as the error element of `meta` for as long as this component lives,
-/// re-registering when either changes, as `dioxus-field`'s own parts do.
-fn use_error_id_registration(meta: FieldMeta, id: Rc<str>) {
-    let active = use_hook(|| Rc::new(RefCell::new(None::<ActiveErrorRegistration>)));
-    let should_replace = active
-        .borrow()
-        .as_ref()
-        .is_none_or(|active| active.meta != meta || active.id != id);
-    if should_replace {
-        let mut writable = meta;
-        let registration = writable.register_error_id(Rc::clone(&id));
-        active.borrow_mut().replace(ActiveErrorRegistration {
-            meta,
-            id,
-            _registration: registration,
-        });
-    }
-}
-
-struct ActiveErrorRegistration {
-    meta: FieldMeta,
-    id: Rc<str>,
-    _registration: FieldMetaIdRegistration,
-}
-
 /// The current data shown beside a widget that cannot show it itself, as the built-in shows it
 /// beside its checkbox: [`NodePresentation::incompatible_value`], present while the value is
 /// incompatible, or null where null is not accepted, the core allows replacement, and the
@@ -270,32 +257,46 @@ pub(super) fn incompatible_description(
     }
 }
 
-/// The presence affordances, rendered as daisyUI buttons carrying the ids the adapter expects.
+/// The presence affordances, rendered as daisyUI buttons carrying the ids the adapter expects,
+/// with the host's presence class from `buttons` when it set one.
 ///
 /// Presence affordances carry no accessible name today; should one arrive, it names the button
 /// as the adapter intends.
-pub(super) fn presence_affordances(presence: &[Affordance], appearance: Appearance) -> Element {
+pub(crate) fn presence_affordances(
+    presence: &[Affordance],
+    appearance: Appearance,
+    buttons: ButtonClasses,
+) -> Element {
     let presence = presence.to_vec();
     rsx! {
         if !presence.is_empty() {
             div { "data-schemaform-presence": "", class: appearance.utilities("flex flex-wrap gap-2"),
                 for affordance in presence {
-                    {presence_button(affordance)}
+                    {presence_button(affordance, buttons)}
                 }
             }
         }
     }
 }
 
-/// One presence affordance as a small daisyUI button carrying its id.
-fn presence_button(affordance: Affordance) -> Element {
+/// One presence affordance as a small daisyUI button carrying its id, or `btn` with the host's
+/// class in place of the size when it set one.
+fn presence_button(affordance: Affordance, buttons: ButtonClasses) -> Element {
     let invoke = affordance.clone();
+    let host = buttons.class(ButtonRole::Presence);
+    let size = match host {
+        Some(_) => ButtonSize::Default,
+        None if super::density::compact() => ButtonSize::Xs,
+        None => ButtonSize::Sm,
+    };
     rsx! {
         Button {
             key: "{affordance.id}",
             id: affordance.id.clone(),
             r#type: "button",
-            size: if super::density::compact() { ButtonSize::Xs } else { ButtonSize::Sm },
+            size,
+            class: host.unwrap_or_default(),
+            "data-schemaform-button": "presence",
             "aria-label": affordance.accessible_name.clone(),
             onclick: move |_| invoke.invoke(),
             "{affordance.label}"
@@ -306,7 +307,7 @@ fn presence_button(affordance: Affordance) -> Element {
 /// A decorative Heroicons outline icon: `path` is the icon's path data, `class` sizes it. Hidden
 /// from assistive technology, so the element it decorates must carry its own name. The `width`
 /// and `height` attributes give it an intrinsic `1em` size for when no class sizes it.
-pub(super) fn icon(path: &'static str, class: &'static str) -> Element {
+pub(crate) fn icon(path: &'static str, class: &'static str) -> Element {
     rsx! {
         svg {
             class,
@@ -330,12 +331,19 @@ pub(super) fn icon(path: &'static str, class: &'static str) -> Element {
 /// carries the adapter's own `aria-describedby`. A read-only node passes no affordances, as the
 /// built-in offers none for it; a constant passes its own, which materialize or remove the fixed
 /// value.
+///
+/// A read-only node's output stays in the tab order (`tabindex="0"`), as the built-in's does and
+/// as a native `readonly` input would, so a keyboard or screen-reader user can still reach the
+/// value; that holds for a node annotated `readOnly` and for every node of a form made read-only
+/// with `set_read_only`. A constant that is not read-only keeps `tabindex="-1"`: focusable for a
+/// finding's focus-to-target, but not a stop of its own.
 pub(super) fn read_only_field(
     presentation: &NodePresentation,
     control: &ControlFacets,
     appearance: Appearance,
     text: String,
     presence: &[Affordance],
+    read_only: bool,
 ) -> Element {
     let field_context =
         FieldContext::empty().with_meta_values(field_meta_values(presentation, control));
@@ -351,14 +359,14 @@ pub(super) fn read_only_field(
             if compact {
                 div { "data-schemaform-field-header": "", class: appearance.utilities("flex min-w-0 flex-wrap items-center justify-between gap-2"),
                     FieldLabel { id: label_id(presentation), class: label_class(presentation), "{label}" }
-                    {presence_affordances(presence, appearance)}
+                    {presence_affordances(presence, appearance, buttons::current())}
                 }
             } else { FieldLabel { id: label_id(presentation), class: label_class(presentation), "{label}" } }
             output {
                 id: element_id,
                 name: control.name.clone(),
                 class: appearance.utilities("min-w-0 py-2"),
-                tabindex: "-1",
+                tabindex: if read_only { "0" } else { "-1" },
                 "data-read-only": "",
                 "data-schemaform-control": kind,
                 "aria-invalid": presentation.invalid,
@@ -366,8 +374,8 @@ pub(super) fn read_only_field(
                 "{text}"
             }
             {help_description(help)}
-            {finding_descriptions(findings, appearance)}
-            if !compact { {presence_affordances(presence, appearance)} }
+            {finding_descriptions(findings, is_advisory(presentation), appearance)}
+            if !compact { {presence_affordances(presence, appearance, buttons::current())} }
         }
     }
 }

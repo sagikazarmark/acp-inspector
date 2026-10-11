@@ -310,11 +310,17 @@ async fn layout_preserves_elicitation_form_raw_and_resolved_values() {
     click(&mut dom, target(&edits, "aria-label", "Refresh requests"));
     click(&mut dom, wire);
     click(&mut dom, split);
+    // The form turns read-only in an effect, on the next scheduler turn.
+    for _ in 0..3 {
+        let _ = tokio::time::timeout(Duration::from_millis(50), dom.wait_for_work()).await;
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+    }
     let html = dioxus_ssr::render(&dom);
     assert!(
-        html.contains("resolved") && html.contains("value=\"Edited form\""),
-        "resolved fields keep the displayed answer"
+        html.contains("resolved") && html.contains(">Edited form</output>"),
+        "resolved fields keep the displayed answer, read-only: {html}"
     );
+    assert!(!html.contains("value=\"Edited form\""), "{html}");
     click(&mut dom, raw);
     assert!(dioxus_ssr::render(&dom).contains("Independent raw"));
     click(&mut dom, wire);

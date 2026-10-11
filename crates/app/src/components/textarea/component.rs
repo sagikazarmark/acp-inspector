@@ -232,6 +232,27 @@ pub fn Textarea(
     }
 }
 
+// `GlobalAttributes` and `textarea` both define `autofocus` and `spellcheck`, so naming one on
+// `Textarea` would be ambiguous (E0034, DioxusLabs/dioxus#5271). Inherent methods win method
+// resolution and forward to the element's own attribute, as `textarea { .. }` resolves it. Unused,
+// they would warn in an app that installs this Component. Remove once upstream resolves the
+// conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F> TextareaPropsBuilder<F>
+where
+    Self: dioxus_elements::extensions::TextareaExtension,
+{
+    /// The `textarea` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::TextareaExtension::autofocus(self, value)
+    }
+
+    /// The `textarea` element's `spellcheck` attribute.
+    pub fn spellcheck(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::TextareaExtension::spellcheck(self, value)
+    }
+}
+
 /// The common Field composition for a native multi-line text field.
 ///
 /// This Composition sugar intentionally has no children. Use [`Field`] and its
@@ -310,5 +331,26 @@ pub fn TextareaField(
             }
             FieldError { appearance: error_appearance }
         }
+    }
+}
+
+// `GlobalAttributes` and `textarea` both define `autofocus` and `spellcheck`, so naming one on
+// `TextareaField` would be ambiguous (E0034, DioxusLabs/dioxus#5271). Inherent methods win method
+// resolution and forward to the element's own attribute, as `textarea { .. }` resolves it. Unused,
+// they would warn in an app that installs this Component. Remove once upstream resolves the
+// conflict (ADR-0034).
+#[allow(dead_code)]
+impl<F> TextareaFieldPropsBuilder<F>
+where
+    Self: dioxus_elements::extensions::TextareaExtension,
+{
+    /// The `textarea` element's `autofocus` attribute.
+    pub fn autofocus(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::TextareaExtension::autofocus(self, value)
+    }
+
+    /// The `textarea` element's `spellcheck` attribute.
+    pub fn spellcheck(self, value: impl dioxus::dioxus_core::IntoAttributeValue) -> Self {
+        dioxus_elements::extensions::TextareaExtension::spellcheck(self, value)
     }
 }

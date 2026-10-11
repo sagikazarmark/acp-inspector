@@ -30,5 +30,6 @@ pub(super) fn ConstantControl(context: ControlRenderContext, appearance: Appeara
         appearance,
         text,
         &presentation.presence,
+        false,
     )
 }

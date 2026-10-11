@@ -41,7 +41,8 @@ wire side by side.
   card with diffs and raw input/output, the turn state and `stopReason` read
   from the update stream.
 - **Permission requests and elicitations** answered inline where the turn
-  stops: permission options, schema-driven elicitation forms (schemaform 0.5)
+  stops: permission options, schema-driven elicitation forms (schemaform 0.6;
+  email, URI, date and date-time checked, answered forms kept read-only)
   with a Raw tab, and URL elicitations opened in the system browser on click.
 - **Capabilities.** What both parties claimed on `initialize`, every v1
   capability shown whether advertised or not, auth methods, and the session

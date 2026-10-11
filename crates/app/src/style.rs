@@ -1395,10 +1395,7 @@ mod tests {
     fn there_is_one_button_one_tab_one_chip_and_one_tag() {
         // One button style (sans, 12px, 500), including the form library's
         // presence buttons. Monospace is for data.
-        for button in [
-            ":is(.btn-quiet, [data-schemaform-presence] .btn)",
-            ".btn-filled",
-        ] {
+        for button in [".btn-quiet", ".btn-filled"] {
             assert_eq!(
                 declared(button, "font-family").as_deref(),
                 Some("var(--font-sans)")

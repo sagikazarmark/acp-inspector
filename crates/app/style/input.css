@@ -301,7 +301,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
    one is a hairline with no ground; the filled one is the lime, once per
    surface. Monospace is for data, and a button is not data.
    --------------------------------------------------------------------------- */
-:is(.btn-quiet, [data-schemaform-presence] .btn) {
+.btn-quiet {
   --btn-bg: transparent;
   --btn-fg: var(--dim);
   --btn-border: var(--line2);
@@ -309,7 +309,7 @@ body:has([data-slot="turn-state"].live) :is(.dot-live, .dot-wait) { animation: b
   font-size: var(--text-row);
   font-weight: var(--font-weight-label);
 }
-:is(.btn-quiet, [data-schemaform-presence] .btn):hover:not([aria-disabled="true"]) { --btn-bg: var(--panel2); --btn-fg: var(--txt); }
+.btn-quiet:hover:not([aria-disabled="true"]) { --btn-bg: var(--panel2); --btn-fg: var(--txt); }
 /* The same control, saying which way it goes. */
 .btn-go { --btn-fg: var(--acc); }
 .btn-bad { --btn-fg: var(--err); }

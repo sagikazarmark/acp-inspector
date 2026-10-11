@@ -1103,7 +1103,7 @@ speak for the reader, so the answer is `-32602` — the error the specification 
 — and the frame is a first-class entry like every refusal §7.3 already makes. Nothing about it is an
 annotation ([§15](#15-open-questions--validation-gaps) q7).
 
-The form is drawn by schemaform 0.5.0 and the registry's daisyUI renderer, with
+The form is drawn by schemaform 0.6.1 and the registry's daisyUI renderer, with
 advisory submission and literal requestedSchema input
 ([ADR 0013](adr/0013-schemaform-draws-the-elicitation-form.md)). The unmerged
 [spike](schemaform-spike.md) records the measured costs and the blockers fixed before adoption.

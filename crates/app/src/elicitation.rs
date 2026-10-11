@@ -15,38 +15,6 @@ if (target) {
 }
 "#;
 
-// Resolved fields stay focusable by summary links. Read-only text and capture
-// guards freeze select/checkbox/presence interactions without hiding evidence.
-const FREEZE_FORM: &str = r#"
-const id = await dioxus.recv();
-await new Promise(resolve => requestAnimationFrame(resolve));
-const root = document.getElementById(id);
-if (!root) return;
-const freeze = () => {
-if (root.dataset.resolved !== 'true') return;
-for (const control of root.querySelectorAll('input,select,textarea,button')) {
-  if (control.closest('[data-finding-summary]')) continue;
-  if (control.dataset.frozen) continue;
-  control.dataset.frozen = 'true';
-  control.tabIndex = -1;
-  control.setAttribute('aria-disabled', 'true');
-  if (control.tagName === 'INPUT' || control.tagName === 'TEXTAREA') control.readOnly = true;
-  const value = control.value, checked = control.checked;
-  for (const kind of ['beforeinput', 'input', 'change', 'click', 'keydown']) {
-    control.addEventListener(kind, event => {
-      if (kind === 'keydown' && event.key === 'Tab') return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (kind === 'input' || kind === 'change') { control.value = value; control.checked = checked; }
-    }, true);
-  }
-}
-};
-const observer = new MutationObserver(freeze);
-observer.observe(root, {attributes:true, attributeFilter:['data-resolved'], childList:true, subtree:true});
-freeze();
-"#;
-
 #[derive(Clone, PartialEq)]
 pub struct Answer {
     pub request: ElicitationRequest,
@@ -292,10 +260,6 @@ fn AdvisoryBody(
     summary: Element,
     body: Element,
 ) -> Element {
-    let advisory = use_signal(|| true);
-    use_context_provider(|| {
-        crate::components::schemaform_daisyui::AdvisoryPresentation(advisory.into())
-    });
     rsx! {
         if let Some(id) = heading_id { strong { id, class: "form-title", "{label}" } }
         if let Some((id, text)) = help { p { id, class: "hint", "{text}" } }
@@ -342,7 +306,8 @@ fn BoundFields(
     on_problem: EventHandler<String>,
     on_findings: EventHandler<usize>,
 ) -> Element {
-    use crate::components::schemaform_daisyui as daisy;
+    use crate::components::{schemaform_daisyui as daisy, schemaform_daisyui_collection};
+    use daisy::Addon;
     use schemaform_dioxus::{
         RenderConfiguration, SchemaForm, SubmissionMode, use_form_with_defaults,
     };
@@ -355,18 +320,35 @@ fn BoundFields(
         Ok(form) => form,
         Err(error) => return form_problem(&error.to_string()),
     };
+    // A resolved request's form stays on screen as evidence: every control a
+    // focusable read-only value, no presence or collection buttons.
+    use_hook(|| form.set_read_only(!waiting).map(drop))
+        .unwrap_or_else(|error| on_problem.call(error.to_string()));
+    let freezing = form.clone();
+    use_effect(use_reactive!(|waiting| {
+        if let Err(error) = freezing.set_read_only(!waiting) {
+            on_problem.call(error.to_string());
+        }
+    }));
     let booleans = prepared.0.booleans.clone();
     let bound = use_hook(|| {
+        let options = daisy::Options::from(daisy::Appearance::None)
+            .density(daisy::Density::Compact)
+            .buttons(
+                daisy::ButtonClasses::default()
+                    .presence("btn-quiet btn-xs")
+                    .item("btn-quiet btn-sm")
+                    .append("btn-quiet btn-sm"),
+            );
         RenderConfiguration::builder()
             .localizer(std::sync::Arc::new(
                 crate::elicitation_words::FindingWords { booleans },
             ))
-            .controls(daisy::controls_with_density(
-                daisy::Appearance::None,
-                daisy::Density::Compact,
-            ))
+            .controls(daisy::controls_with(options))
             .structure(
-                daisy::structure_with(daisy::Appearance::None).with_shell(InspectorFormShell),
+                schemaform_daisyui_collection::CollectionAddon
+                    .structure(daisy::structure_with(options), options)
+                    .with_shell(InspectorFormShell),
             )
             .summary_presenter(daisy::findings_with(daisy::Appearance::None))
             .local_presenter(daisy::findings_with(daisy::Appearance::None))
@@ -389,7 +371,6 @@ fn BoundFields(
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         )
     });
-    let freezing_id = id.clone();
     // The findings on screen, read so this re-renders as they change, and
     // reported up for Accept's label.
     let visible = form
@@ -412,7 +393,6 @@ fn BoundFields(
     use_effect(use_reactive!(|visible| on_findings.call(visible)));
     rsx! {
         div { id, class: "elicitation-fields", "data-resolved": (!waiting).to_string(),
-            onmounted: move |_| { let freezing = document::eval(FREEZE_FORM); let _ = freezing.send(freezing_id.clone()); },
             SchemaForm { form: bound, submission_mode: SubmissionMode::Advisory,
                 on_submit: |_| {},
                 // Enter in a single-field form submits it natively. That is
@@ -889,11 +869,58 @@ mod tests {
         dom.rebuild_in_place();
         dom.render_immediate(&mut dioxus::core::NoOpMutations);
         let html = dioxus_ssr::render(&dom);
-        assert!(
-            html.contains("Required, not set (unchecked is not false)."),
-            "{html}"
-        );
+        assert!(html.contains("Required, not set."), "{html}");
         assert!(html.contains("Required, nothing filled in."), "{html}");
+    }
+
+    #[test]
+    fn a_profile_format_is_checked_and_date_time_is_typed_with_its_zone() {
+        fn host() -> Element {
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","properties":{
+                    "email":{"type":"string","format":"email","default":"ada"},
+                    "when":{"type":"string","format":"date-time","default":"2026-10-10T12:00"},
+                    "id":{"type":"string","format":"uuid"}}}).to_string(),
+                waiting: true,
+                on_ready: |form: schemaform_dioxus::FormHandle| { form.prepare_advisory_submission().unwrap(); },
+                on_problem: |_| {},
+            } }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        dom.render_immediate(&mut dioxus::core::NoOpMutations);
+        let html = dioxus_ssr::render(&dom);
+        assert!(html.contains("Not an email address."), "{html}");
+        assert!(html.contains("Not a date and time with a zone"), "{html}");
+        assert_eq!(html.matches("not checked here").count(), 1, "{html}");
+        assert!(html.contains("Format uuid: not checked here."), "{html}");
+        // RFC 3339 is typed, not picked: a local-time picker has no zone.
+        assert!(!html.contains("datetime-local"), "{html}");
+        assert!(
+            html.contains("2025-01-31T09:30:00Z"),
+            "the placeholder shows the shape: {html}"
+        );
+    }
+
+    #[test]
+    fn a_resolved_form_is_read_only_and_still_focusable() {
+        fn host() -> Element {
+            rsx! { EngineFields {
+                raw_schema: json!({"type":"object","required":["name"],"properties":{
+                    "name":{"type":"string","default":"Ada"},"agree":{"type":"boolean"},
+                    "size":{"type":"string","enum":["s","m"]},
+                    "tags":{"type":"array","items":{"type":"string","enum":["a","b"]}}}}).to_string(),
+                waiting: false, on_ready: |_| {}, on_problem: |_| {},
+            } }
+        }
+        let mut dom = VirtualDom::new(host);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        for editable in ["<input", "<select", "<textarea", "<button"] {
+            assert!(!html.contains(editable), "{editable}: {html}");
+        }
+        assert!(html.contains(">Ada</output>"), "{html}");
+        assert!(html.contains(r#"tabindex="0""#), "{html}");
     }
 
     #[test]
@@ -1083,7 +1110,6 @@ mod tests {
             let html = dioxus_ssr::render(&dom);
             assert!(html.contains(wording), "{wording}: {html}");
             assert!(html.contains("novalidate"));
-            assert!(html.contains("Format email: not checked here."));
             // A second invalid edit must not hide findings by resetting
             // touched/submitted state. Correct through public field actions.
             let binding = data

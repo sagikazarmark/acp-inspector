@@ -1,5 +1,7 @@
 use dioxus::prelude::*;
 
+use super::ButtonClasses;
+
 /// Placement and spacing of field content. Independent of whether the host
 /// supplies its own utilities through [`super::Appearance::None`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -18,8 +20,11 @@ pub(super) fn compact() -> bool {
     try_consume_context::<Density>() == Some(Density::Compact)
 }
 
+/// What a control renders inside: its density and the host's button classes, as contexts the
+/// shared parts read.
 #[component]
-pub(super) fn DensityScope(density: Density, children: Element) -> Element {
+pub(super) fn ControlScope(density: Density, buttons: ButtonClasses, children: Element) -> Element {
     use_context_provider(|| density);
+    use_context_provider(|| buttons);
     children
 }

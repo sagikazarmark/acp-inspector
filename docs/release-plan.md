@@ -316,7 +316,7 @@ Deviations from the plan's wording, each deliberate:
   - Move the editor below cwd, collapsed as "MCP servers (N)", with the caveats inside.
 - [x] **FM3. Make Enter in elicitation forms consistent.** Today it submits only for single-field forms. Either never submit on Enter, or always submit via a hidden submit button.
 - [x] **FM4. Keep the "required" marker on properties that can't be rendered.** Carry the quarantined required names in `Prepared` and mark those rows "Required" (`elicitation_schema.rs:52-58`).
-- [x] **FM5. Word an unset required boolean clearly.** Say "not set (unchecked is not false)" until U11 (#21).
+- [x] **FM5. Word an unset required boolean clearly.** Said "not set (unchecked is not false)" until U11 (#21); now "Required, not set."
 - [x] **FM6. Settle button styling.**
   - Add an interim host CSS rule so the renderer's presence buttons take the `btn-quiet` look; U10 (#21) removes the need.
   - Decide between registry `Button` in screens and plain `button.btn`, and amend ADR 0005 accordingly.
@@ -426,20 +426,22 @@ Deviations from the plan's wording, each deliberate:
 
 Filed upstream on 2026-10-10. None of them blocks the release. The follow-up for each one, and the reinstall and bump procedure, are in #21.
 
-| Id | Issue | When it lands, here we… |
-|---|---|---|
-| U1 | sagikazarmark/schemaform#57: opt-in format assertion | enable format findings and drop the "not checked here" notes |
-| U2 | sagikazarmark/schemaform#58: public `ControlFacets::input_type()` | pick it up with the registry reinstall |
-| U3 | sagikazarmark/schemaform#59: form-level read-only / disabled | delete the `FREEZE_FORM` script |
-| U4 | sagikazarmark/schemaform#60: submission mode reachable from finding renderers | stop re-providing `AdvisoryPresentation` |
-| U5 | sagikazarmark/schemaform#61: `date-time` can't produce RFC 3339 | render `date-time` as an RFC 3339 field and drop the X8 note |
-| U6 | sagikazarmark/schemaform#62: optional object-root assumption | keep the B3 host fix or switch to the option |
-| U7 | sagikazarmark/dioxus-field#20: public id registration | bump and reinstall |
-| U8 | sagikazarmark/dioxus-daisyui-components#33: opt-in extra widgets | drop `select` and `radio_group` and narrow `#[allow(dead_code)]` |
-| U9 | sagikazarmark/dioxus-daisyui-components#34: `Input` attribute ambiguity | drop FM1's string-key workaround |
-| U10 | sagikazarmark/dioxus-daisyui-components#35: host styling for the renderer's own buttons | drop FM6's interim CSS |
-| U11 | sagikazarmark/dioxus-daisyui-components#36: unset boolean looks like `false` | drop FM5's wording |
-| U12 | sagikazarmark/dioform#122: relax the exact Dioxus pins | re-evaluate dioform for `spawn.rs` |
+| Id | Issue | When it lands, here we… | Status |
+|---|---|---|---|
+| U1 | sagikazarmark/schemaform#57: opt-in format assertion | enable format findings and drop the "not checked here" notes | ✅ email, uri, date and date-time asserted; other formats keep the note |
+| U2 | sagikazarmark/schemaform#58: public `ControlFacets::input_type()` | pick it up with the registry reinstall | ✅ public `input_type` and `placeholder` fields, used by the reinstalled renderer |
+| U3 | sagikazarmark/schemaform#59: form-level read-only / disabled | delete the `FREEZE_FORM` script | ✅ `set_read_only`; read-only fields are focusable (0.6.1) |
+| U4 | sagikazarmark/schemaform#60: submission mode reachable from finding renderers | stop re-providing `AdvisoryPresentation` | ✅ control renderers read it too (0.6.1); `AdvisoryPresentation` is gone |
+| U5 | sagikazarmark/schemaform#61: `date-time` can't produce RFC 3339 | render `date-time` as an RFC 3339 field and drop the X8 note | ✅ a text field with an RFC 3339 placeholder |
+| U6 | sagikazarmark/schemaform#62: optional object-root assumption | keep the B3 host fix or switch to the option | ✅ documented upstream, no option; the B3 fix stays |
+| U7 | sagikazarmark/dioxus-field#20: public id registration | bump and reinstall | ✅ dioxus-field 0.8.0; the registry uses the public hook |
+| U8 | sagikazarmark/dioxus-daisyui-components#33: opt-in extra widgets | drop `select` and `radio_group` and narrow `#[allow(dead_code)]` | ✅ both deleted; `checkbox` stays for the launch form. The allow stays: the installed components still carry unused public API. Graph unchanged (413) |
+| U9 | sagikazarmark/dioxus-daisyui-components#34: `Input` attribute ambiguity | drop FM1's string-key workaround | ✅ typed `autofocus` and `spellcheck` |
+| U10 | sagikazarmark/dioxus-daisyui-components#35: host styling for the renderer's own buttons | drop FM6's interim CSS | ✅ `ButtonClasses`; the `[data-schemaform-presence] .btn` rule is gone |
+| U11 | sagikazarmark/dioxus-daisyui-components#36: unset boolean looks like `false` | drop FM5's wording | ✅ indeterminate box; the finding says "Required, not set." |
+| U12 | sagikazarmark/dioform#122: relax the exact Dioxus pins | re-evaluate dioform for `spawn.rs` | Pins relaxed in dioform 0.8/0.9; re-evaluation open. The findings-to-field-errors bridge was not built |
+
+Picked up on 2026-10-11 with schemaform and schemaform-dioxus 0.6.1, dioxus-field 0.8.0 and the registry at `68726ed`; the install procedure is in `crates/app/src/components/PROVENANCE.md`. One upstream follow-up is not filed yet: installing the renderer and an add-on in one `dx components add` fails intermittently, because the add-on pins the renderer at another revision.
 
 Do **not** adopt dioform before the release. It would help the spawn form moderately, fits the core-owned MCP draft poorly, and would freeze the Dioxus patch version until U12 lands. FM1 gets most of the benefit with libraries already installed.
 

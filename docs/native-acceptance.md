@@ -171,7 +171,7 @@ them.
 2. Enter Age `999`, leave the field, then refocus it. Hear its label, value and
    **Above the maximum of 120.** finding. Record automatic live announcements
    separately from descriptions spoken on refocus.
-3. Reach Email and hear **Format email: not checked here.**
+3. Enter `ada` in Email, leave the field, then refocus it. Hear **Not an email address.**
 4. Activate the Age summary link. Confirm focus moves to Age without submitting.
    Change it to `20`, leave and refocus. The maximum finding and description should
    disappear; the old finding must not be announced as current.

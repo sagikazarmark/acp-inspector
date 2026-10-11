@@ -4,8 +4,8 @@
 use schemaform_dioxus::{Localizer, render::MessageDescriptor};
 
 /// The words for findings, and which properties are booleans: an unset
-/// required boolean reads as "not set", since an unchecked box is not `false`
-/// (sagikazarmark/dioxus-daisyui-components#36).
+/// required boolean reads as "not set", since its box is indeterminate rather
+/// than unchecked.
 #[derive(Default)]
 pub struct FindingWords {
     pub booleans: std::collections::BTreeSet<String>,
@@ -48,9 +48,16 @@ impl Localizer for FindingWords {
                     .as_str()
                     .is_some_and(|name| self.booleans.contains(name)) =>
             {
-                "Required, not set (unchecked is not false).".into()
+                "Required, not set.".into()
             }
             "schemaform.validation.required" => "Required, nothing filled in.".into(),
+            "schemaform.validation.format" => match message.parameters["format"].as_str() {
+                Some("email") => "Not an email address.".into(),
+                Some("uri") => "Not an absolute URI, such as https://example.com.".into(),
+                Some("date") => "Not a date, such as 2026-01-31.".into(),
+                Some("date-time") => "Not a date and time with a zone, such as 2026-01-31T09:30:00Z.".into(),
+                _ => message.fallback.clone(),
+            },
             "schemaform.validation.pattern" => format!("Does not match the stated pattern {}.", message.parameters["pattern"]),
             "schemaform.parse.invalid-number" => "Not a number. This text is not in the form data; Raw can send it as a string.".into(),
             "schemaform.parse.invalid-integer" => "Not a whole number. This text is not in the form data; Raw can send it as a string.".into(),

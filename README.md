@@ -254,8 +254,8 @@ agents' JSON-RPC ids start again at 1.
 ## Elicitation forms
 
 An agent's `elicitation/create` in form mode is drawn as a form built from the JSON Schema it sent,
-with schemaform 0.5.0 and the registry's daisyUI renderer. Field-local findings and named summary
-links are advisory, and the **Raw** tab holds the exact object the answer will send, so it can send
+with schemaform 0.6.1 and the registry's daisyUI renderer. Field-local findings and named summary
+links are advisory (the email, URI, date and date-time formats are checked too), and the **Raw** tab holds the exact object the answer will send, so it can send
 values the schema forbids. A URL elicitation shows the full URL and its host and opens in your own
 browser only when you click it. The adoption decision is
 [ADR 0013](docs/adr/0013-schemaform-draws-the-elicitation-form.md), and where the form components
