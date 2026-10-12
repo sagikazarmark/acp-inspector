@@ -47,13 +47,25 @@ impl Launch {
     ) -> Option<crate::spawn::LaunchFailure> {
         let held = stores.lines.read();
         let since = (self.launch_mark)().saturating_sub((stores.dropped_lines)());
-        crate::spawn::launch_failure(
+        let launched = self.launched.read();
+        let failure = crate::spawn::launch_failure(
             (stores.status)(),
             problem.read().as_ref(),
             stores.described.read().is_some(),
             held.get(since..).unwrap_or(&[]),
-            effective_path(self.launched.read().as_ref()).as_deref(),
-        )
+            effective_path(launched.as_ref()).as_deref(),
+        )?;
+        // A command not found on a PATH the login shell never supplied: say
+        // so, since that PATH is the likely reason.
+        #[cfg(feature = "desktop")]
+        let failure = {
+            let mut failure = failure;
+            if failure.path.is_some() && !sets_path(launched.as_ref()) {
+                failure.detail.extend(shell::login_path_missed());
+            }
+            failure
+        };
+        Some(failure)
     }
 }
 
@@ -210,6 +222,12 @@ async fn with_login_path(agent: AgentCommand) -> AgentCommand {
     }
     #[cfg(not(feature = "desktop"))]
     agent
+}
+
+/// Whether the invocation set its own `PATH`.
+#[cfg(feature = "desktop")]
+fn sets_path(agent: Option<&AgentCommand>) -> bool {
+    agent.is_some_and(|agent| agent.variables().any(|(name, _)| name == "PATH"))
 }
 
 /// The `PATH` a bare command name is looked up in, for the launch failure

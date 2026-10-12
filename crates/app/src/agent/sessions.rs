@@ -43,10 +43,15 @@ pub(crate) fn sessions(
             })
         })
         .flatten();
+    // Each session once: pages are appended as they come, so one that moved
+    // between pages while they were fetched is listed twice. The rows are
+    // keyed by id, and every row's actions address the session by it anyway.
+    let mut seen = std::collections::HashSet::new();
     let others: Vec<&v1::SessionInfo> = answered
         .unwrap_or_default()
         .iter()
         .filter(|session| Some(&session.session_id) != listing.live)
+        .filter(|session| seen.insert(&session.session_id))
         .collect();
 
     rsx! {
@@ -196,7 +201,10 @@ fn session_row(
                     aria_hidden: "true",
                 }
                 span { class: "session-title",
-                    title: title.as_ref().map(|title| stated_by(title.by)),
+                    title: title.as_ref().map(|title| match &title.value {
+                        Some(value) => whole(value, title.by),
+                        None => stated_by(title.by),
+                    }),
                     match title.as_ref().and_then(|title| title.value.as_ref()) {
                         Some(title) => rsx! { "{title}" },
                         None => rsx! { span { class: "cleared", "untitled session" } },
@@ -208,7 +216,7 @@ fn session_row(
                 }
                 span { class: "session-meta",
                     if let Some(Stated { value: Some(when), by }) = updated.as_ref() {
-                        span { title: stated_by(*by), "updated {when}" }
+                        span { title: whole(&format!("updated {when}"), *by), "updated {when}" }
                     } else if info.is_none() && !sessions.pending {
                         "not in a listing"
                     }
@@ -216,8 +224,11 @@ fn session_row(
                     // names otherwise, both claims are shown.
                     if let Some(listed) = relisted {
                         span { class: "session-relisted", "data-slot": "relisted",
-                            title: "{v1::AGENT_METHOD_NAMES.session_list}",
-                            match listed {
+                            title: match &listed {
+                                Some(listed) => format!("listed as “{listed}”\nFrom {}", v1::AGENT_METHOD_NAMES.session_list),
+                                None => v1::AGENT_METHOD_NAMES.session_list.to_owned(),
+                            },
+                            match &listed {
                                 Some(listed) => rsx! { "listed as “{listed}”" },
                                 None => rsx! { "listed untitled" },
                             }
@@ -273,6 +284,12 @@ pub(crate) fn stated_by(by: StatedBy) -> String {
         StatedBy::Update => "From session_info_update".to_owned(),
         StatedBy::Listing => format!("From {}", v1::AGENT_METHOD_NAMES.session_list),
     }
+}
+
+/// A tooltip for a value the row may cut short: the value whole, then where it
+/// came from. The value comes first, since it is what a cut row hides.
+pub(crate) fn whole(value: &str, by: StatedBy) -> String {
+    format!("{value}\n{}", stated_by(by))
 }
 
 /// The id of the line that says why the dialog's controls are unavailable.
@@ -670,6 +687,24 @@ mod tests {
             restores,
             Some(two_sessions()),
         ))
+    }
+
+    #[test]
+    fn a_session_listed_on_two_pages_is_one_row() {
+        // Pages are appended as fetched; a session that moved between them
+        // arrives twice, and its rows are keyed by its id.
+        let mut listing = two_sessions();
+        listing
+            .sessions
+            .push(v1::SessionInfo::new("sess-1", "/tmp").title("The first one"));
+        let listed = affordances(&rendered(
+            everything(),
+            true,
+            Some(Restore::Load),
+            Some(listing),
+        ));
+
+        assert_eq!(rows_shown(&listed).len(), 2, "{listed}");
     }
 
     #[test]
@@ -1225,7 +1260,9 @@ mod tests {
             .updated_at("2026-10-12T09:00:00Z")]);
         let rows = rows_shown(&renamed);
         assert!(
-            rows[0].contains(r#"title="From session_info_update">Fix the flaky build<"#),
+            rows[0].contains(
+                "title=\"Fix the flaky build\nFrom session_info_update\">Fix the flaky build<"
+            ),
             "the update names it, and says so: {}",
             rows[0]
         );

@@ -319,6 +319,8 @@ pub fn Composer(
     let slashing = ready && naming_a_command(&text(), dismissed());
     let offers_commands = !commands.is_empty();
     let highlight = highlighted().min(matches.len().saturating_sub(1));
+    // Names are the agent's, and nothing stops it publishing one twice.
+    let match_keys = crate::keys::distinct(matches.iter().map(|command| command.name.clone()));
 
     let mut send = move || {
         let prompt = text();
@@ -426,9 +428,9 @@ pub fn Composer(
                         }
                     }
                     div { class: "slash-list", role: "listbox", aria_label: "Commands the agent published",
-                        for (position, command) in matches.iter().enumerate() {
+                        for ((position, command), key) in matches.iter().enumerate().zip(&match_keys) {
                             button {
-                                key: "{command.name}",
+                                key: "{key}",
                                 class: "slash-row",
                                 r#type: "button",
                                 role: "option",
@@ -1809,5 +1811,69 @@ mod tests {
         assert!(!idle.contains("Turn ended:"), "{idle}");
         assert!(ended.contains("Turn ended: max_tokens."), "{ended}");
         assert!(failed.contains("Prompt failed:"), "{failed}");
+    }
+
+    #[test]
+    fn a_command_name_the_agent_published_twice_is_listed_twice() {
+        use dioxus::html::{PlatformEventData, SerializedFormData};
+        use std::{any::Any, rc::Rc};
+
+        fn host() -> Element {
+            let command = |name: &str, description: &str| Command {
+                name: name.to_owned(),
+                description: description.to_owned(),
+            };
+            rsx! {
+                Composer {
+                    turn: TurnState::Idle,
+                    ready: true,
+                    connected: true,
+                    blocked: false,
+                    problem: None,
+                    commands: vec![
+                        command("deploy", "from the user's commands"),
+                        command("deploy", "from the project's commands"),
+                        command("docs", "open the docs"),
+                    ],
+                    mode: None,
+                    on_prompt: |_| Ok(()),
+                    on_stop: |_| {},
+                    on_set_mode: |_| {},
+                }
+            }
+        }
+
+        set_event_converter(Box::new(dioxus::html::SerializedHtmlEventConverter));
+        let mut dom = VirtualDom::new(host);
+        let edits = dom.rebuild_to_vec().edits;
+        let input = edits
+            .iter()
+            .find_map(|edit| match edit {
+                Mutation::NewEventListener { name, id } if name == "input" => Some(*id),
+                _ => None,
+            })
+            .expect("the prompt box listens for input");
+        // Each keystroke narrows the list, and the list is diffed by key.
+        for typed in ["/", "/d", "/de"] {
+            dom.runtime().handle_event(
+                "input",
+                Event::new(
+                    Rc::new(PlatformEventData::new(Box::new(SerializedFormData::new(
+                        typed.to_owned(),
+                        Vec::new(),
+                    )))) as Rc<dyn Any>,
+                    true,
+                ),
+                input,
+            );
+            dom.render_immediate_to_vec();
+        }
+
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(
+            html.matches(r#"class="slash-row""#).count(),
+            2,
+            "both commands named deploy: {html}"
+        );
     }
 }

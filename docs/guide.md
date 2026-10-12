@@ -28,7 +28,9 @@ just run      # cargo run -p acp-inspector
 Fill the spawn form with an **executable only** in Command (for example `npx`), and the package
 on its own line in Arguments. Each nonblank argument line is one argument: a flag and its value go
 on separate lines, while a path containing spaces stays on one line **without shell quotes**. No
-shell expansion is performed; surrounding whitespace is trimmed. Environment takes one
+shell expansion is performed; surrounding whitespace is trimmed. On Windows a bare name is found on
+`PATH` the way the command prompt finds it, trying each extension `PATHEXT` lists, so `npx` runs
+`npx.cmd`; the agent runs without a console window of its own. Environment takes one
 `KEY=VALUE` per line. An empty working directory uses the inspector's own; a relative directory
 resolves against it. The Agent starts there and `session/new` receives an absolute path. Launch,
 and the console fills as frames cross; its other tab carries the agent's stderr, and the console

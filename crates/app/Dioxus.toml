@@ -9,8 +9,8 @@
 # this file is the plist and the Finder icon wrapped around it.
 
 [application]
-# The Finder name and `CFBundleName`. The crate names stay provisional
-# (../README.md says so in its opening); this is the name the *bundle* carries,
+# The Finder name and `CFBundleName`. The crates are named `acp-inspector*`
+# (../../docs/development.md, "Layout"); this is the name the *bundle* carries,
 # and it is the one the window already puts in its title bar.
 name = "ACP Inspector"
 

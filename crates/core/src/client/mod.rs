@@ -48,6 +48,7 @@ use crate::timeline::Timeline;
 use crate::turn::TurnState;
 
 pub(crate) use driving::drives;
+pub(crate) use inbound::Classified;
 use rules::Loading;
 use settings::{ChangingMode, Opening, SettingOption};
 
@@ -241,6 +242,15 @@ impl Client {
 /// and must not be reported as something the agent did.
 pub(crate) fn encode(params: &impl Serialize) -> Value {
     serde_json::to_value(params).unwrap_or(Value::Null)
+}
+
+/// The parameters of a request that carries paths (`cwd`, roots), as JSON.
+///
+/// The one serialization that can fail on what a person supplied: `serde`
+/// refuses a path that is not UTF-8, and [`encode`]'s fallback would send the
+/// request with `"params": null` for the agent to reject in its own words.
+pub(crate) fn encode_paths(params: &impl Serialize) -> Result<Value, CallError> {
+    serde_json::to_value(params).map_err(|_| CallError::PathNotUtf8)
 }
 
 /// An answer, read as v1. A result that does not decode is this layer failing

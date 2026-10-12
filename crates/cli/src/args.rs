@@ -43,16 +43,21 @@ pub enum Prompt {
 }
 
 /// How a permission request is answered when nobody is there to answer it.
+///
+/// Only ever with a `_once` option: a policy for one run does not get to
+/// change what the agent remembers, in either direction. When the kind it
+/// wants is not offered, the turn is cancelled, which answers the request
+/// `cancelled`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Policy {
     /// What a person would be asked. Headless, nobody can be, so it is
-    /// rejected — and the summary says that is why.
+    /// rejected like [`Reject`](Self::Reject) — and the summary says that is
+    /// why.
     #[default]
     Ask,
-    /// The first `allow_once` option. Never an `allow_always`: a policy for one
-    /// run does not get to change what the agent remembers.
+    /// The first `allow_once` option, never an `allow_always`.
     Allow,
-    /// The first reject option.
+    /// The first `reject_once` option, never a `reject_always`.
     Reject,
 }
 
@@ -90,16 +95,19 @@ and wait for its turn to end, answer permission requests by policy, then stop
 the agent gracefully and print a summary.
 
   --cwd DIR             The agent's working directory and the session's cwd
-                        (default: this one)
+                        (default: this one). A relative COMMAND such as
+                        ./agent is still found from this directory
   --env KEY=VALUE       Add a variable to the agent's environment (repeatable)
   --unset NAME          Leave an inherited variable out (repeatable)
   --clear-env           Start the agent with only the --env variables
   --prompt TEXT         A prompt to send (repeatable, sent in order)
-  --prompt-file FILE    A prompt read from a file, `-` for stdin (repeatable)
+  --prompt-file FILE    A prompt read from a file, `-` for stdin (repeatable;
+                        stdin at most once)
   --permission POLICY   ask (default; rejected, nobody is there to ask),
                         allow (first allow_once, never allow_always) or
-                        reject (first reject option). With no such option
-                        offered, the turn is cancelled instead.
+                        reject (first reject_once, never reject_always).
+                        With no such option offered, the turn is cancelled
+                        instead.
   --timeout SECS        Give up on the whole run after SECS seconds
   --export PATH         Write the JSONL trace to PATH (a directory gets a
                         generated name), in the format the app exports
@@ -109,15 +117,21 @@ inspect: read an exported trace and count its frames by method and direction.
 
   --json                Print the counts as JSON
 
-Exit codes:
-  0   the run completed and nothing was annotated
+Exit codes (when several apply, the first in this order wins: a signal, 3,
+1, 2, 4):
+  0   every turn ended with end_turn and nothing was annotated
   1   the agent or the protocol failed: spawn, handshake, session or prompt
-      error, an unreadable trace, or an export that could not be written
+      error, an unusable --cwd, an unreadable trace, or an export that could
+      not be written
   2   the run completed and the trace broke a MUST the inspector checks
       (a conformance annotation)
   3   --timeout ran out
+  4   the run completed, but a turn ended with a stop reason other than
+      end_turn (refusal, cancelled, max_tokens, max_turn_requests)
   64  the command line was wrong
-  130 interrupted (Ctrl-C)
+  130 interrupted (SIGINT, Ctrl-C); 143 SIGTERM; 129 SIGHUP. The agent is
+      stopped and the trace exported; a second signal while stopping kills
+      the agent and exits at once, without the export
 ";
 
 /// Reads the arguments after the program name.
@@ -270,6 +284,15 @@ fn run(arguments: impl Iterator<Item = OsString>) -> Result<Invocation, Usage> {
         }
     }
 
+    // Stdin ends once: a second `-` would read nothing and send an empty
+    // prompt as if it were one.
+    let stdin = |prompt: &&Prompt| matches!(prompt, Prompt::File(path) if path.as_os_str() == "-");
+    if run.prompts.iter().filter(stdin).count() > 1 {
+        return Err(Usage(
+            "--prompt-file - reads stdin, which can be read only once".into(),
+        ));
+    }
+
     let Some(command) = command.filter(|command| !command.is_empty()) else {
         return Err(Usage(
             "run needs the agent's command: `run [OPTIONS] -- COMMAND [ARGS...]`".into(),
@@ -409,6 +432,14 @@ mod tests {
             &["run", "--timeout", "0", "--", "agent"],
             &["run", "--timeout", "soon", "--", "agent"],
             &["run", "--json=yes", "--", "agent"],
+            &[
+                "run",
+                "--prompt-file",
+                "-",
+                "--prompt-file=-",
+                "--",
+                "agent",
+            ],
             &["inspect"],
             &["inspect", "a", "b"],
             &["inspect", "--verbose", "a"],

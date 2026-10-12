@@ -11,24 +11,55 @@ use crate::call::CallError;
 use crate::connection::Received;
 use crate::frame::{Frame, Omission};
 use crate::permission::PermissionPolicy;
-use crate::rpc::{Incoming, answer_id, classify, mistyped, ours};
+use crate::rpc::{Incoming, answer_id, classify, mistyped, ours, request_id};
 use crate::store::locked;
 use crate::timeline::{Recorded, Unrecognized};
 use crate::turn::TurnState;
 
 use super::Client;
 
+/// A frame off the transport with its envelope already read.
+///
+/// Decoding is the one expensive step of receiving, and it touches no store,
+/// so the reader does it before it takes the connection's lock rather than
+/// while holding it.
+pub(crate) struct Classified {
+    received: Received,
+    /// What the frame is; none for a placeholder, which has nothing to decode.
+    incoming: Option<Incoming>,
+}
+
+impl Classified {
+    pub(crate) fn new(received: Received) -> Self {
+        let incoming = received
+            .frame
+            .omission()
+            .is_none()
+            .then(|| classify(&received.frame));
+        Self { received, incoming }
+    }
+}
+
 impl Client {
     /// Handles one frame from the agent: decodes `session/update` as v1,
     /// services or refuses requests, hands answers to their callers, and shows
     /// anything else as unrecognized (§8). No frame is dropped.
     pub(crate) async fn receive(&self, received: Received) {
+        self.receive_classified(Classified::new(received)).await;
+    }
+
+    /// [`receive`](Self::receive), for a frame whose envelope the caller has
+    /// already decoded: the reader does that before it takes the connection's
+    /// lock, so a large frame's decode does not hold up the window.
+    pub(crate) async fn receive_classified(&self, classified: Classified) {
+        let Classified { received, incoming } = classified;
         let Received { frame, captured } = received;
         // Entries keep the trace position of each frame, which links the
         // timeline to the trace.
         let recorded = |frame: Frame| Recorded { frame, captured };
         if let Some(omission) = frame.omission() {
             self.omitted(&frame, omission);
+            let asked = request_id(frame.as_str());
             self.stores.timeline.unrecognized(
                 Unrecognized::Dropped {
                     length: omission.length,
@@ -36,9 +67,22 @@ impl Client {
                 },
                 recorded(frame),
             );
+            // A request the agent made is still owed an answer, or the agent
+            // waits for one forever: say why it will not get what it asked.
+            if let Some(id) = asked {
+                let error = v1::Error::new(
+                    v1::ErrorCode::InvalidRequest.into(),
+                    format!(
+                        "the request was {} bytes, over this client's {}-byte limit, \
+                         and was not read",
+                        omission.length, omission.limit
+                    ),
+                );
+                let _ = self.rpc.respond(&id, Err(error)).await;
+            }
             return;
         }
-        match classify(&frame) {
+        match incoming.unwrap_or_else(|| classify(&frame)) {
             Incoming::Notification { method, params } => {
                 if method == v1::CLIENT_METHOD_NAMES.session_update {
                     let session = params
@@ -254,8 +298,6 @@ impl Client {
         .collect()
     }
 
-    /// Whether an update names a session other than the known ones. With none
-    /// known yet (a `session/new` unanswered), nothing is foreign.
     /// Folds what a `session_info_update` or `usage_update` says into its
     /// session's report. The timeline keeps the update either way.
     fn reported(&self, notification: &v1::SessionNotification) {
@@ -275,6 +317,8 @@ impl Client {
         }
     }
 
+    /// Whether an update names a session other than the known ones. With none
+    /// known yet (a `session/new` unanswered), nothing is foreign.
     pub(super) fn foreign(&self, session: &v1::SessionId) -> bool {
         let known = self.known_sessions();
         !known.is_empty() && !known.contains(session)

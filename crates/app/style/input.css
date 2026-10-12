@@ -857,6 +857,15 @@ p.alert { display: block; }
   background: var(--panel2);
   overflow: clip;
 }
+/* `clip` reached WKWebView with Safari 16, and the bundle supports macOS 11:
+   on an older WebView the declaration is dropped and these boxes would not
+   clip at all. `hidden` clips the same, though a script can scroll it, which
+   is what `clip` was chosen to rule out (`#main`). daisyUI's modal is here
+   for the same reason. A separate block, so the sheet's minifier cannot fold
+   the fallback into the declaration it falls back from. */
+@supports not (overflow: clip) {
+  #main, .evidence, .modal { overflow: hidden; }
+}
 .evidence-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
 .evidence-title { flex: 1; min-width: 0; font-size: var(--text-body); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
 .evidence-state { flex: none; font-family: var(--font-mono); font-size: var(--text-meta); font-weight: var(--font-weight-answer); }
@@ -1436,8 +1445,12 @@ p.alert { display: block; }
 }
 .session-row.live { border-color: var(--tint-selected-edge); background: var(--tint-selected); box-shadow: inset 2px 0 0 var(--acc); }
 .session-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.session-title { font-size: var(--text-body); font-weight: var(--font-weight-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-meta { display: flex; gap: 8px; min-width: 0; margin-left: auto; flex: none; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
+/* The title and its facts share one line. The title keeps room for a few
+   words however long the facts the agent sent are; the facts take at most
+   half the line and are cut, each whole in its tooltip. */
+.session-title { flex: 1 1 auto; min-width: 8ch; font-size: var(--text-body); font-weight: var(--font-weight-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { display: flex; gap: 8px; min-width: 0; max-width: 50%; margin-left: auto; flex: 0 1 auto; overflow: hidden; white-space: nowrap; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
+.session-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The listing's title beside one an update replaced: a second claim, kept short. */
 .session-relisted { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-left: 16px; min-width: 0; }

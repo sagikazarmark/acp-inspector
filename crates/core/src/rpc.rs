@@ -464,6 +464,37 @@ pub(crate) fn answer_id(prefix: &str) -> Option<i64> {
     }
 }
 
+/// The id of a request the agent made, read off the start of one the
+/// transport cut short: the top-level `id`, when it and `method` both come
+/// before the cut. Ids of either JSON type, as the agent chose them; a `null`
+/// one, or a notification, has nothing to answer.
+pub(crate) fn request_id(prefix: &str) -> Option<Value> {
+    let mut rest = prefix.trim_start().strip_prefix('{')?;
+    let mut id = None;
+    let mut method = false;
+    loop {
+        if method && id.is_some() {
+            return id;
+        }
+        let (key, after) = token::<String>(rest)?;
+        rest = after.trim_start().strip_prefix(':')?;
+        match key.as_str() {
+            "id" => {
+                let (value, after) = token::<Value>(rest)?;
+                id = matches!(value, Value::Number(_) | Value::String(_)).then_some(value);
+                rest = after;
+            }
+            "result" | "error" => return None,
+            "method" => {
+                method = true;
+                rest = token::<serde::de::IgnoredAny>(rest)?.1;
+            }
+            _ => rest = token::<serde::de::IgnoredAny>(rest)?.1,
+        }
+        rest = rest.trim_start().strip_prefix(',')?;
+    }
+}
+
 /// One JSON value off the front of `text`, and what follows it.
 fn token<T: serde::de::DeserializeOwned>(text: &str) -> Option<(T, &str)> {
     let mut values = serde_json::Deserializer::from_str(text).into_iter::<T>();
@@ -553,6 +584,27 @@ mod tests {
         assert_eq!(answer_id(r#"{"result":{"pad":"xxx"#), None);
         assert_eq!(answer_id(r#"{"id":"3","result":{"#), None);
         assert_eq!(answer_id("not json"), None);
+    }
+
+    #[test]
+    fn a_requests_id_is_read_off_its_retained_start() {
+        assert_eq!(
+            request_id(
+                r#"{"jsonrpc":"2.0","id":3,"method":"fs/write_text_file","params":{"content":"xx"#
+            ),
+            Some(json!(3))
+        );
+        assert_eq!(
+            request_id(r#"{"method":"x","id":"a-1","params":{"#),
+            Some(json!("a-1"))
+        );
+        // The id after the payload, a notification, a null id or an answer
+        // leave nothing to answer.
+        assert_eq!(request_id(r#"{"method":"x","params":{"pad":"xx"#), None);
+        assert_eq!(request_id(r#"{"method":"x","params":{}}"#), None);
+        assert_eq!(request_id(r#"{"id":null,"method":"x","params":{"#), None);
+        assert_eq!(request_id(r#"{"id":3,"result":{"pad":"#), None);
+        assert_eq!(request_id("not json"), None);
     }
 
     #[test]

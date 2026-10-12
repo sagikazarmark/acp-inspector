@@ -72,6 +72,7 @@ pub fn panel(request: &PermissionRequest, on_answer: EventHandler<Answer>) -> El
 
 /// Every option the agent supplied, in its order. None is drawn as the
 /// default; an `*_always` option is tagged because it outlives the click.
+/// Option ids are the agent's, so a repeated one is still a button of its own.
 fn choices(
     options: &[v1::PermissionOption],
     state: &PermissionState,
@@ -79,8 +80,8 @@ fn choices(
 ) -> Element {
     rsx! {
         div { class: "answers",
-            for option in options.iter() {
-                {choice(option, state, on_choose)}
+            for (key, option) in crate::keys::distinct(options.iter().map(|option| option.option_id.to_string())).iter().zip(options) {
+                {choice(key, option, state, on_choose)}
             }
         }
     }
@@ -88,6 +89,7 @@ fn choices(
 
 /// One option, as the button that sends its id.
 fn choice(
+    key: &str,
     option: &v1::PermissionOption,
     state: &PermissionState,
     on_choose: EventHandler<v1::PermissionOptionId>,
@@ -126,7 +128,7 @@ fn choice(
 
     rsx! {
         button {
-            key: "{option.option_id}",
+            key: "{key}",
             class: "{classes}",
             r#type: "button",
             "data-option": "{option.option_id}",

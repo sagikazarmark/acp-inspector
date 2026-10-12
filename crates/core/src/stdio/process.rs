@@ -179,7 +179,8 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use process_wrap::tokio::{ChildWrapper, CommandWrap, JobObject, KillOnDrop};
+    use process_wrap::tokio::{ChildWrapper, CommandWrap, CreationFlags, JobObject, KillOnDrop};
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
     pub struct Process(Box<dyn ChildWrapper>);
 
@@ -188,8 +189,16 @@ mod platform {
             // JobObject suspends creation, assigns the private job, then
             // resumes. Descendants cannot run before ownership is established.
             // KillOnDrop sets KILL_ON_JOB_CLOSE, including on setup failure.
+            // CREATE_NO_WINDOW: the release app is a GUI-subsystem executable
+            // with no console to share, so a console agent (node, python)
+            // would otherwise open a window of its own. Its pipes are all it
+            // needs. Through the wrapper, because JobObject sets the creation
+            // flags itself and keeps only the ones a CreationFlags carries.
             let mut command = CommandWrap::from(command);
-            command.wrap(KillOnDrop).wrap(JobObject);
+            command
+                .wrap(KillOnDrop)
+                .wrap(CreationFlags(CREATE_NO_WINDOW))
+                .wrap(JobObject);
             let mut process = Self(command.spawn()?);
             let stdin = process.0.stdin().take().unwrap();
             let stdout = process.0.stdout().take().unwrap();

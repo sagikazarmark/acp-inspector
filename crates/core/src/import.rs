@@ -116,10 +116,13 @@ impl Imported {
         if version != VERSION {
             return Err(ImportError::Version(version));
         }
-        let taken = header
-            .get("at")
-            .and_then(Value::as_i64)
-            .map_or(UNIX_EPOCH, moment);
+        let taken = match header.get("at").and_then(Value::as_i64) {
+            Some(millis) => moment(millis).ok_or_else(|| ImportError::Record {
+                line: 1,
+                problem: "`at` is outside the range of moments this platform can hold".to_owned(),
+            })?,
+            None => UNIX_EPOCH,
+        };
         let claimed_frames = header.get("frames").and_then(Value::as_u64);
         let claimed_dropped = header.get("dropped").and_then(Value::as_u64).unwrap_or(0) as usize;
 
@@ -145,10 +148,12 @@ impl Imported {
                     .ok_or_else(|| bad(format!("`{name}` is not a whole number")))
             };
             let at = || {
-                field("at")?
+                let millis = field("at")?
                     .as_i64()
-                    .map(moment)
-                    .ok_or_else(|| bad("`at` is not a whole number".to_owned()))
+                    .ok_or_else(|| bad("`at` is not a whole number".to_owned()))?;
+                moment(millis).ok_or_else(|| {
+                    bad("`at` is outside the range of moments this platform can hold".to_owned())
+                })
             };
             let direction = || match field("direction")?.as_str() {
                 Some("client -> agent") => Ok(Direction::ToAgent),
@@ -282,8 +287,11 @@ fn replay(frames: &[TracedFrame], dropped: usize) -> (Timeline, Option<v1::Initi
     let (sink, _incoming, _diagnostics) = connection.into_parts();
     let stores = Stores::default();
     let client = Client::new(sink, stores.clone());
-    // The calls the inspector made, by connection and id, and what each was.
-    let mut asked: HashMap<(u64, String), String> = HashMap::new();
+    // The calls the inspector made, by connection and id: what each was, and
+    // whether it was sent by hand. A hand-sent call and its answer drive none
+    // of the stores live (`Inspector::send_raw`), so here they only keep
+    // its answer from reading as unsolicited.
+    let mut asked: HashMap<(u64, String), (String, bool)> = HashMap::new();
     let mut agent = None;
 
     for (position, traced) in frames.iter().enumerate() {
@@ -296,11 +304,12 @@ fn replay(frames: &[TracedFrame], dropped: usize) -> (Timeline, Option<v1::Initi
             Direction::ToAgent => match summary.kind {
                 FrameKind::Call => {
                     if let (Some(key), Some(method)) = (key, summary.method.clone()) {
-                        if method == v1::AGENT_METHOD_NAMES.session_prompt {
+                        let hand = traced.frame.is_hand_sent();
+                        if !hand && method == v1::AGENT_METHOD_NAMES.session_prompt {
                             stores.turn.set(TurnState::InFlight);
                             stores.timeline.open_turn();
                         }
-                        asked.insert(key, method);
+                        asked.insert(key, (method, hand));
                     }
                 }
                 // The inspector's answer to something the agent asked: the
@@ -317,7 +326,8 @@ fn replay(frames: &[TracedFrame], dropped: usize) -> (Timeline, Option<v1::Initi
                     None
                 };
                 match ours {
-                    Some(method) => {
+                    Some((_, true)) => {}
+                    Some((method, false)) => {
                         let outcome = outcome(&traced.frame);
                         if method == v1::AGENT_METHOD_NAMES.session_prompt {
                             let ended = match outcome {
@@ -427,12 +437,16 @@ async fn resolve(stores: &Stores, frame: &Frame) {
 }
 
 /// Milliseconds since the Unix epoch, as the file has them, as a moment.
-fn moment(millis: i64) -> SystemTime {
+///
+/// `None` when the platform's `SystemTime` cannot hold it: Windows' range ends
+/// around the year 30,000, well inside an `i64` of milliseconds, and an edited
+/// or crafted file is a reason to refuse the line, not to panic.
+fn moment(millis: i64) -> Option<SystemTime> {
     let span = Duration::from_millis(millis.unsigned_abs());
     if millis >= 0 {
-        UNIX_EPOCH + span
+        UNIX_EPOCH.checked_add(span)
     } else {
-        UNIX_EPOCH - span
+        UNIX_EPOCH.checked_sub(span)
     }
 }
 
