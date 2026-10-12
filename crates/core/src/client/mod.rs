@@ -88,8 +88,8 @@ pub(crate) struct Stores {
     /// The live session's modes and config options (§7.6). Replaced whole when
     /// another session opens.
     pub(crate) settings: Field<SessionSettings>,
-    /// What the agent has said about each session's title and activity
-    /// (§7.5). Per connection, keyed by session.
+    /// What the agent has said about each session's title, activity and
+    /// usage (§7.5). Per connection, keyed by session.
     pub(crate) reports: Field<SessionReports>,
     /// What became of driving each advertisement on this connection (§7.7).
     /// Per connection, so opening another session leaves it alone.

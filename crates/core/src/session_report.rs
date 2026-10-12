@@ -1,6 +1,6 @@
 //! What the agent reports about a session as it goes, apart from its settings:
-//! the title and last activity a `session_info_update` states. See
-//! `docs/architecture.md` §7.5.
+//! the title and last activity a `session_info_update` states, and the context
+//! and cost the last `usage_update` stated. See `docs/architecture.md` §7.5.
 //!
 //! Kept per session rather than for the live one only, because a
 //! `session/load` replays ahead of its answer: what it says about the session
@@ -21,14 +21,19 @@ pub struct SessionReports(HashMap<v1::SessionId, SessionReport>);
 
 /// What the agent has stated about one session.
 ///
-/// Each field is `None` where no update has mentioned it, `Some(None)` where
-/// the last one that did cleared it, and `Some(Some(_))` where it set it — the
-/// three states a `session_info_update` field has on the wire.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `title` and `updated_at` are `None` where no update has mentioned them,
+/// `Some(None)` where the last one that did cleared them, and `Some(Some(_))`
+/// where it set them — the three states a `session_info_update` field has on
+/// the wire.
+#[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct SessionReport {
     pub title: Option<Option<String>>,
     pub updated_at: Option<Option<String>>,
+    /// The last `usage_update`, whole: each one restates the context in use,
+    /// the window's size and the session's cumulative cost, so the latest is
+    /// the account and nothing is summed. `None` until the agent sends one.
+    pub usage: Option<v1::UsageUpdate>,
 }
 
 /// A value the agent stated about a session, and where it stated it.
@@ -103,6 +108,17 @@ impl SessionReports {
         *report != before
     }
 
+    /// Takes a `usage_update` as `session`'s usage, and answers whether it
+    /// changed anything. Public for the same reason as [`info`](Self::info).
+    pub fn usage(&mut self, session: &v1::SessionId, update: &v1::UsageUpdate) -> bool {
+        let report = self.0.entry(session.clone()).or_default();
+        if report.usage.as_ref() == Some(update) {
+            return false;
+        }
+        report.usage = Some(update.clone());
+        true
+    }
+
     /// Drops everything stated about `session`, and answers whether there was
     /// anything.
     pub(crate) fn forget(&mut self, session: &v1::SessionId) -> bool {
@@ -158,6 +174,7 @@ mod tests {
             Some(&SessionReport {
                 title: Some(Some("Fix the build".to_owned())),
                 updated_at: None,
+                usage: None,
             })
         );
 
@@ -225,5 +242,23 @@ mod tests {
                 .map(|title| title.by),
             Some(StatedBy::Listing)
         );
+    }
+
+    #[test]
+    fn the_last_usage_stated_is_the_usage_and_leaves_the_title_alone() {
+        let mut reports = SessionReports::default();
+        reports.info(&session(), &v1::SessionInfoUpdate::new().title("Named"));
+
+        assert!(reports.usage(&session(), &v1::UsageUpdate::new(1_000, 200_000)));
+        let later = v1::UsageUpdate::new(42_000, 200_000).cost(v1::Cost::new(0.31, "USD"));
+        assert!(reports.usage(&session(), &later));
+        assert!(
+            !reports.usage(&session(), &later),
+            "the same statement twice changes nothing"
+        );
+
+        let report = reports.of(&session()).expect("reported");
+        assert_eq!(report.usage.as_ref(), Some(&later), "replaced, not summed");
+        assert_eq!(report.title, Some(Some("Named".to_owned())));
     }
 }

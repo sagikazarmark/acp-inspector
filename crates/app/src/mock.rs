@@ -491,6 +491,17 @@ fn listed() -> acp_inspector_core::SessionListing {
     listing
 }
 
+/// What the live session's agent said about it outside the listing: its
+/// context and cost so far.
+fn reported() -> acp_inspector_core::SessionReports {
+    let mut reports = acp_inspector_core::SessionReports::default();
+    reports.usage(
+        &v1::SessionId::new(SESSION),
+        &v1::UsageUpdate::new(42_120, 200_000).cost(v1::Cost::new(0.31, "USD")),
+    );
+    reports
+}
+
 fn configured() -> SessionSettings {
     let mut settings = SessionSettings::default();
     settings.modes = Some(v1::SessionModeState::new(
@@ -612,6 +623,7 @@ fn Window(scene: Scene, drawn: Drawn) -> Element {
     let claims = crate::agent::Claims {
         session: session.clone(),
         listing: live.then(listed),
+        reports: if live { reported() } else { Default::default() },
         // No agent on the first-run page: the record stays, the controls are
         // inert.
         connected: live,

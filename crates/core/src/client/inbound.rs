@@ -256,13 +256,22 @@ impl Client {
 
     /// Whether an update names a session other than the known ones. With none
     /// known yet (a `session/new` unanswered), nothing is foreign.
-    /// Folds what a `session_info_update` says into its session's report.
-    /// The timeline keeps the update either way.
+    /// Folds what a `session_info_update` or `usage_update` says into its
+    /// session's report. The timeline keeps the update either way.
     fn reported(&self, notification: &v1::SessionNotification) {
-        if let v1::SessionUpdate::SessionInfoUpdate(update) = &notification.update {
-            self.stores
-                .reports
-                .update(|reports| reports.info(&notification.session_id, update));
+        let session = &notification.session_id;
+        match &notification.update {
+            v1::SessionUpdate::SessionInfoUpdate(update) => {
+                self.stores
+                    .reports
+                    .update(|reports| reports.info(session, update));
+            }
+            v1::SessionUpdate::UsageUpdate(update) => {
+                self.stores
+                    .reports
+                    .update(|reports| reports.usage(session, update));
+            }
+            _ => {}
         }
     }
 

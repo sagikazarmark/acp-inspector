@@ -638,6 +638,14 @@ p.alert { display: block; }
 .session-tile-name { font-size: var(--text-row); font-weight: var(--font-weight-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-tile-id { color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); word-break: break-all; }
 
+/* The context in use, as the agent last said. Neutral: the accent is the reader's. */
+.usage-meter {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(to right, var(--dim) var(--used, 0%), var(--sunk) var(--used, 0%));
+}
+.usage-facts { display: flex; justify-content: space-between; gap: 8px; color: var(--dim2); font-family: var(--font-mono); font-size: var(--text-meta); }
+
 /* A mode: the id the wire carries, and the name the agent gave it. */
 .mode-row {
   display: flex;

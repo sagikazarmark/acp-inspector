@@ -361,6 +361,9 @@ pub fn Rail(
                     match tab {
                         Tab::Session => rsx! {
                             {live(session.as_ref(), title, connected, described, on_new_session)}
+                            if let Some(used) = claims.live_usage() {
+                                {usage(used)}
+                            }
                             if session.is_some() {
                                 SessionSettingsPanel {
                                     settings,
@@ -583,6 +586,57 @@ fn live(
             }
         }
     }
+}
+
+/// How much of the live session's context window is in use and what the
+/// session has cost, as the agent's last `usage_update` said.
+///
+/// Drawn only once one has arrived: an agent that sent none has said nothing,
+/// which is not the same as saying zero. The timeline keeps every update; this
+/// is the latest.
+fn usage(usage: &v1::UsageUpdate) -> Element {
+    let share = (usage.size > 0).then(|| usage.used as f64 / usage.size as f64);
+    // The bar stops at full; the number says what the agent said.
+    let fill = share.map_or(0.0, |share| share.min(1.0) * 100.0);
+    let exact = format!("{} of {} tokens", usage.used, usage.size);
+
+    rsx! {
+        section { class: "rail-group", "data-slot": "usage",
+            div { class: "rail-head",
+                span { class: "eyebrow", "Context" }
+                if let Some(share) = share {
+                    span { class: "rail-count", "{(share * 100.0).round()}%" }
+                }
+            }
+            div {
+                class: "usage-meter",
+                role: "meter",
+                aria_label: "Context window in use",
+                aria_valuemin: "0",
+                aria_valuemax: "{usage.size}",
+                aria_valuenow: "{usage.used}",
+                aria_valuetext: "{exact}",
+                style: "--used: {fill:.1}%",
+            }
+            p { class: "usage-facts",
+                span { title: "{exact}", "{compact(usage.used)} / {compact(usage.size)} tokens" }
+                if let Some(cost) = &usage.cost {
+                    span { title: "Cumulative session cost", "{cost.amount} {cost.currency}" }
+                }
+            }
+        }
+    }
+}
+
+/// A token count in a few characters: `950`, `42.1k`, `1.2M`.
+fn compact(count: u64) -> String {
+    let (scaled, unit) = match count {
+        0..1_000 => return count.to_string(),
+        1_000..1_000_000 => (count as f64 / 1_000.0, "k"),
+        _ => (count as f64 / 1_000_000.0, "M"),
+    };
+    let shown = format!("{scaled:.1}");
+    format!("{}{unit}", shown.strip_suffix(".0").unwrap_or(&shown))
 }
 
 /// The launch fields' entry label, shared by the rail, the palette and the
@@ -858,6 +912,81 @@ mod tests {
                 && html.contains(">sess-1<"),
             "titled, it is named by the title and still by its id: {html}"
         );
+    }
+
+    #[test]
+    fn a_token_count_is_said_in_a_few_characters() {
+        assert_eq!(compact(950), "950");
+        assert_eq!(compact(42_120), "42.1k");
+        assert_eq!(compact(200_000), "200k");
+        assert_eq!(compact(1_250_000), "1.2M");
+    }
+
+    #[test]
+    fn the_context_in_use_is_drawn_once_the_agent_has_said_it() {
+        assert!(
+            !shown(Screen::default()).contains(r#"data-slot="usage""#),
+            "no usage_update, no readout: nothing was said, which is not zero"
+        );
+
+        let html =
+            usage_shown(v1::UsageUpdate::new(42_120, 200_000).cost(v1::Cost::new(0.31, "USD")));
+        assert!(
+            html.contains(r#"role="meter""#)
+                && html.contains(r#"aria-valuenow="42120""#)
+                && html.contains(r#"aria-valuemax="200000""#)
+                && html.contains(r#"aria-valuetext="42120 of 200000 tokens""#),
+            "the meter carries the exact numbers: {html}"
+        );
+        assert!(
+            html.contains(">21%<") && html.contains("42.1k / 200k tokens"),
+            "{html}"
+        );
+        assert!(html.contains(">0.31 USD<"), "the cost as sent: {html}");
+
+        let overfull = usage_shown(v1::UsageUpdate::new(300, 200));
+        assert!(
+            overfull.contains("--used: 100.0%") && overfull.contains(">150%<"),
+            "the bar stops at full and the number does not: {overfull}"
+        );
+        assert!(
+            !usage_shown(v1::UsageUpdate::new(10, 0)).contains("%<"),
+            "no window, no share of it"
+        );
+    }
+
+    /// The rail's session tab with `sess-1` live and `usage` its last update.
+    fn usage_shown(usage: v1::UsageUpdate) -> String {
+        #[component]
+        fn Host(usage: v1::UsageUpdate) -> Element {
+            let mut reports = acp_inspector_core::SessionReports::default();
+            reports.usage(&v1::SessionId::new("sess-1"), &usage);
+            rsx! {
+                Rail {
+                    status: ConnectionStatus::Connected,
+                    launched: Some(launched()),
+                    session: Some(v1::SessionId::new("sess-1")),
+                    claims: Claims {
+                        session: Some(v1::SessionId::new("sess-1")),
+                        reports,
+                        ..Claims::about(Some(described()))
+                    },
+                    settings: SessionSettings::default(),
+                    settings_epoch: 0,
+                    changing_mode: false,
+                    setting_option: None,
+                    commands: 0,
+                    tab: Tab::Session,
+                    on_tab: move |_| {},
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_set_config_option: move |_| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new_with_props(Host, HostProps { usage });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
     }
 
     #[test]

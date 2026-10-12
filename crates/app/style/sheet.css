@@ -3440,6 +3440,19 @@ p.alert {
   font-size: var(--text-meta);
   word-break: break-all;
 }
+.usage-meter {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(to right, var(--dim) var(--used, 0%), var(--sunk) var(--used, 0%));
+}
+.usage-facts {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--dim2);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+}
 .mode-row {
   display: flex;
   align-items: center;

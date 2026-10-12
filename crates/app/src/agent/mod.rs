@@ -71,7 +71,7 @@ pub struct Claims {
     pub auth_pending: Vec<AuthenticationCall>,
     pub listing: Option<SessionListing>,
     /// What the agent said about each session in `session_info_update`, which
-    /// outranks the listing's description of it.
+    /// outranks the listing's description of it, and in `usage_update`.
     pub reports: SessionReports,
     pub listing_pending: bool,
     pub restores: Option<Restore>,
@@ -133,6 +133,12 @@ impl Claims {
                 .find(|info| &info.session_id == live)
         });
         self.reports.title(live, listed)
+    }
+
+    /// The live session's last `usage_update`, or `None` where there is no
+    /// live session or the agent has not sent one.
+    pub(crate) fn live_usage(&self) -> Option<&v1::UsageUpdate> {
+        self.reports.of(self.session.as_ref()?)?.usage.as_ref()
     }
 
     /// Inputs for a test or mock about what is drawn: every handler is a no-op

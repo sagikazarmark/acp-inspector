@@ -677,7 +677,10 @@ the agent telling the client what the session is called *now*. The listing's cla
 a dialog row an update renamed says what the listing called it. Reports are kept per session
 because a `session/load` replays ahead of its answer; the reopened session's report is dropped as
 the call goes out, so it is described by its replay and nothing from before. The timeline keeps
-every update as it was sent.
+every update as it was sent. **A `usage_update` goes into the same report, whole**: each one
+restates the context in use, the window and the session's cumulative cost, so the latest is the
+account and nothing is summed. The rail draws it under the live session once one has arrived — an
+agent that sent none has said nothing, which is not zero.
 
 **`session/fork` stays on the raw-first path** ([§8](#8-unknown-traffic-the-raw-first-rule)). It is
 absent from the canonical stable `schema/v1/meta.json` and present only in

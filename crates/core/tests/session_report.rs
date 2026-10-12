@@ -162,3 +162,43 @@ async fn a_reopened_session_is_described_by_what_its_replay_says_and_nothing_bef
         Some(Some("2026-10-12T10:00:00Z".to_owned()))
     );
 }
+
+/// A `usage_update` in `s1`.
+fn usage(fields: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{{"sessionUpdate":"usage_update",{fields}}}}}}}"#
+    )
+}
+
+#[tokio::test]
+async fn the_usage_held_is_the_last_one_stated_not_a_sum() {
+    // Each update restates the whole account — tokens in context now, the
+    // window, the session's cumulative cost — so adding them up would report
+    // a context bigger than the agent ever said.
+    let first = usage(r#""used":1000,"size":200000"#);
+    let later = usage(r#""used":42000,"size":200000,"cost":{"amount":0.31,"currency":"USD"}"#);
+    let inspector = Inspector::new();
+    inspector
+        .start(&reporting(&[&first, &later], &[]))
+        .await
+        .expect("the agent opens a session");
+
+    let mut changes = inspector.session_reports_changes();
+    until(&mut changes, "the later usage to land", || {
+        inspector
+            .session_reports()
+            .of(&s1())
+            .and_then(|report| report.usage.as_ref().map(|usage| usage.used))
+            == Some(42_000)
+    })
+    .await;
+
+    let reports = inspector.session_reports();
+    let usage = reports
+        .of(&s1())
+        .and_then(|report| report.usage.as_ref())
+        .expect("held");
+    assert_eq!(usage.size, 200_000);
+    let cost = usage.cost.as_ref().expect("the cost the agent sent");
+    assert_eq!((cost.amount, cost.currency.as_str()), (0.31, "USD"));
+}

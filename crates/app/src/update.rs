@@ -564,7 +564,7 @@ fn info(update: &v1::SessionInfoUpdate) -> Element {
     }
 }
 
-/// What the turn has cost so far.
+/// The context in use, and what the session has cost so far.
 fn usage(update: &v1::UsageUpdate) -> Element {
     rsx! {
         p {

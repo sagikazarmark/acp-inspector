@@ -71,7 +71,8 @@ impl Inspector {
     }
 
     /// What the agent has said about each session's title and last activity
-    /// in `session_info_update` (§7.5), keyed by session.
+    /// in `session_info_update`, and its context and cost in `usage_update`
+    /// (§7.5), keyed by session.
     ///
     /// Per connection: emptied when another agent connects, and a session's
     /// own report is dropped as a call reopening it goes out. A session the
