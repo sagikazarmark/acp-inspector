@@ -16,24 +16,37 @@ const STDERR_TAIL: usize = 20;
 const FORMAT: &str = "acp-inspector-cli-run";
 const VERSION: u32 = 1;
 
-/// One line about the run's ending.
+/// One line about the run's ending: the reason for its exit code, in the same
+/// order of precedence ([`Report::exit_code`]).
 fn ending(report: &Report) -> String {
     match &report.ending {
-        Ending::Completed if report.annotations.is_empty() => "completed".into(),
-        Ending::Completed => "completed, with conformance annotations".into(),
+        Ending::Completed => {
+            if let Some(error) = report.export_failed() {
+                format!("completed, but the export could not be written: {error}")
+            } else if !report.annotations.is_empty() {
+                "completed, with conformance annotations".into()
+            } else if let Some((turn, reason)) = report.stopped_short() {
+                format!("completed, but turn {turn} ended with `{}`", spelt(reason))
+            } else {
+                "completed".into()
+            }
+        }
         Ending::Failed(failure) => failure.to_string(),
         Ending::TimedOut(limit) => format!("timed out after {} s", limit.as_secs_f64()),
-        Ending::Interrupted => "interrupted".into(),
+        Ending::Interrupted(signal) => format!("interrupted by {}", signal.name()),
     }
 }
 
+/// The ending as one word a script can branch on, in step with the exit code.
 fn outcome(report: &Report) -> &'static str {
     match &report.ending {
-        Ending::Completed if report.annotations.is_empty() => "ok",
-        Ending::Completed => "conformance",
+        Ending::Completed if report.export_failed().is_some() => "failed",
+        Ending::Completed if !report.annotations.is_empty() => "conformance",
+        Ending::Completed if report.stopped_short().is_some() => "stopped",
+        Ending::Completed => "ok",
         Ending::Failed(_) => "failed",
         Ending::TimedOut(_) => "timeout",
-        Ending::Interrupted => "interrupted",
+        Ending::Interrupted(_) => "interrupted",
     }
 }
 
@@ -153,11 +166,12 @@ pub fn human(report: &Report) -> String {
             }
             Answer::Failed(error) => format!("could not answer: {error}"),
         };
-        let note = if report.policy == Policy::Ask {
-            " — policy `ask`: nobody to ask headless, so rejected"
-        } else {
-            ""
-        };
+        let note =
+            if report.policy == Policy::Ask && matches!(asked.answer, Answer::Selected { .. }) {
+                " — policy `ask`: nobody to ask headless, so rejected"
+            } else {
+                ""
+            };
         let _ = writeln!(out, "permission   {about}: {answer}{note}");
     }
     if report.elicitations > 0 {
