@@ -27,7 +27,7 @@ use accounts::{advertised, claimed};
 use advertisement::{Only, advertises};
 pub(crate) use login::login_guidance;
 use login::{login, standing};
-pub(crate) use sessions::{Listing, SESSION_NEW_COSTS, sessions, stated_by};
+pub(crate) use sessions::{Listing, SESSION_NEW_COSTS, sessions, whole};
 
 /// A lifecycle call that failed, named by its method: which advertised method
 /// failed is the finding, not that something did.

@@ -88,6 +88,9 @@ pub fn Timeline(
     let count = blocks.len();
     let commands = commands(&entries.read());
     let rows = rows(blocks, &turns);
+    // The rows' keys, told apart where the agent repeated an id: two asks
+    // under one request id are two rows (`EntryId`), and each needs a key.
+    let keys = crate::keys::distinct(rows.iter().map(Row::key));
     let crossing = Crossing {
         sought,
         reveal: on_reveal,
@@ -116,16 +119,22 @@ pub fn Timeline(
     let focused = use_signal(|| None::<String>);
     // Only rows first drawn after the list mounted fade up, and only once, so
     // a region shown again does not replay every arrival.
-    let baseline = use_hook(|| rows.iter().map(Row::key).collect::<HashSet<String>>());
+    let baseline = use_hook(|| keys.iter().cloned().collect::<HashSet<String>>());
     let settled = use_signal(HashSet::<String>::new);
-    let page: Vec<&Row> = rows[range.clone()].iter().collect();
+    let page: Vec<(&String, &Row)> = keys[range.clone()]
+        .iter()
+        .zip(&rows[range.clone()])
+        .collect();
     let current = focused()
-        .filter(|key| page.iter().any(|row| row.is_block() && row.key() == *key))
+        .filter(|focused| {
+            page.iter()
+                .any(|(key, row)| row.is_block() && *key == focused)
+        })
         .or_else(|| {
             page.iter()
                 .rev()
-                .find(|row| row.is_block())
-                .map(|row| row.key())
+                .find(|(_, row)| row.is_block())
+                .map(|(key, _)| (*key).clone())
         });
 
     // The frame of the newest waiting request of either kind (§7.8): `blocked`
@@ -219,20 +228,20 @@ pub fn Timeline(
                     // Oldest first in the DOM, so reading and focus order follow
                     // the conversation. The scroller is laid out bottom-up, which
                     // keeps a streaming turn in view without a scroll script.
-                    for row in page.into_iter() {
+                    for (key, row) in page.into_iter() {
                         li {
-                            key: "{row.key()}",
+                            key: "{key}",
                             match row {
                                 Row::Block(block) => block.render(
                                     on_answer,
                                     on_elicit,
                                     crossing,
                                     Roving {
-                                        current: current.as_deref() == Some(row.key().as_str()),
-                                        key: row.key(),
+                                        current: current.as_deref() == Some(key.as_str()),
+                                        key: key.clone(),
                                         focused,
-                                        arrived: !baseline.contains(&row.key())
-                                            && !settled.read().contains(&row.key()),
+                                        arrived: !baseline.contains(key)
+                                            && !settled.read().contains(key),
                                         settled,
                                     },
                                 ),
@@ -2255,6 +2264,67 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(arrived.len(), 1, "{grown}");
         assert!(arrived[0].contains("just arrived"), "{grown}");
+    }
+
+    #[test]
+    fn two_entries_under_one_id_are_two_rows_and_the_list_keeps_drawing() {
+        // Core keeps a second ask under a request id already used as an entry
+        // of its own, under the same `EntryId`. Keyed by that id alone, the
+        // list's next diff meets two equal keys: a debug build panics, and a
+        // release build leaves a row behind.
+        #[component]
+        fn Host() -> Element {
+            let entries = use_signal(|| {
+                vec![TimelineEntry {
+                    id: EntryId::Arrival(7),
+                    ..tool_call()
+                }]
+            });
+            use_hook(move || REPEATING.with(|slot| *slot.borrow_mut() = Some(entries)));
+            rsx! {
+                Timeline {
+                    entries,
+                    turn: TurnState::InFlight,
+                    session: Some(v1::SessionId::new("sess-1")),
+                    connected: true,
+                    held_frames: 0..u64::MAX,
+                    blocked: false,
+                    problem: None,
+                    mode: None,
+                    on_prompt: move |_: Vec<v1::ContentBlock>| Ok(()),
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_answer: move |_: Answer| {},
+                    on_elicit: move |_: elicitation::Answer| {},
+                    sought: None,
+                    on_reveal: move |_: Vec<u64>| {},
+                    described: false,
+                    turns: Vec::new(),
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+
+        let mut entries = REPEATING.with(|slot| slot.borrow().expect("the host ran"));
+        for _ in 0..2 {
+            entries.write().push(TimelineEntry {
+                id: EntryId::Arrival(7),
+                ..tool_call()
+            });
+            dom.render_immediate_to_vec();
+        }
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(
+            html.matches("<article").count(),
+            3,
+            "each entry is a row of its own: {html}"
+        );
+    }
+
+    thread_local! {
+        static REPEATING: std::cell::RefCell<Option<Signal<Vec<TimelineEntry>>>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     #[test]

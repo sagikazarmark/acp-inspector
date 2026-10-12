@@ -537,7 +537,7 @@ fn live(
                         match title {
                             Some(Stated { value: Some(title), by }) => rsx! {
                                 span { class: "session-tile-name", "data-slot": "session-title",
-                                    title: crate::agent::stated_by(by),
+                                    title: crate::agent::whole(&title, by),
                                     "{title}"
                                 }
                             },
@@ -908,8 +908,9 @@ mod tests {
         dom.rebuild_in_place();
         let html = dioxus_ssr::render(&dom);
         assert!(
-            html.contains(r#"title="From session_info_update">Fix the flaky build</span>"#)
-                && html.contains(">sess-1<"),
+            html.contains(
+                "title=\"Fix the flaky build\nFrom session_info_update\">Fix the flaky build</span>"
+            ) && html.contains(">sess-1<"),
             "titled, it is named by the title and still by its id: {html}"
         );
     }

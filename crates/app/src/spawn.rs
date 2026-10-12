@@ -63,7 +63,7 @@ pub fn launch_failure(
         let bare = command
             .split_whitespace()
             .next()
-            .is_some_and(|program| !program.contains('/'));
+            .is_some_and(|program| !program.contains(separators(cfg!(windows))));
         return Some(LaunchFailure {
             headline: format!("Couldn't start the agent: {error}"),
             detail: vec![format!("Command: {command}")],
@@ -111,10 +111,23 @@ pub fn launch_failure(
     })
 }
 
+/// The characters that separate a path's components: Windows takes either
+/// slash, and everywhere else a backslash is part of a name.
+fn separators(windows: bool) -> &'static [char] {
+    if windows { &['/', '\\'] } else { &['/'] }
+}
+
 /// A search path as a reader scans it: one entry per segment, with the home
 /// directory written `~`.
 pub fn abbreviate_path(path: &str, home: Option<&str>) -> String {
-    path.split(':')
+    abbreviate_path_on(path, home, cfg!(windows))
+}
+
+/// [`abbreviate_path`], for the platform `windows` says: Windows separates
+/// `PATH` with `;`, since its entries hold the `:` of a drive letter.
+fn abbreviate_path_on(path: &str, home: Option<&str>, windows: bool) -> String {
+    let separator = if windows { ";" } else { ":" };
+    path.split(separator)
         .map(|entry| match home {
             Some(home) if !home.is_empty() && entry.starts_with(home) => {
                 format!("~{}", &entry[home.len()..])
@@ -122,7 +135,7 @@ pub fn abbreviate_path(path: &str, home: Option<&str>) -> String {
             _ => entry.to_owned(),
         })
         .collect::<Vec<_>>()
-        .join(":")
+        .join(separator)
 }
 
 /// A whole command line typed into Command, split the way a shell would read
@@ -138,23 +151,39 @@ pub struct CommandLine {
 /// Whether `command` reads as a command line rather than a program, and how
 /// it would split if so.
 ///
-/// A path that starts like one and whose last word still has a `/` (an `.app`
-/// bundle with a space) is left alone; anything else with whitespace is
-/// offered a split, never split without asking.
+/// A path that starts like one and whose last word still has a separator (an
+/// `.app` bundle or `Program Files` with a space) is left alone; anything else
+/// with whitespace is offered a split, never split without asking.
 pub fn command_line(command: &str) -> Option<CommandLine> {
+    command_line_on(command, cfg!(windows))
+}
+
+/// [`command_line`], for the platform `windows` says. On Windows a path also
+/// starts with a drive (`C:\`) or a share (`\\server`), and a backslash is its
+/// separator rather than an escape.
+fn command_line_on(command: &str, windows: bool) -> Option<CommandLine> {
     let command = command.trim();
     if !command.contains(char::is_whitespace) {
         return None;
     }
-    let path_like = command.starts_with(['/', '~', '.'])
+    let drive = |command: &str| {
+        let mut chars = command.chars();
+        matches!(
+            (chars.next(), chars.next(), chars.next()),
+            (Some(letter), Some(':'), Some('\\' | '/')) if letter.is_ascii_alphabetic()
+        )
+    };
+    let starts_like_a_path = command.starts_with(['/', '~', '.'])
+        || (windows && (command.starts_with('\\') || drive(command)));
+    let path_like = starts_like_a_path
         && command
             .rsplit(char::is_whitespace)
             .next()
-            .is_some_and(|last| last.contains('/'));
+            .is_some_and(|last| last.contains(separators(windows)));
     if path_like {
         return None;
     }
-    let mut words = words(command).into_iter().peekable();
+    let mut words = words(command, windows).into_iter().peekable();
     let mut env = Vec::new();
     while let Some(word) = words.peek() {
         let assignment = word.split_once('=').is_some_and(|(name, _)| {
@@ -174,8 +203,9 @@ pub fn command_line(command: &str) -> Option<CommandLine> {
 }
 
 /// Shell-style words: whitespace separates, single and double quotes group,
-/// a backslash escapes the next character outside single quotes.
-fn words(line: &str) -> Vec<String> {
+/// a backslash escapes the next character outside single quotes — except on
+/// Windows, where it separates a path's components and is kept as written.
+fn words(line: &str, windows: bool) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut started = false;
@@ -184,7 +214,7 @@ fn words(line: &str) -> Vec<String> {
     while let Some(c) = chars.next() {
         match (quote, c) {
             (Some(open), c) if c == open => quote = None,
-            (Some('"') | None, '\\') => {
+            (Some('"') | None, '\\') if !windows => {
                 if let Some(next) = chars.next() {
                     word.push(next);
                 }
@@ -430,7 +460,7 @@ pub fn SpawnForm(
                                 p { class: "hint", "data-slot": "launch-path",
                                     "Searched PATH: "
                                     code { class: "mono", title: "{path}",
-                                        {abbreviate_path(path, std::env::var("HOME").ok().as_deref())}
+                                        {abbreviate_path(path, std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok().as_deref())}
                                     }
                                 }
                             }
@@ -1232,7 +1262,43 @@ mod tests {
                 vec!["--stdio".to_owned()]
             ))
         );
-        assert_eq!(words(r#"a\ b "c\"d" ''"#), ["a b", "c\"d", ""]);
+        assert_eq!(words(r#"a\ b "c\"d" ''"#, false), ["a b", "c\"d", ""]);
+    }
+
+    #[test]
+    fn a_windows_command_line_keeps_its_backslashes() {
+        assert_eq!(
+            command_line_on(r"C:\tools\agent.exe --acp", true),
+            Some(CommandLine {
+                env: Vec::new(),
+                program: r"C:\tools\agent.exe".to_owned(),
+                args: vec!["--acp".to_owned()],
+            })
+        );
+        assert_eq!(
+            command_line_on(r"C:\Program Files\Agent\agent.exe", true),
+            None,
+            "a path with a space in it is a path"
+        );
+        assert_eq!(
+            command_line_on(r"\\server\share\My Agent\agent.exe", true),
+            None,
+            "and so is a share's"
+        );
+        assert_eq!(
+            command_line_on(r#""C:\Program Files\Agent\agent.exe" --acp"#, true)
+                .map(|line| (line.program, line.args)),
+            Some((
+                r"C:\Program Files\Agent\agent.exe".to_owned(),
+                vec!["--acp".to_owned()]
+            )),
+            "quotes still group"
+        );
+        // Elsewhere a backslash is an escape, as a shell reads it.
+        assert_eq!(
+            command_line_on(r"C:\tools\agent.exe --acp", false).map(|line| line.program),
+            Some("C:toolsagent.exe".to_owned())
+        );
     }
 
     #[test]
@@ -1610,6 +1676,15 @@ AWS_PROFILE""#
             "~/.cargo/bin:/usr/bin:~"
         );
         assert_eq!(abbreviate_path("/usr/bin", None), "/usr/bin");
+        assert_eq!(
+            abbreviate_path_on(
+                r"C:\Users\me\.cargo\bin;C:\Windows\System32",
+                Some(r"C:\Users\me"),
+                true
+            ),
+            r"~\.cargo\bin;C:\Windows\System32",
+            "Windows separates PATH with a semicolon"
+        );
     }
 
     #[test]

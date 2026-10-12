@@ -133,8 +133,8 @@ fn method_rows(
     rsx! {
         // Not daisyUI's `list-row`, whose grid does not fit two facts and a call.
         ul { class: "methods",
-            for method in methods {
-                li { key: "{method.id()}", class: "auth-method",
+            for (key, method) in crate::keys::distinct(methods.iter().map(|method| method.id().to_string())).iter().zip(methods) {
+                li { key: "{key}", class: "auth-method",
                     div {
                         strong { "{method.name()}" }
                         div { class: "hint mono", "{method.id()}" }

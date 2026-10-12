@@ -157,8 +157,24 @@ fn desktop_is_dark() -> Option<bool> {
 /// The user's login-shell `PATH`, once it has been asked for.
 static LOGIN_PATH: OnceLock<Option<String>> = OnceLock::new();
 
-/// How long the login shell may take to answer before it is given up on.
-const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(2);
+/// Why the login shell gave no `PATH`, when it was asked and did not.
+static LOGIN_PATH_MISSED: OnceLock<String> = OnceLock::new();
+
+/// How long the login shell may take to answer before it is given up on. An
+/// interactive zsh that loads nvm or a framework takes seconds; the wait only
+/// delays a launch that comes before the answer does.
+const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Why the login shell gave no `PATH`.
+#[derive(Debug, PartialEq, Eq)]
+enum Missed {
+    /// It could not be started.
+    Unstarted,
+    /// It did not answer within the timeout.
+    TimedOut,
+    /// It ended without printing one.
+    Silent,
+}
 
 /// Asks the login shell for `PATH`, off the main thread, unless the app was
 /// started from a terminal. A terminal's `PATH` may be richer (a dev shell);
@@ -172,7 +188,15 @@ fn resolve_login_path() {
     let spawned = std::thread::Builder::new()
         .name("login-path".to_owned())
         .spawn(|| {
-            let _ = LOGIN_PATH.set(probe_login_path(&login_shell(), LOGIN_SHELL_TIMEOUT));
+            let shell = login_shell();
+            let path = match probe_login_path(&shell, LOGIN_SHELL_TIMEOUT) {
+                Ok(path) => Some(path),
+                Err(missed) => {
+                    let _ = LOGIN_PATH_MISSED.set(missed_said(&shell, &missed));
+                    None
+                }
+            };
+            let _ = LOGIN_PATH.set(path);
         });
     if spawned.is_err() {
         let _ = LOGIN_PATH.set(None);
@@ -186,6 +210,29 @@ pub async fn login_path() -> Option<String> {
         .await
         .ok()
         .flatten()
+}
+
+/// Why a Finder launch is spawning agents with the `PATH` it was opened with:
+/// the login shell was asked and gave none. Said beside a command that was not
+/// found, since that is where a missing `PATH` entry shows.
+pub fn login_path_missed() -> Option<String> {
+    LOGIN_PATH_MISSED.get().cloned()
+}
+
+/// The sentence [`login_path_missed`] says.
+fn missed_said(shell: &str, missed: &Missed) -> String {
+    let why = match missed {
+        Missed::Unstarted => "could not be started".to_owned(),
+        Missed::TimedOut => format!(
+            "did not report its PATH within {} s",
+            LOGIN_SHELL_TIMEOUT.as_secs()
+        ),
+        Missed::Silent => "did not report its PATH".to_owned(),
+    };
+    format!(
+        "Your login shell ({shell}) {why}, so agents get the PATH the app was opened with. \
+         Set PATH under Environment, or open the app from a terminal."
+    )
 }
 
 /// The `PATH` a spawn looks a bare command up in, as of now.
@@ -216,7 +263,7 @@ fn login_shell() -> String {
 /// Runs `shell -ilc` to print `PATH` between markers, giving up after
 /// `timeout`. Interactive, because that is where most people extend `PATH`;
 /// markers, because an interactive shell may print a banner.
-fn probe_login_path(shell: &str, timeout: Duration) -> Option<String> {
+fn probe_login_path(shell: &str, timeout: Duration) -> Result<String, Missed> {
     let script = if shell.ends_with("fish") {
         format!("printf '\\n{PATH_MARK}%s{PATH_MARK}\\n' (string join : $PATH)")
     } else {
@@ -228,8 +275,8 @@ fn probe_login_path(shell: &str, timeout: Duration) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
+        .map_err(|_| Missed::Unstarted)?;
+    let stdout = child.stdout.take().ok_or(Missed::Unstarted)?;
     let (found, answer) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
@@ -240,7 +287,11 @@ fn probe_login_path(shell: &str, timeout: Duration) -> Option<String> {
             }
         }
     });
-    let path = answer.recv_timeout(timeout).ok();
+    let path = answer.recv_timeout(timeout).map_err(|error| match error {
+        mpsc::RecvTimeoutError::Timeout => Missed::TimedOut,
+        // The reader ended without a marked line: the shell's output closed.
+        mpsc::RecvTimeoutError::Disconnected => Missed::Silent,
+    });
     let _ = child.kill();
     let _ = child.wait();
     path
@@ -704,12 +755,26 @@ mod tests {
         let started = std::time::Instant::now();
         assert_eq!(
             probe_login_path(hanging.to_str().unwrap(), Duration::from_millis(200)),
-            None
+            Err(Missed::TimedOut)
         );
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
             probe_login_path(answering.to_str().unwrap(), Duration::from_secs(5)).as_deref(),
-            Some("/login/bin:/usr/bin")
+            Ok("/login/bin:/usr/bin")
+        );
+        assert_eq!(
+            probe_login_path(
+                directory.join("no-such-shell").to_str().unwrap(),
+                Duration::from_secs(5)
+            ),
+            Err(Missed::Unstarted)
+        );
+        let said = missed_said("/bin/zsh", &Missed::TimedOut);
+        assert!(
+            said.contains("/bin/zsh")
+                && said.contains("within 6 s")
+                && said.contains("Environment"),
+            "{said}"
         );
         let _ = std::fs::remove_dir_all(directory);
     }
