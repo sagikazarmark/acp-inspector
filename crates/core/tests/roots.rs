@@ -370,3 +370,30 @@ async fn roots_asked_of_an_agent_that_is_no_longer_there_are_recorded_as_refused
         "an empty control drove nothing to be refused"
     );
 }
+
+/// A working directory that is not UTF-8 cannot cross as JSON. It is refused
+/// here, in the inspector's words, rather than sent as `"params": null` for the
+/// agent to reject in its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_working_directory_that_is_not_utf8_is_refused_before_anything_crosses() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let inspector = Inspector::new();
+    inspector.connect(&advertising(OPENS, &[]).factory());
+    inspector.initialize().await.expect("it answered");
+
+    let cwd = PathBuf::from(OsStr::from_bytes(b"/tmp/not-\xff-utf8"));
+    assert_eq!(
+        inspector.new_session(cwd, None).await,
+        Err(CallError::PathNotUtf8)
+    );
+    assert!(
+        !sent(&inspector)
+            .iter()
+            .any(|frame| frame.contains("session/new")),
+        "nothing crossed: {:?}",
+        sent(&inspector)
+    );
+}

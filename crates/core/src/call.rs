@@ -30,6 +30,10 @@ pub enum CallError {
     NoWorkingDirectory,
     /// Inspector-supplied MCP input is incomplete; no Session call was made.
     InvalidMcp(String),
+    /// A path the request would carry (the working directory or a root) is
+    /// not valid UTF-8. ACP carries paths as JSON strings, so nothing was
+    /// sent rather than a request with its parameters missing.
+    PathNotUtf8,
     /// The blocking request was not waiting for this answer, so nothing was
     /// sent: it was already answered, or the turn it blocked ended. Each id is
     /// answered at most once.
@@ -66,6 +70,9 @@ impl std::fmt::Display for CallError {
                 f.write_str("the session's working directory could not be named")
             }
             Self::InvalidMcp(problem) => f.write_str(problem),
+            Self::PathNotUtf8 => f.write_str(
+                "a directory the session names is not valid UTF-8, and ACP carries paths as text",
+            ),
             Self::NotWaiting => {
                 f.write_str("the agent is no longer waiting for an answer to that request")
             }
