@@ -237,7 +237,7 @@ pub fn Timeline(
                                     },
                                 ),
                                 Row::Ended(turn) => ended(turn),
-                                Row::Outside => outside(),
+                                Row::Outside(_) => outside(),
                             }
                         }
                     }
@@ -523,8 +523,10 @@ enum Row {
     /// A turn that is over, and what it came to; drawn under its last row.
     Ended(Turn),
     /// The start of a run of traffic belonging to no turn; drawn above it,
-    /// since a run still arriving has no end to label.
-    Outside,
+    /// since a run still arriving has no end to label. Holds the key of the
+    /// run's first row: a session has as many such runs as it has gaps
+    /// between turns, and each is a row of its own.
+    Outside(String),
 }
 
 /// The blocks with turn boundaries between them. A turn that ended with no
@@ -557,7 +559,7 @@ fn rows(blocks: Vec<Block>, turns: &[Turn]) -> Vec<Row> {
                 }
                 None => {
                     close_through(&mut rows, reached, &mut closed);
-                    rows.push(Row::Outside);
+                    rows.push(Row::Outside(block.key()));
                 }
             }
             current = Some(turn);
@@ -593,7 +595,7 @@ impl Row {
         match self {
             Self::Block(block) => block.key(),
             Self::Ended(turn) => format!("turn {} ended", turn.id),
-            Self::Outside => "outside a turn".to_owned(),
+            Self::Outside(first) => format!("outside a turn, from {first}"),
         }
     }
 }
@@ -1367,7 +1369,7 @@ mod tests {
             .map(|row| match row {
                 Row::Block(_) => "block",
                 Row::Ended(_) => "ended",
-                Row::Outside => "outside",
+                Row::Outside(_) => "outside",
             })
             .collect()
     }
@@ -1416,6 +1418,34 @@ mod tests {
         assert_eq!(
             shape(vec![spoke_in(None), spoke_in(None)], &[]),
             ["outside", "block", "block"],
+        );
+    }
+
+    #[test]
+    fn every_run_outside_a_turn_is_a_row_of_its_own() {
+        // Claude's agent publishes its commands before the first prompt and
+        // again after it: two runs, two markers, which the list keys apart.
+        let arrived = |arrival, turn| {
+            let mut block = spoke_in(turn);
+            if let Block::One(entry) = &mut block {
+                entry.id = EntryId::Arrival(arrival);
+            }
+            block
+        };
+        let ended = [turn_record(
+            1,
+            Some(TurnOutcome::Ended(v1::StopReason::EndTurn)),
+        )];
+        let rows = rows(
+            vec![arrived(1, None), arrived(2, Some(1)), arrived(3, None)],
+            &ended,
+        );
+        let keys: Vec<String> = rows.iter().map(Row::key).collect();
+        let unique: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "every row has its own key: {keys:?}"
         );
     }
 
