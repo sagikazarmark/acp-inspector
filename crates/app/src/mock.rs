@@ -403,7 +403,7 @@ fn entries(scene: Scene, asked: &Asked) -> Vec<TimelineEntry> {
                 turn: None,
                 ..entry(
                     5,
-                    EntryKind::Unrecognized(Unrecognized::NotServiced {
+                    EntryKind::Unrecognized(Unrecognized::Ignored {
                         method: "session/experimental_progress".to_owned(),
                     }),
                 )

@@ -136,10 +136,14 @@ pub enum EntryKind {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Unrecognized {
-    /// A method the inspector does not service: an extension method, an
-    /// unstable-v1 one, or an unclaimed client service. Requests were answered
+    /// A request the inspector does not service: an extension method, an
+    /// unstable-v1 one, or an unclaimed client service. It was answered
     /// method-not-found.
     NotServiced { method: String },
+    /// A notification with a method the inspector does not know, usually an
+    /// `_`-prefixed extension. A notification takes no answer, so it was
+    /// ignored, as the specification asks.
+    Ignored { method: String },
     /// A method it does service, carrying something v1 could not read — a
     /// `sessionUpdate` variant with no v1 name, a field of the wrong shape, v2
     /// traffic arriving early — or a frame that was not JSON-RPC at all, which
@@ -651,7 +655,7 @@ impl Unrecognized {
     /// The method it announced, when it announced one.
     pub fn method(&self) -> Option<&str> {
         match self {
-            Self::NotServiced { method } => Some(method),
+            Self::NotServiced { method } | Self::Ignored { method } => Some(method),
             Self::Undecodable { method, .. } => method.as_deref(),
             Self::Unadvertised { method, .. } | Self::OverCapacity { method, .. } => Some(method),
             Self::ForeignSession { .. } => Some("session/update"),

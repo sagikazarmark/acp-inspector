@@ -141,7 +141,8 @@ The typed layer decorates the trace; it never replaces it
 — an extension method, an update variant v1 has no name for, a client service the inspector
 declined by advertising no capability — becomes a first-class unrecognized entry carrying the
 frame verbatim, and an agent that calls a declined service is answered method-not-found with the
-call recorded as evidence. The launch dialog's **Client services** section can instead claim file
+call recorded as evidence. An unknown notification, such as an adapter's `_auth/status_update`,
+is recorded and left unanswered, since nothing answers a notification. The launch dialog's **Client services** section can instead claim file
 reads, file writes and terminals, and answer those calls — or any other unhandled request — by
 hand or from a rules file ([client services](client-services.md)).
 
