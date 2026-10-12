@@ -552,6 +552,20 @@ mod tests {
     }
 
     #[test]
+    fn a_box_that_only_clips_cannot_be_scrolled_by_a_reveal() {
+        // `overflow: hidden` is still a scroll container: `scrollIntoView` on a
+        // timeline entry scrolled the shell and slid the whole window up. `clip`
+        // cuts the same edge without being one.
+        for clipper in ["#main", ".evidence"] {
+            assert_eq!(
+                declared(clipper, "overflow").as_deref(),
+                Some("clip"),
+                "{clipper} holds rows a reveal scrolls to, so it clips rather than hides"
+            );
+        }
+    }
+
+    #[test]
     fn every_region_scrolls_as_a_screen_of_its_own() {
         // Otherwise a scroller at its end hands the gesture to what is behind it.
         let contained = rules()

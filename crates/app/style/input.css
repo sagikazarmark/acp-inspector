@@ -440,7 +440,7 @@ p.alert { display: block; }
 /* ---------------------------------------------------------------------------
    The shell: a 52px bar, and everything else under it.
    --------------------------------------------------------------------------- */
-#main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#main { display: flex; flex-direction: column; min-height: 0; overflow: clip; }
 
 .bar {
   display: flex;
@@ -847,7 +847,7 @@ p.alert { display: block; }
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--panel2);
-  overflow: hidden;
+  overflow: clip;
 }
 .evidence-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
 .evidence-title { flex: 1; min-width: 0; font-size: var(--text-body); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }

@@ -3142,7 +3142,7 @@ p.alert {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 .bar {
   display: flex;
@@ -3841,7 +3841,7 @@ p.alert {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--panel2);
-  overflow: hidden;
+  overflow: clip;
 }
 .evidence-head {
   display: flex;
