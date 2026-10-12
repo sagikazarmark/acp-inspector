@@ -126,7 +126,7 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@v2
-      # Windows is built from source and not packaged or tested (docs/guide.md,
-      # "Supported platforms"); this keeps it compiling.
+      # Windows is packaged by the release workflow but not tested here
+      # (docs/guide.md, "Supported platforms"); this keeps it compiling.
       - name: Check
         run: cargo check --workspace --all-targets --locked

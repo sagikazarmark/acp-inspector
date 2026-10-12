@@ -13,6 +13,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yaml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - justfile
       - about.toml
       - about.hbs
