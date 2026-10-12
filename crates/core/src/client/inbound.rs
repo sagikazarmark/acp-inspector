@@ -254,8 +254,6 @@ impl Client {
         .collect()
     }
 
-    /// Whether an update names a session other than the known ones. With none
-    /// known yet (a `session/new` unanswered), nothing is foreign.
     /// Folds what a `session_info_update` or `usage_update` says into its
     /// session's report. The timeline keeps the update either way.
     fn reported(&self, notification: &v1::SessionNotification) {
@@ -275,6 +273,8 @@ impl Client {
         }
     }
 
+    /// Whether an update names a session other than the known ones. With none
+    /// known yet (a `session/new` unanswered), nothing is foreign.
     pub(super) fn foreign(&self, session: &v1::SessionId) -> bool {
         let known = self.known_sessions();
         !known.is_empty() && !known.contains(session)
