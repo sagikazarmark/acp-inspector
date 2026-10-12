@@ -8,6 +8,8 @@ resolver = "3"
 members = ["crates/core", "crates/app", "crates/cli"]
 
 [workspace.package]
+# The one version every crate carries, and the release tag names (`v{version}`).
+version = "0.1.0"
 edition = "2024"
 # The oldest toolchain the workspace builds on, checked with `cargo check
 # --workspace --all-targets`: dioxus-field and schemaform need 1.92. The
@@ -20,6 +22,16 @@ homepage = "https://github.com/sagikazarmark/acp-inspector"
 repository = "https://github.com/sagikazarmark/acp-inspector"
 # Nothing here is published yet; the names are already the ones that would be.
 publish = false
+
+# `cargo release`: bump the shared version, commit and tag it signed, and push;
+# the tag starts the release workflow (docs/development.md, "Releasing").
+[workspace.metadata.release]
+publish = false
+sign-commit = true
+sign-tag = true
+shared-version = true
+tag-message = "Release {{version}}"
+tag-name = "v{{version}}"
 
 [workspace.dependencies]
 acp-inspector-core = { path = "crates/core" }

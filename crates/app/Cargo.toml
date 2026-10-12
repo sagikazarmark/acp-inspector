@@ -1,6 +1,6 @@
 [package]
 name = "acp-inspector"
-version = "0.1.0"
+version.workspace = true
 description = "The ACP Inspector: strictly presentational screens over acp-inspector-core, one binary with a feature per renderer"
 edition.workspace = true
 rust-version.workspace = true

@@ -149,12 +149,21 @@ scales. The original comparison and measurements remain in
 
 ## Releasing
 
-A release is a tag. Bump the version in `crates/app/Cargo.toml`, `crates/core/Cargo.toml` and
-`crates/cli/Cargo.toml` (they move together), commit, then tag and push:
+A release is a tag, made with [cargo-release](https://github.com/crate-ci/cargo-release) (in the
+devenv shell). The crates share one version, in the root `Cargo.toml`'s `[workspace.package]`;
+`cargo release` bumps it, commits, makes a signed `v{version}` tag and pushes both:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+cargo release minor            # a dry run: what it would change, commit, tag and push
+cargo release minor --execute  # 0.1.0 → 0.2.0
+```
+
+Nothing goes to crates.io: every crate is `publish = false`. To release the version already in
+`Cargo.toml` (the first release, say) without bumping it, tag and push only:
+
+```sh
+cargo release tag --execute
+cargo release push --execute
 ```
 
 The [release workflow](../.github/workflows/release.yaml) checks that the tag is the crates'
