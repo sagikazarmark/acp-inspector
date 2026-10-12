@@ -5098,6 +5098,8 @@ p.alert {
   min-width: 0;
 }
 .session-title {
+  flex: 1 1 auto;
+  min-width: 8ch;
   font-size: var(--text-body);
   font-weight: var(--font-weight-label);
   overflow: hidden;
@@ -5108,11 +5110,19 @@ p.alert {
   display: flex;
   gap: 8px;
   min-width: 0;
+  max-width: 50%;
   margin-left: auto;
-  flex: none;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--dim2);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
+}
+.session-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .session-relisted {
   max-width: 24ch;
