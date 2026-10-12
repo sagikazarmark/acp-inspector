@@ -67,7 +67,7 @@ Smoke-test an agent without a window, and keep the trace. The CLI is in each
 
 ```sh
 cargo install --locked --git https://github.com/sagikazarmark/acp-inspector acp-inspector-cli
-acp-inspector-cli run --prompt 'Say hello' --export acp-trace.jsonl -- ./my-agent --acp
+acp-inspector-cli run --timeout 120 --prompt 'Say hello' --export acp-trace.jsonl -- ./my-agent --acp
 ```
 
 The exit code says whether the agent started, finished its turns, and kept the MUSTs the

@@ -3,11 +3,13 @@
 //! Three agents drive it. **Testy** (`docs/architecture.md` §12) for a real
 //! agent's permission traffic; the **acceptance agent**
 //! (`scripts/acceptance-agent.py`) for a turn, a refused prompt and the export;
-//! and two scripts in `tests/agents/` for what neither will do — never
-//! answering, and breaking a MUST the inspector checks.
+//! and scripts in `tests/agents/` for what neither will do — never answering,
+//! breaking a MUST the inspector checks, offering exactly the permission
+//! options a policy is tested on, ending a turn with any stop reason, and
+//! refusing to stop.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -58,15 +60,32 @@ fn scratch(name: &str) -> PathBuf {
     directory
 }
 
-/// Runs the CLI to completion, failing the test if it does not finish.
-fn cli(arguments: &[&str]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_acp-inspector-cli"))
+/// Starts the CLI in `directory`, or in this test's own directory.
+fn start(directory: Option<&Path>, arguments: &[&str]) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_acp-inspector-cli"));
+    command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the CLI starts");
+        .stderr(Stdio::piped());
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    command.spawn().expect("the CLI starts")
+}
+
+/// Runs the CLI to completion, failing the test if it does not finish.
+fn cli(arguments: &[&str]) -> Output {
+    finish(start(None, arguments), arguments)
+}
+
+/// Runs the CLI to completion from `directory`.
+fn cli_in(directory: &Path, arguments: &[&str]) -> Output {
+    finish(start(Some(directory), arguments), arguments)
+}
+
+/// Waits for a started CLI, failing the test if it does not finish.
+fn finish(mut child: Child, arguments: &[&str]) -> Output {
     let started = Instant::now();
     while child
         .try_wait()
@@ -396,6 +415,15 @@ fn usage_errors_exit_sixty_four() {
             "--",
             "agent",
         ],
+        &[
+            "run",
+            "--prompt-file",
+            "-",
+            "--prompt-file",
+            "-",
+            "--",
+            "agent",
+        ],
         &["inspect"],
     ] {
         let output = cli(arguments);
@@ -435,5 +463,338 @@ fn inspect_refuses_a_file_that_is_not_a_trace() {
     let output = cli(&["inspect", path.to_str().unwrap()]);
     assert_eq!(code(&output), 1);
     assert!(String::from_utf8_lossy(&output.stderr).contains("not an acp-inspector-trace"));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// Runs `scripted.py` through one prompt under `policy`, and answers with the
+/// summary and the frames this client sent.
+fn scripted(name: &str, policy: &str, script: &str) -> (Output, Value, Vec<String>) {
+    let directory = scratch(name);
+    let export = directory.join("trace.jsonl");
+    let output = cli(&[
+        "run",
+        "--permission",
+        policy,
+        "--prompt",
+        script,
+        "--export",
+        export.to_str().unwrap(),
+        "--json",
+        "--",
+        "python3",
+        &agent_script("scripted.py"),
+    ]);
+    let json = summary(&output);
+    let (_, records) = trace(&export);
+    let sent = sent(&records).into_iter().map(str::to_owned).collect();
+    let _ = std::fs::remove_dir_all(directory);
+    (output, json, sent)
+}
+
+#[test]
+fn allow_cancels_the_turn_rather_than_reject_when_no_allow_once_is_offered() {
+    let (output, json, sent) = scripted(
+        "allow-no-allow-once",
+        "allow",
+        r#"{"permission":["allow_always","reject_once"]}"#,
+    );
+    assert_eq!(
+        json["permissions"][0]["answer"], "cancelledTurn",
+        "{json:#}"
+    );
+    assert!(!answered_with(&sent, "reject_once"), "{sent:#?}");
+    assert!(!answered_with(&sent, "allow_always"), "{sent:#?}");
+    assert!(
+        sent.iter()
+            .any(|frame| frame.contains(r#""method":"session/cancel""#)),
+        "{sent:#?}"
+    );
+    assert_eq!(json["turns"][0]["stopReason"], "cancelled");
+    assert_eq!(code(&output), 4, "a cancelled turn did not end on its own");
+}
+
+#[test]
+fn reject_prefers_reject_once_to_an_earlier_reject_always() {
+    let (output, json, sent) = scripted(
+        "reject-once",
+        "reject",
+        r#"{"permission":["allow_once","reject_always","reject_once"]}"#,
+    );
+    assert_eq!(code(&output), 0, "{json:#}");
+    assert_eq!(json["permissions"][0]["kind"], "reject_once");
+    assert!(answered_with(&sent, "reject_once"), "{sent:#?}");
+    assert!(!answered_with(&sent, "reject_always"), "{sent:#?}");
+}
+
+#[test]
+fn reject_and_ask_cancel_the_turn_when_only_reject_always_is_offered() {
+    for policy in ["reject", "ask"] {
+        let (output, json, sent) = scripted(
+            &format!("{policy}-no-reject-once"),
+            policy,
+            r#"{"permission":["allow_once","reject_always"]}"#,
+        );
+        assert_eq!(
+            json["permissions"][0]["answer"], "cancelledTurn",
+            "{json:#}"
+        );
+        assert!(
+            !answered_with(&sent, "reject_always"),
+            "{policy}: {sent:#?}"
+        );
+        assert!(!answered_with(&sent, "allow_once"), "{policy}: {sent:#?}");
+        assert_eq!(code(&output), 4, "{policy}: {json:#}");
+    }
+}
+
+#[test]
+fn a_turn_that_ends_other_than_end_turn_exits_four() {
+    let (output, json, _) = scripted("refusal", "ask", r#"{"stopReason":"refusal"}"#);
+    assert_eq!(code(&output), 4, "{json:#}");
+    assert_eq!(json["outcome"], "stopped");
+    assert_eq!(json["turns"][0]["stopReason"], "refusal");
+    assert_eq!(
+        json["summary"], "completed, but turn 1 ended with `refusal`",
+        "{json:#}"
+    );
+}
+
+#[test]
+fn an_export_that_cannot_be_written_fails_the_outcome_too() {
+    let directory = scratch("unwritable-export");
+    let export = directory.join("missing/trace.jsonl");
+    let output = cli(&[
+        "run",
+        "--prompt",
+        "hello",
+        "--export",
+        export.to_str().unwrap(),
+        "--json",
+        "--",
+        "python3",
+        &acceptance_agent(),
+    ]);
+    let json = summary(&output);
+    assert_eq!(code(&output), 1, "{json:#}");
+    assert_eq!(json["outcome"], "failed");
+    assert!(
+        json["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("completed, but the export could not be written: "),
+        "{json:#}"
+    );
+    assert!(json["trace"]["exportError"].is_string(), "{json:#}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// The `session/new` the CLI sent, as JSON.
+fn session_new(export: &Path) -> Value {
+    let (_, records) = trace(export);
+    let frame = sent(&records)
+        .into_iter()
+        .find(|frame| frame.contains(r#""method":"session/new""#))
+        .expect("session/new was sent");
+    serde_json::from_str(frame).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_relative_command_is_found_from_where_it_was_typed_not_from_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = scratch("relative-command");
+    std::fs::create_dir_all(directory.join("bin")).unwrap();
+    std::fs::create_dir_all(directory.join("work")).unwrap();
+    let agent = directory.join("bin/agent");
+    std::fs::write(
+        &agent,
+        format!("#!/bin/sh\nexec python3 '{}' \"$@\"\n", acceptance_agent()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let export = directory.join("trace.jsonl");
+
+    let output = cli_in(
+        &directory,
+        &[
+            "run",
+            "--cwd",
+            "work/",
+            "--prompt",
+            "hello",
+            "--export",
+            export.to_str().unwrap(),
+            "--",
+            "./bin/agent",
+        ],
+    );
+    let text = stdout(&output);
+    assert_eq!(code(&output), 0, "{text}");
+    let cwd = session_new(&export)["params"]["cwd"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        Path::new(&cwd),
+        directory.join("work").canonicalize().unwrap(),
+        "absolute, and without the trailing separator"
+    );
+    assert!(!cwd.ends_with('/'), "{cwd}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn the_session_cwd_has_no_dot_or_trailing_separator() {
+    let directory = scratch("dot-cwd");
+    let export = directory.join("trace.jsonl");
+    let output = cli_in(
+        &directory,
+        &[
+            "run",
+            "--cwd",
+            ".",
+            "--export",
+            export.to_str().unwrap(),
+            "--",
+            "python3",
+            &acceptance_agent(),
+        ],
+    );
+    assert_eq!(code(&output), 0, "{}", stdout(&output));
+    assert_eq!(
+        Path::new(session_new(&export)["params"]["cwd"].as_str().unwrap()),
+        directory.canonicalize().unwrap()
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn a_missing_cwd_is_named_as_the_directory_it_is() {
+    let directory = scratch("missing-cwd");
+    let output = cli_in(
+        &directory,
+        &[
+            "run",
+            "--cwd",
+            "nowhere",
+            "--",
+            "python3",
+            &acceptance_agent(),
+        ],
+    );
+    let text = stdout(&output);
+    assert_eq!(code(&output), 1, "{text}");
+    assert!(text.contains("the working directory `"), "{text}");
+    assert!(text.contains("nowhere` cannot be used"), "{text}");
+    assert!(
+        !text.contains("could not start"),
+        "nothing was spawned: {text}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// Starts the CLI on `lingering.py` and waits for the agent to be running,
+/// answering with the CLI, the agent's pid, the export's path and the scratch
+/// directory.
+#[cfg(unix)]
+fn lingering(name: &str) -> (Child, u32, PathBuf, PathBuf) {
+    let directory = scratch(name);
+    let pidfile = directory.join("agent.pid");
+    let export = directory.join("trace.jsonl");
+    let child = start(
+        None,
+        &[
+            "run",
+            "--prompt",
+            "hello?",
+            "--export",
+            export.to_str().unwrap(),
+            "--",
+            "python3",
+            &agent_script("lingering.py"),
+            pidfile.to_str().unwrap(),
+        ],
+    );
+    let started = Instant::now();
+    let pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+            break pid.trim().parse().expect("a pid");
+        }
+        assert!(started.elapsed() < PATIENCE, "the agent never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    (child, pid, export, directory)
+}
+
+#[cfg(unix)]
+fn signal(pid: u32, name: &str) {
+    let status = Command::new("kill")
+        .args([format!("-{name}"), pid.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(status.success(), "kill -{name} {pid}");
+}
+
+/// Whether `pid` is gone, given a moment for an orphan to be reaped.
+#[cfg(unix)]
+fn gone(pid: u32) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        let alive = Command::new("kill")
+            .args(["-0".to_owned(), pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill runs")
+            .success();
+        if !alive {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_stops_the_agent_exports_and_exits_one_hundred_forty_three() {
+    let (child, agent, export, directory) = lingering("sigterm");
+    signal(child.id(), "TERM");
+    let output = finish(child, &["sigterm"]);
+    let text = stdout(&output);
+    assert_eq!(code(&output), 143, "{text}");
+    assert!(text.contains("interrupted by SIGTERM"), "{text}");
+    assert!(gone(agent), "the agent outlived the CLI");
+    let (_, records) = trace(&export);
+    assert!(
+        sent(&records)
+            .iter()
+            .any(|frame| frame.contains(r#""method":"initialize""#)),
+        "the export holds what was sent"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_signal_while_stopping_kills_the_agent_and_exits_at_once() {
+    let (child, agent, export, directory) = lingering("second-signal");
+    signal(child.id(), "HUP");
+    std::thread::sleep(Duration::from_millis(300));
+    let forced = Instant::now();
+    signal(child.id(), "INT");
+    let output = finish(child, &["second-signal"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(code(&output), 130, "{}", stdout(&output));
+    assert!(
+        forced.elapsed() < Duration::from_secs(2),
+        "the second signal does not wait for the graceful stop"
+    );
+    assert!(
+        stderr.contains("SIGINT while stopping the agent"),
+        "{stderr}"
+    );
+    assert!(gone(agent), "the agent outlived the CLI");
+    assert!(!export.exists(), "the forced path writes no export");
     let _ = std::fs::remove_dir_all(directory);
 }

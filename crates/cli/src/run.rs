@@ -8,6 +8,7 @@
 //! and where the evidence went.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -59,13 +60,107 @@ pub enum Ending {
     Failed(Failure),
     /// `--timeout` ran out first.
     TimedOut(Duration),
-    /// Ctrl-C.
-    Interrupted,
+    /// A signal asked the run to end: Ctrl-C, or a CI runner or a container
+    /// stopping the job.
+    Interrupted(Signal),
+}
+
+/// A signal that ends a run early. Each one stops the agent, writes the export
+/// and prints the summary, exactly as a timeout does; a second one while that
+/// is happening kills the agent and exits at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// SIGINT: Ctrl-C at a terminal (and the only one there is on Windows).
+    Interrupt,
+    /// SIGTERM: what `docker stop`, Kubernetes and a cancelled CI job send.
+    Terminate,
+    /// SIGHUP: the terminal or the session went away.
+    Hangup,
+}
+
+impl Signal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Interrupt => "SIGINT",
+            Self::Terminate => "SIGTERM",
+            Self::Hangup => "SIGHUP",
+        }
+    }
+
+    /// 128 plus the signal's number, which is what a shell reports for a
+    /// process the signal killed — so a job that checks for 143 still sees it.
+    pub fn exit_code(self) -> u8 {
+        match self {
+            Self::Interrupt => 130,
+            Self::Terminate => 143,
+            Self::Hangup => 129,
+        }
+    }
+}
+
+/// The signals a run listens for, from the moment it starts. Once a handler is
+/// installed the default one no longer applies — which would end this process
+/// and leave the agent, in a process group of its own, running.
+struct Signals {
+    #[cfg(unix)]
+    interrupt: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    terminate: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    hangup: Option<tokio::signal::unix::Signal>,
+}
+
+impl Signals {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Self {
+                interrupt: signal(SignalKind::interrupt()).ok(),
+                terminate: signal(SignalKind::terminate()).ok(),
+                hangup: signal(SignalKind::hangup()).ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        Self {}
+    }
+
+    /// The next signal to arrive.
+    async fn next(&mut self) -> Signal {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                () = received(&mut self.interrupt) => Signal::Interrupt,
+                () = received(&mut self.terminate) => Signal::Terminate,
+                () = received(&mut self.hangup) => Signal::Hangup,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => Signal::Interrupt,
+                Err(_) => std::future::pending().await,
+            }
+        }
+    }
+}
+
+/// Resolves when `stream` delivers a signal, and never when it could not be
+/// installed or has closed.
+#[cfg(unix)]
+async fn received(stream: &mut Option<tokio::signal::unix::Signal>) {
+    if let Some(stream) = stream
+        && stream.recv().await.is_some()
+    {
+        return;
+    }
+    std::future::pending().await
 }
 
 /// Where a run failed.
 pub enum Failure {
-    /// The session's working directory could not be named.
+    /// `--cwd` is not a directory the agent can be started in, or this
+    /// process's own directory could not be named.
     WorkingDirectory(String),
     /// The agent never started.
     Spawn(String),
@@ -81,7 +176,10 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WorkingDirectory(problem) => {
-                write!(f, "the session's working directory: {problem}")
+                write!(
+                    f,
+                    "the agent did not start: the working directory {problem}"
+                )
             }
             Self::Spawn(problem) => write!(f, "the agent did not start: {problem}"),
             Self::Handshake(error) => write!(f, "`initialize` failed: {error}"),
@@ -129,23 +227,52 @@ pub enum Answer {
 }
 
 impl Report {
-    /// The process's exit code (docs/cli.md, "Exit codes").
+    /// The process's exit code (docs/cli.md, "Exit codes"). When more than one
+    /// applies, the one that says most about whether to trust the run wins: a
+    /// signal, then a timeout, then a failure, then a broken MUST, then a turn
+    /// that did not end on its own.
     pub fn exit_code(&self) -> u8 {
         match &self.ending {
-            Ending::Interrupted => 130,
+            Ending::Interrupted(signal) => signal.exit_code(),
             Ending::TimedOut(_) => 3,
             Ending::Failed(_) => 1,
-            Ending::Completed if matches!(self.export, Some(Err(_))) => 1,
+            Ending::Completed if self.export_failed().is_some() => 1,
             Ending::Completed if !self.annotations.is_empty() => 2,
+            Ending::Completed if self.stopped_short().is_some() => 4,
             Ending::Completed => 0,
         }
+    }
+
+    /// Why the export could not be written, when one was asked for and it
+    /// could not be.
+    pub fn export_failed(&self) -> Option<&str> {
+        match &self.export {
+            Some(Err(error)) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// The first turn that ended with a stop reason other than `end_turn` —
+    /// refused, cancelled, out of tokens or of requests — as its number and
+    /// reason. Each of those is an answer, so the run completed; none is the
+    /// agent finishing what it was asked, which is what a smoke test checks.
+    pub fn stopped_short(&self) -> Option<(usize, &v1::StopReason)> {
+        self.turns
+            .iter()
+            .enumerate()
+            .find_map(|(index, turn)| match &turn.outcome {
+                Some(Ok(reason)) if *reason != v1::StopReason::EndTurn => Some((index + 1, reason)),
+                _ => None,
+            })
     }
 }
 
 /// Runs the agent `run` describes through `prompts`, and reports on it.
 pub async fn run(run: &Run, prompts: Vec<String>) -> Report {
+    let mut signals = Signals::new();
     let inspector = Inspector::new();
-    let spawn = factory(run);
+    let cwd = working_directory(run.cwd.as_deref());
+    let spawn = factory(run, cwd.as_deref().ok());
     let answers = Arc::new(Mutex::new(Answers::default()));
     let mut turns = Vec::new();
 
@@ -153,7 +280,7 @@ pub async fn run(run: &Run, prompts: Vec<String>) -> Report {
 
     let ending = {
         let driven = async {
-            let cwd = session_cwd(run.cwd.as_deref()).map_err(Failure::WorkingDirectory)?;
+            let cwd = cwd.clone().map_err(Failure::WorkingDirectory)?;
             drive(&inspector, &spawn, cwd, &prompts, &mut turns).await
         };
         let bounded = async {
@@ -169,15 +296,31 @@ pub async fn run(run: &Run, prompts: Vec<String>) -> Report {
         };
         tokio::select! {
             ending = bounded => ending,
-            _ = tokio::signal::ctrl_c() => Ending::Interrupted,
+            signal = signals.next() => Ending::Interrupted(signal),
         }
     };
 
     answering.abort();
-    if lost(&ending) {
-        settle(&inspector).await;
+    let stopping = async {
+        if lost(&ending) {
+            settle(&inspector).await;
+        }
+        stop(&inspector).await;
+    };
+    tokio::select! {
+        () = stopping => {}
+        // A signal while the agent is being stopped — the second Ctrl-C of
+        // someone who has waited long enough — means now: the agent's process
+        // group is killed, and there is no export or summary to wait for.
+        signal = signals.next() => {
+            inspector.disconnect();
+            eprintln!(
+                "acp-inspector-cli: {} while stopping the agent: it was killed, and nothing was exported",
+                signal.name()
+            );
+            std::process::exit(signal.exit_code().into());
+        }
     }
-    stop(&inspector).await;
 
     // A spawn failure reaches `initialize` as a connection that went away; the
     // diagnostic says why, which is the sentence worth printing.
@@ -238,8 +381,11 @@ pub async fn run(run: &Run, prompts: Vec<String>) -> Report {
 /// The spawn the options describe. Built directly rather than through
 /// `AgentCommand`, whose one-argument-per-line fields are a form's: a command
 /// line already has its arguments split, and trimming them would change them.
-fn factory(run: &Run) -> StdioSpawn {
-    let mut spawn = StdioSpawn::new(&run.command).args(&run.args);
+///
+/// `cwd` is the checked working directory, when it is one; a run whose
+/// directory is not usable fails before this spawn is used.
+fn factory(run: &Run, cwd: Option<&Path>) -> StdioSpawn {
+    let mut spawn = StdioSpawn::new(command(&run.command)).args(&run.args);
     if run.clear_env {
         spawn = spawn.env_clear();
     }
@@ -247,18 +393,54 @@ fn factory(run: &Run) -> StdioSpawn {
         spawn = spawn.env_remove(name);
     }
     spawn = spawn.envs(run.env.iter().map(|(key, value)| (key, value)));
-    match &run.cwd {
+    match cwd {
         Some(cwd) => spawn.cwd(cwd),
         None => spawn,
     }
 }
 
-/// The absolute path ACP wants for `session/new`: `--cwd` resolved against
-/// this process's directory, which is also where the agent is started.
-fn session_cwd(cwd: Option<&Path>) -> Result<PathBuf, String> {
-    let cwd = cwd.unwrap_or(Path::new(""));
-    let current = std::env::current_dir().map_err(|error| error.to_string())?;
-    Ok(current.join(cwd))
+/// The agent's program, read from where the person typed it.
+///
+/// A relative path such as `./agent` or `target/release/agent` names a file
+/// in this process's directory, but started with `--cwd` the OS would look for
+/// it in that directory instead (on Unix; Windows differs), so it is made
+/// absolute first. A bare name has no directory and is still looked up on
+/// `PATH`.
+fn command(program: &OsStr) -> PathBuf {
+    let path = Path::new(program);
+    let has_directory = path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if path.is_relative()
+        && has_directory
+        && let Ok(current) = std::env::current_dir()
+    {
+        return current.join(path);
+    }
+    path.to_path_buf()
+}
+
+/// The absolute path the agent is started in and ACP wants for
+/// `session/new`: `--cwd` resolved against this process's directory, or that
+/// directory itself.
+///
+/// Checked before anything is spawned, so that a mistyped `--cwd` is reported
+/// as the directory it is rather than as a command that could not be found.
+/// Tidied of trailing separators and `.` components, which an agent comparing
+/// paths would trip over; `..` and symbolic links are left as given, since
+/// resolving them could name a different directory.
+fn working_directory(cwd: Option<&Path>) -> Result<PathBuf, String> {
+    let current = std::env::current_dir()
+        .map_err(|error| format!("of this process cannot be named: {error}"))?;
+    let directory: PathBuf = current
+        .join(cwd.unwrap_or(Path::new("")))
+        .components()
+        .collect();
+    match std::fs::metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() => Ok(directory),
+        Ok(_) => Err(format!("`{}` is not a directory", directory.display())),
+        Err(error) => Err(format!("`{}` cannot be used: {error}", directory.display())),
+    }
 }
 
 /// The handshake and the turns, stopping at the first thing that fails.
@@ -414,13 +596,13 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Answers one permission request by `policy`.
 async fn respond(inspector: &Inspector, policy: Policy, request: &PermissionRequest) -> Answered {
     let options = request.options();
-    let choice = match policy {
-        Policy::Allow => options
-            .iter()
-            .find(|option| option.kind == v1::PermissionOptionKind::AllowOnce)
-            .or_else(|| rejection(options)),
-        Policy::Ask | Policy::Reject => rejection(options),
+    // Only ever a `_once` option: a policy for one run does not get to change
+    // what the agent remembers, in either direction.
+    let wanted = match policy {
+        Policy::Allow => v1::PermissionOptionKind::AllowOnce,
+        Policy::Ask | Policy::Reject => v1::PermissionOptionKind::RejectOnce,
     };
+    let choice = options.iter().find(|option| option.kind == wanted);
 
     let answer = match choice {
         Some(option) => match request.select(&option.option_id).await {
@@ -448,16 +630,6 @@ async fn respond(inspector: &Inspector, policy: Policy, request: &PermissionRequ
             .collect(),
         answer,
     }
-}
-
-/// The first reject option the agent offered, in its order.
-fn rejection(options: &[v1::PermissionOption]) -> Option<&v1::PermissionOption> {
-    options.iter().find(|option| {
-        matches!(
-            option.kind,
-            v1::PermissionOptionKind::RejectOnce | v1::PermissionOptionKind::RejectAlways
-        )
-    })
 }
 
 /// Fills a turn's message and tool calls from the timeline entries stamped
