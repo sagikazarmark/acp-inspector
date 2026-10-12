@@ -339,7 +339,8 @@ read times.
 **Stopping is graceful when the reader asks for it.** A user-facing disconnect, a restart and quit
 close the agent's stdin, wait 1.5 s, send SIGTERM to the process group, wait 1.5 s, then SIGKILL,
 and record which step ended it as `Stopped { by }`. After the leader exits, readers left idle on
-pipes held open by an escaped descendant are abandoned after 1 s (`DrainAbandoned`). Windows keeps
+pipes held open by an escaped descendant are abandoned after 1 s (`DrainAbandoned`), and so is a
+write blocked on a stdin such a descendant holds without reading (`WriteFailed`). Windows keeps
 the Job Object kill and has no SIGTERM step.
 
 **Stdio owns the launched process tree.** Unix launches in a private process group;

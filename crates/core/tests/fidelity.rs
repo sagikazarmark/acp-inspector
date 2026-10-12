@@ -439,3 +439,51 @@ print('{"jsonrpc":"2.0","method":"bye"}', flush=True)
     ));
     tokio::time::sleep(QUIET).await;
 }
+
+/// The writer is the third pipe an escaped process can hold: a frame larger
+/// than the pipe's buffer blocks against a stdin nobody reads, and waiting for
+/// that write held the exit back until the escaped process let go.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_exited_agent_is_reported_lost_though_an_escaped_process_holds_its_stdin_mid_write() {
+    let inspector = Inspector::new();
+    let mut status = inspector.status_changes();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import os, sys, time
+if os.fork() == 0:
+    os.setsid()
+    time.sleep(12)
+    os._exit(0)
+print('{"jsonrpc":"2.0","method":"hello"}', flush=True)
+time.sleep(0.5)
+"#,
+    ]));
+    // Over any pipe buffer, so the write is still in progress at the exit.
+    let params = serde_json::value::to_raw_value(&"x".repeat(4 << 20)).unwrap();
+    inspector
+        .send_raw("x/large", Some(&params), true)
+        .await
+        .expect("handed to the transport");
+    tokio::time::timeout(
+        Duration::from_secs(8),
+        until(&mut status, "the exit to be reported", || {
+            inspector.status() == ConnectionStatus::Lost
+        }),
+    )
+    .await
+    .expect("a write that never completes must not hold the exit back");
+    let diagnostics = inspector.diagnostics().entries();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_))),
+        "{diagnostics:?}"
+    );
+    assert!(matches!(
+        diagnostics.last().unwrap().kind,
+        DiagnosticKind::AgentExited(_)
+    ));
+    tokio::time::sleep(QUIET).await;
+}

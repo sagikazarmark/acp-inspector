@@ -439,7 +439,23 @@ async fn watch(watch: Watch) {
             // Exit is not EOF: both pipes can still hold final evidence. The
             // Inspector must also consume the queued Frames before teardown.
             let abandoned = drain(&mut readers).await;
-            let _ = stdin_done.await;
+            // The writer gets the same grace. Against a closed pipe its write
+            // fails at once; it blocks only when something outside the
+            // process group still holds the agent's stdin without reading it,
+            // and then the exit would never be reported.
+            let mut stdin_done = stdin_done;
+            if tokio::time::timeout(DRAIN_GRACE, &mut stdin_done).await.is_err() {
+                stdin_done.abort();
+                let _ = diagnostics
+                    .send(Diagnostic::now(DiagnosticKind::WriteFailed(Arc::new(
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "the agent exited mid-write and another process holds its input \
+                             open without reading; the write was abandoned",
+                        ),
+                    ))))
+                    .await;
+            }
             if abandoned {
                 let _ = diagnostics
                     .send(Diagnostic::now(DiagnosticKind::DrainAbandoned))
