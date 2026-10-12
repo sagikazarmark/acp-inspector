@@ -32,8 +32,13 @@ JSON-RPC frame exactly as it crossed, with the agent's stderr beside it.
 
 ## Quick start
 
-Build from source with Rust, [just](https://just.systems) and, on Linux, the WebKitGTK libraries
-(see [prerequisites](docs/development.md#prerequisites), or run `devenv shell`):
+Download the app for macOS, Linux or Windows from the
+[latest release](https://github.com/sagikazarmark/acp-inspector/releases/latest). The downloads
+are not signed, so the first launch needs one extra step; see
+[supported platforms](docs/guide.md#supported-platforms).
+
+Or build from source with Rust, [just](https://just.systems) and, on Linux, the WebKitGTK
+libraries (see [prerequisites](docs/development.md#prerequisites), or run `devenv shell`):
 
 ```sh
 just run
@@ -57,7 +62,8 @@ exercises every screen.
 
 ### Headless
 
-Smoke-test an agent without a window, and keep the trace:
+Smoke-test an agent without a window, and keep the trace. The CLI is in each
+[release](https://github.com/sagikazarmark/acp-inspector/releases/latest), or build it with Cargo:
 
 ```sh
 cargo install --locked --git https://github.com/sagikazarmark/acp-inspector acp-inspector-cli

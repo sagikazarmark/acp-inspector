@@ -1,0 +1,198 @@
+# The release: every artifact, built on a runner of the platform it is for,
+# and published to a GitHub Release when a `v*` tag is pushed. Each build step
+# is a `just` recipe, so a release artifact is one a maintainer can build by
+# hand on the same platform (docs/development.md, "Releasing").
+#
+# A pull request that touches the packaging runs the same builds and stops
+# short of publishing, so a broken recipe is found before a tag is.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yaml
+      - justfile
+      - about.toml
+      - about.hbs
+      - crates/app/Dioxus.toml
+      - crates/app/bundle/**
+      - crates/app/examples/bundle-icon.rs
+      - scripts/check-macos-bundle.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # `dx` must be the `dioxus` version in Cargo.lock; the recipes check it.
+  DIOXUS_CLI_VERSION: "0.7.10"
+  CARGO_ABOUT_VERSION: "0.9.0"
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # A tag names the version every crate already carries; it does not set it.
+      - name: The tag is the crates' version
+        id: version
+        run: |
+          version="$(cargo pkgid -p acp-inspector | sed 's/.*[@#]//')"
+          for package in acp-inspector-core acp-inspector-cli; do
+            other="$(cargo pkgid -p "$package" | sed 's/.*[@#]//')"
+            if [ "$other" != "$version" ]; then
+              echo "::error::$package is $other, acp-inspector is $version; release them together."
+              exit 1
+            fi
+          done
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, and the crates are at $version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            bundle: bundle-macos
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            bundle: bundle-macos
+          # The oldest Ubuntu the packages support: the glibc a binary asks for
+          # is the one it was linked against.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            bundle: bundle-linux
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            bundle: bundle-linux
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            bundle: bundle-windows
+    runs-on: ${{ matrix.runner }}
+    # Git for Windows' bash on Windows, which `just` also runs the recipes with.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install WebKitGTK and the desktop shell's system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
+
+      # No build cache: a release is built from the tag alone.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          rustc -vV
+
+      - name: Install just and cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-about@${{ env.CARGO_ABOUT_VERSION }}
+
+      - name: Install dx
+        if: runner.os != 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: dioxus-cli@${{ env.DIOXUS_CLI_VERSION }}
+
+      # dx's prebuilt Linux binary needs glibc 2.39, newer than the 2.35 these
+      # runners have, so it is compiled here.
+      - name: Install dx (from source)
+        if: runner.os == 'Linux'
+        run: cargo install dioxus-cli --version "$DIOXUS_CLI_VERSION" --locked
+
+      - name: The runner builds for ${{ matrix.target }}
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::${{ matrix.runner }} builds for $host, not ${{ matrix.target }}."
+            exit 1
+          fi
+
+      - name: Bundle the app
+        run: just ${{ matrix.bundle }}
+
+      - name: Package the CLI
+        run: just package-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            dist/*.dmg
+            dist/*.deb
+            dist/*.msi
+            dist/*.tar.xz
+            dist/*.zip
+
+  release:
+    name: Release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      # A draft first, published only once every artifact is on it, so a
+      # failed upload never leaves a half-filled release public.
+      - name: Publish the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "ACP Inspector $VERSION" \
+            --generate-notes \
+            "${flags[@]}"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

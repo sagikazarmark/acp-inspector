@@ -73,16 +73,17 @@ test-acceptance-agent:
 node-free:
     ./scripts/check-node-free.sh
 
-# Render the bundle's icon from the mark the window draws.
+# Render the bundles' icons from the mark the window draws.
 #
-# The one recipe that writes `crates/app/bundle/icon.icns`, and — like `css` — what
-# it writes is committed: the icon is a packaging asset that `dx bundle` reads
+# The one recipe that writes `crates/app/bundle/`, and — like `css` — what it
+# writes is committed: the icons are packaging assets that `dx bundle` reads
 # and nothing in the build does
 # (docs/adr/0010-the-bundle-is-the-one-thing-dx-makes.md). The drawing is
 # `crates/app/src/mark.rs`, the same function the window puts in its own icon; the
 # `bundle-icon` example renders it at each of the ten sizes an `.icns` holds, on
-# macOS's icon grid, and `iconutil` folds them. `iconutil` is macOS's, so this
-# runs on a Mac; the PNGs it is made from need only `cargo`. Run it after
+# macOS's icon grid, and `iconutil` folds them. The Linux package's PNGs and
+# the Windows `.ico` fill their canvas, as the window's icon does. `iconutil`
+# is macOS's, so this runs on a Mac; the rest needs only `cargo`. Run it after
 # changing the mark and commit what it wrote.
 icon:
     #!/usr/bin/env bash
@@ -102,6 +103,12 @@ icon:
     mkdir -p crates/app/bundle
     iconutil -c icns "$set" -o crates/app/bundle/icon.icns
     echo "icon: crates/app/bundle/icon.icns"
+    for s in 32 128 256 512; do
+        cargo run -q -p acp-inspector --example bundle-icon -- --edge "$s" "crates/app/bundle/${s}x${s}.png"
+        echo "icon: crates/app/bundle/${s}x${s}.png"
+    done
+    cargo run -q -p acp-inspector --example bundle-icon -- --ico crates/app/bundle/icon.ico
+    echo "icon: crates/app/bundle/icon.ico"
 
 check:
     cargo fmt --check
@@ -133,6 +140,27 @@ licenses out="dist/THIRD_PARTY_LICENSES.html":
     mkdir -p "$(dirname {{quote(out)}})"
     cargo about generate --locked --fail about.hbs -o {{quote(out)}}
 
+# The tools every `bundle-*` recipe runs, checked before a long build rather
+# than after it. `dx` must be the `dioxus` version in Cargo.lock: dx itself
+# reports any other one as incompatible with the renderer it is bundling.
+[private]
+_bundle-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dioxus_version="$(awk '/^name = "dioxus"$/ { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"
+    case "$(dx --version 2>/dev/null | tr -d '\r' || true)" in
+        "dioxus $dioxus_version "* | "dioxus $dioxus_version") ;;
+        *)
+            echo "bundle: dx $dioxus_version is required, the dioxus version in Cargo.lock" >&2
+            echo "  (cargo install dioxus-cli --version =$dioxus_version --locked); found: $(dx --version 2>/dev/null || echo none)." >&2
+            exit 1
+            ;;
+    esac
+    if ! cargo about --version >/dev/null 2>&1; then
+        echo "bundle: cargo-about is required for the licence notices (cargo install cargo-about --locked)." >&2
+        exit 1
+    fi
+
 # Bundle the app as a macOS application and a disk image.
 #
 # The one recipe that runs `dx`, and the one thing `dx` does here is assemble
@@ -147,7 +175,10 @@ licenses out="dist/THIRD_PARTY_LICENSES.html":
 # from GitHub at bundle time.
 #
 # Runs only on a Mac, for the Mac it runs on: `dx` does not cross-bundle, so an
-# Intel image and an Apple Silicon image are this recipe on two machines.
+# Intel image and an Apple Silicon image are this recipe on two machines (the
+# release workflow's two macOS runners). Without an identity the bundle is
+# signed ad hoc, as one piece, so that a downloaded copy is one Gatekeeper
+# offers to open rather than one it calls damaged.
 #
 # Runs outside the devenv shell. The shell's C toolchain links Nix's libiconv
 # from `/nix/store` and its SDK sets a deployment target of macOS 14, so a
@@ -157,13 +188,13 @@ licenses out="dist/THIRD_PARTY_LICENSES.html":
 # the recipe refuses a Nix shell up front, and `scripts/check-macos-bundle.sh`
 # checks the result either way.
 #
-#   just bundle-macos                                  # unsigned, for this machine
+#   just bundle-macos                                  # unsigned (ad hoc), for this machine
 #   just bundle-macos "Developer ID Application: Name (TEAMID)"          # signed
 #   just bundle-macos "Developer ID Application: Name (TEAMID)" notary   # + notarized
 #
 # The third form names a `notarytool` keychain profile, stored once with
 # `xcrun notarytool store-credentials notary`. Everything lands in `dist/`.
-bundle-macos identity="" notary="":
+bundle-macos identity="" notary="": _bundle-tools
     #!/usr/bin/env bash
     set -euo pipefail
     identity={{quote(identity)}}
@@ -196,22 +227,6 @@ bundle-macos identity="" notary="":
         exit 1
     fi
 
-    # `dx` must be the `dioxus` version in Cargo.lock: dx itself reports any
-    # other one as incompatible with the renderer it is bundling.
-    dioxus_version="$(awk '/^name = "dioxus"$/ { getline; gsub(/"/, "", $3); print $3; exit }' Cargo.lock)"
-    case "$(dx --version 2>/dev/null || true)" in
-        "dioxus $dioxus_version "* | "dioxus $dioxus_version") ;;
-        *)
-            echo "bundle-macos: dx $dioxus_version is required, the dioxus version in Cargo.lock" >&2
-            echo "  (cargo install dioxus-cli --version =$dioxus_version --locked); found: $(dx --version 2>/dev/null || echo none)." >&2
-            exit 1
-            ;;
-    esac
-    if ! cargo about --version >/dev/null 2>&1; then
-        echo "bundle-macos: cargo-about is required for the licence notices (cargo install cargo-about --locked)." >&2
-        exit 1
-    fi
-
     # The deployment target is the one the plist declares: `minimum_system_version`
     # becomes `LSMinimumSystemVersion`, and this makes the linker stamp the same
     # `minos`, which the guard checks.
@@ -226,7 +241,14 @@ bundle-macos identity="" notary="":
     # toolchain's own rust-objcopy, pointing it at LLVM with LD_LIBRARY_PATH —
     # which macOS ignores, so rustup's rust-objcopy cannot load libLLVM. The
     # fallback path is where it is.
+    # The notices for every crate compiled in, rendered first: `Dioxus.toml`
+    # names them as a resource, so dx puts them in `Contents/Resources`, and
+    # the image carries them beside the app.
     rm -rf dist
+    mkdir dist
+    notices=dist/THIRD_PARTY_LICENSES.html
+    cargo about generate --locked --fail about.hbs -o "$notices"
+
     DYLD_FALLBACK_LIBRARY_PATH="$(rustc --print sysroot)/lib" \
         dx bundle --macos --release --locked -p acp-inspector \
         --package-types macos --out-dir dist
@@ -252,10 +274,10 @@ bundle-macos identity="" notary="":
             || /usr/libexec/PlistBuddy -c "Add :$key string $product" "$plist"
     done
 
-    # The notices for every crate compiled in, inside the bundle and (below)
-    # next to it in the image.
-    notices="$app/Contents/Resources/THIRD_PARTY_LICENSES.html"
-    cargo about generate --locked --fail about.hbs -o "$notices"
+    if [ ! -f "$app/Contents/Resources/THIRD_PARTY_LICENSES.html" ]; then
+        echo "bundle-macos: dx did not copy the licence notices into $app/Contents/Resources." >&2
+        exit 1
+    fi
 
     # That another Mac can start it: only system libraries, and the `minos` the
     # plist declares.
@@ -264,10 +286,15 @@ bundle-macos identity="" notary="":
     # Hardened runtime and a secure timestamp are what notarization requires;
     # `--deep` is not used because there is no nested code to sign — one binary,
     # and the WebView is the system's.
+    # Without one, an ad hoc signature over the whole bundle: the linker's
+    # covers only the executable, and the plist and resources edited since
+    # would leave Gatekeeper a bundle whose seal is broken.
     if [ -n "$identity" ]; then
         codesign --force --options runtime --timestamp --sign "$identity" "$app"
-        codesign --verify --strict --verbose=2 "$app"
+    else
+        codesign --force --sign - "$app"
     fi
+    codesign --verify --strict --verbose=2 "$app"
 
     # Notarize the application before it goes into the image, so the ticket is
     # stapled to the thing the reader drags out and it launches offline.
@@ -280,8 +307,9 @@ bundle-macos identity="" notary="":
 
     # The image holds the app, a link to /Applications to drag it onto, and
     # the licence notices.
-    version="$(cargo pkgid -p acp-inspector | sed 's/.*@//')"
-    dmg="dist/ACP-Inspector-${version}-$(uname -m).dmg"
+    version="$(cargo pkgid -p acp-inspector | sed 's/.*[@#]//')"
+    target="$(rustc -vV | sed -n 's/^host: //p')"
+    dmg="dist/acp-inspector-${version}-${target}.dmg"
     stage="dist/image"
     rm -rf "$stage"
     mkdir "$stage"
@@ -303,29 +331,159 @@ bundle-macos identity="" notary="":
     echo "bundle-macos: $app"
     echo "bundle-macos: $dmg"
     if [ -z "$identity" ]; then
-        echo "bundle-macos: unsigned — on another Mac, Gatekeeper wants Open Anyway in System Settings → Privacy & Security."
+        echo "bundle-macos: signed ad hoc — on another Mac, Gatekeeper wants Open Anyway in System Settings → Privacy & Security."
     fi
 
-# Reads `dist-workspace.toml` and the workspace; builds nothing and publishes
-# nothing.
+# Bundle the app for Linux: a `.deb` and a `.tar.xz` of the executable.
 #
-# Show what `dist` would build for Linux and Windows.
-dist-plan:
-    dist plan
-
-# Untested on CI, and never uploads: `dist-workspace.toml` configures no CI. On
-# Linux it needs the WebKitGTK development packages (docs/development.md, "Prerequisites"); on
-# Windows, the MSVC toolchain. Ship `just licenses` beside it (L5).
+# The `.deb` is `dx`'s (`crates/app/Dioxus.toml` names its dependencies, icons
+# and notices) and installs the app with a desktop entry; the archive is the
+# same executable with the licences beside it, for anything else. Both are for
+# the architecture this runs on: the release workflow runs it on an x86_64 and
+# an arm64 runner. Built on the oldest Ubuntu the release supports (22.04), so
+# that the glibc it asks for is one every newer distribution has.
 #
-#   just dist-build                              # this machine's target
-#   just dist-build x86_64-unknown-linux-gnu     # a named one, if this machine can build it
-#
-# Build the Linux or Windows archive into `target/distrib/`.
-dist-build target="":
+# Needs the WebKitGTK development packages (docs/development.md,
+# "Prerequisites"), `dx` at the `dioxus` version in Cargo.lock and
+# cargo-about. Everything lands in `dist/`.
+bundle-linux: _bundle-tools
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -n {{quote(target)}} ]; then
-        dist build --artifacts=local --target {{quote(target)}}
-    else
-        dist build --artifacts=local
+    if [ "$(uname -s)" != "Linux" ]; then
+        echo "bundle-linux: dx bundles only for the platform it runs on, and this is not Linux." >&2
+        exit 1
     fi
+    version="$(cargo pkgid -p acp-inspector | sed 's/.*[@#]//')"
+    target="$(rustc -vV | sed -n 's/^host: //p')"
+
+    rm -rf dist
+    mkdir dist
+    cargo about generate --locked --fail about.hbs -o dist/THIRD_PARTY_LICENSES.html
+    dx bundle --linux --release --locked -p acp-inspector --package-types deb --out-dir dist
+
+    deb="$(find dist -maxdepth 1 -name '*.deb' | head -n 1)"
+    if [ -z "$deb" ]; then
+        echo "bundle-linux: dx produced no .deb under dist/:" >&2
+        ls -la dist >&2 || true
+        exit 1
+    fi
+
+    exe=target/dx/acp-inspector/release/linux/app/acp-inspector
+    if [ ! -x "$exe" ]; then
+        echo "bundle-linux: dx left no executable at $exe." >&2
+        exit 1
+    fi
+    name="acp-inspector-${version}-${target}"
+    mkdir "dist/$name"
+    cp "$exe" README.md LICENSE-MIT LICENSE-APACHE dist/THIRD_PARTY_LICENSES.html "dist/$name/"
+    tar -C dist -cJf "dist/$name.tar.xz" "$name"
+    rm -rf "dist/$name"
+
+    echo
+    echo "bundle-linux: $deb"
+    echo "bundle-linux: dist/$name.tar.xz"
+
+# Bundle the app for Windows: an `.msi` and a `.zip` of the executable.
+#
+# The installer is `dx`'s, built with the WiX toolset it fetches the first time;
+# it installs per machine and, where the WebView2 runtime is missing (older
+# Windows 10), fetches Microsoft's bootstrapper. The archive is the same
+# executable, which carries the icon and version information `dx` compiled into
+# it, with the licences beside it. Neither is signed: SmartScreen asks first.
+#
+# Runs on Windows, in the bash Git for Windows brings (`just` runs this script
+# with it), with the MSVC toolchain, `dx` at the `dioxus` version in Cargo.lock
+# and cargo-about. Everything lands in `dist/`.
+bundle-windows: _bundle-tools
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*) ;;
+        *)
+            echo "bundle-windows: dx bundles only for the platform it runs on, and this is not Windows." >&2
+            exit 1
+            ;;
+    esac
+    version="$(cargo pkgid -p acp-inspector | sed 's/.*[@#]//')"
+    target="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+
+    rm -rf dist
+    mkdir dist
+    cargo about generate --locked --fail about.hbs -o dist/THIRD_PARTY_LICENSES.html
+    dx bundle --windows --release --locked -p acp-inspector --package-types msi --out-dir dist
+
+    msi="$(find dist -maxdepth 1 -name '*.msi' | head -n 1)"
+    if [ -z "$msi" ]; then
+        echo "bundle-windows: dx produced no .msi under dist/:" >&2
+        ls -la dist >&2 || true
+        exit 1
+    fi
+    mv "$msi" "dist/acp-inspector-${version}-${target}.msi"
+
+    exe=target/dx/acp-inspector/release/windows/app/acp-inspector.exe
+    if [ ! -f "$exe" ]; then
+        echo "bundle-windows: dx left no executable at $exe." >&2
+        exit 1
+    fi
+    name="acp-inspector-${version}-${target}"
+    mkdir "dist/$name"
+    cp "$exe" README.md LICENSE-MIT LICENSE-APACHE dist/THIRD_PARTY_LICENSES.html "dist/$name/"
+    pwsh -NoProfile -Command "Compress-Archive -Path 'dist/$name' -DestinationPath 'dist/$name.zip'"
+    rm -rf "dist/$name"
+
+    echo
+    echo "bundle-windows: dist/acp-inspector-${version}-${target}.msi"
+    echo "bundle-windows: dist/$name.zip"
+
+# Package the headless CLI for the platform this runs on, into `dist/`.
+#
+# A release build of `acp-inspector-cli` with the licences beside it: its own
+# notices, which name only what the CLI compiles in. A `.tar.xz` on macOS and
+# Linux, a `.zip` on Windows. Adds to `dist/` rather than replacing it, so it
+# runs after a `bundle-*` recipe, as the release workflow does. On macOS it
+# builds for the same floor as the bundle, and outside the devenv shell for
+# the same reason (`bundle-macos`).
+package-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(cargo pkgid -p acp-inspector-cli | sed 's/.*[@#]//')"
+    target="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+    exe=target/release/acp-inspector-cli
+
+    case "$target" in
+        *-apple-darwin)
+            cc_path="$(command -v cc || true)"
+            if [ -n "${IN_NIX_SHELL:-}" ] || [ -n "${DEVENV_ROOT:-}" ] || [ "${cc_path#/nix/store/}" != "$cc_path" ]; then
+                echo "package-cli: this is a Nix shell; a macOS release build here links /nix/store libraries." >&2
+                echo "  Run it from a plain terminal (docs/development.md, \"Releasing\")." >&2
+                exit 1
+            fi
+            MACOSX_DEPLOYMENT_TARGET="$(sed -n 's/^minimum_system_version *= *"\([0-9.]*\)".*/\1/p' crates/app/Dioxus.toml)"
+            export MACOSX_DEPLOYMENT_TARGET
+            ;;
+        *-windows-*)
+            exe="$exe.exe"
+            ;;
+    esac
+
+    cargo build --release --locked -p acp-inspector-cli
+
+    name="acp-inspector-cli-${version}-${target}"
+    mkdir -p dist
+    rm -rf "dist/$name"
+    mkdir "dist/$name"
+    cp "$exe" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+    cargo about generate --locked --fail -m crates/cli/Cargo.toml about.hbs -o "dist/$name/THIRD_PARTY_LICENSES.html"
+    case "$target" in
+        *-windows-*)
+            rm -f "dist/$name.zip"
+            pwsh -NoProfile -Command "Compress-Archive -Path 'dist/$name' -DestinationPath 'dist/$name.zip'"
+            archive="dist/$name.zip"
+            ;;
+        *)
+            tar -C dist -cJf "dist/$name.tar.xz" "$name"
+            archive="dist/$name.tar.xz"
+            ;;
+    esac
+    rm -rf "dist/$name"
+    echo "package-cli: $archive"
