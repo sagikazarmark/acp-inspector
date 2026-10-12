@@ -73,8 +73,16 @@ pub enum Signal {
     /// SIGINT: Ctrl-C at a terminal (and the only one there is on Windows).
     Interrupt,
     /// SIGTERM: what `docker stop`, Kubernetes and a cancelled CI job send.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only Ctrl-C is caught on Windows")
+    )]
     Terminate,
     /// SIGHUP: the terminal or the session went away.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only Ctrl-C is caught on Windows")
+    )]
     Hangup,
 }
 

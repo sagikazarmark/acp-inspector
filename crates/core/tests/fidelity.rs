@@ -4,6 +4,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::time::Duration;
 
 use acp_inspector_core::{
@@ -12,7 +13,9 @@ use acp_inspector_core::{
 };
 use serde_json::Value;
 
-use common::{PATIENCE, QUIET, received, until};
+#[cfg(unix)]
+use common::QUIET;
+use common::{PATIENCE, received, until};
 
 /// A scripted agent: it answers `initialize` and `session/new` (session `s1`,
 /// two modes), then does what `mode` says with the next request.
