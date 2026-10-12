@@ -39,6 +39,12 @@ if mode == "foreign":
     send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from the live session"}}}})
 if mode == "big":
     send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn","_meta":{"pad":"x"*(11*1024*1024)}}})
+elif mode == "big_ask":
+    write = {"sessionId":"s1","path":"/tmp/big","content":"x"*(11*1024*1024)}
+    send({"jsonrpc":"2.0","id":"w-1","method":"fs/write_text_file","params":write})
+    answer = read()
+    sys.stderr.write(json.dumps(answer) + "\n"); sys.stderr.flush()
+    send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn"}})
 elif mode == "crlf":
     send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn"}}, b"\r\n")
 elif mode == "mistyped":
@@ -300,6 +306,48 @@ async fn a_request_the_agent_withdraws_is_answered_cancelled_and_marked() {
     inspector.disconnect();
 }
 
+/// A request too long to carry still has an id in what was kept of it, and an
+/// agent waits for its answer: it is told why it will not get what it asked,
+/// rather than left waiting forever.
+#[tokio::test]
+async fn a_request_too_long_to_carry_is_answered_with_an_error() {
+    let inspector = opened("big_ask").await;
+    let stop = tokio::time::timeout(PATIENCE, inspector.prompt("hi"))
+        .await
+        .expect("the agent got its answer and ended the turn");
+    assert_eq!(stop, Ok(v1::StopReason::EndTurn));
+    let mut lines = inspector.diagnostics().changes();
+    until(&mut lines, "the agent to echo its answer", || {
+        inspector
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::Stderr(_)))
+    })
+    .await;
+    let echo = inspector
+        .diagnostics()
+        .entries()
+        .into_iter()
+        .find_map(|line| match line.kind {
+            DiagnosticKind::Stderr(echo) => Some(echo),
+            _ => None,
+        })
+        .unwrap();
+    let echo: Value = serde_json::from_str(&echo).unwrap();
+    assert_eq!(echo["id"], "w-1");
+    assert_eq!(echo["error"]["code"], -32600);
+    let message = echo["error"]["message"].as_str().unwrap();
+    assert!(message.contains("10485760-byte limit"), "{message}");
+    // The answer is in the trace like any other frame the client sent.
+    assert!(
+        common::sent(&inspector)
+            .iter()
+            .any(|frame| frame.contains(r#""id":"w-1""#) && frame.contains("-32600"))
+    );
+    inspector.disconnect();
+}
+
 #[tokio::test]
 async fn blocking_requests_past_the_cap_are_refused_and_recorded() {
     let inspector = opened("flood").await;
@@ -432,6 +480,54 @@ print('{"jsonrpc":"2.0","method":"bye"}', flush=True)
         diagnostics
             .iter()
             .any(|line| matches!(line.kind, DiagnosticKind::DrainAbandoned))
+    );
+    assert!(matches!(
+        diagnostics.last().unwrap().kind,
+        DiagnosticKind::AgentExited(_)
+    ));
+    tokio::time::sleep(QUIET).await;
+}
+
+/// The writer is the third pipe an escaped process can hold: a frame larger
+/// than the pipe's buffer blocks against a stdin nobody reads, and waiting for
+/// that write held the exit back until the escaped process let go.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_exited_agent_is_reported_lost_though_an_escaped_process_holds_its_stdin_mid_write() {
+    let inspector = Inspector::new();
+    let mut status = inspector.status_changes();
+    inspector.connect(&StdioSpawn::new("python3").args([
+        "-c",
+        r#"
+import os, sys, time
+if os.fork() == 0:
+    os.setsid()
+    time.sleep(12)
+    os._exit(0)
+print('{"jsonrpc":"2.0","method":"hello"}', flush=True)
+time.sleep(0.5)
+"#,
+    ]));
+    // Over any pipe buffer, so the write is still in progress at the exit.
+    let params = serde_json::value::to_raw_value(&"x".repeat(4 << 20)).unwrap();
+    inspector
+        .send_raw("x/large", Some(&params), true)
+        .await
+        .expect("handed to the transport");
+    tokio::time::timeout(
+        Duration::from_secs(8),
+        until(&mut status, "the exit to be reported", || {
+            inspector.status() == ConnectionStatus::Lost
+        }),
+    )
+    .await
+    .expect("a write that never completes must not hold the exit back");
+    let diagnostics = inspector.diagnostics().entries();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::WriteFailed(_))),
+        "{diagnostics:?}"
     );
     assert!(matches!(
         diagnostics.last().unwrap().kind,

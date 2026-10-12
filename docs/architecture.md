@@ -331,7 +331,9 @@ automatic reply. A cancelled reader cannot mutate the replacement Connection's s
 **Framing is on bytes.** A stdout line that is not UTF-8 is still a Frame: it is recorded lossily,
 flagged, keeps its raw bytes and exports as base64. A stdout line over 10 MiB leaves a placeholder
 Frame holding its first 4 KiB plus a `FrameDropped { limit, length }` diagnostic; if the retained start
-names a pending call, that call fails with `AnswerDropped`. Stderr is decoded lossily
+names a pending call, that call fails with `AnswerDropped`; if it names a request the agent made
+(an `id` and a `method` before the cut), that request is answered `-32600` with the length and the
+limit, so the agent is not left waiting. Stderr is decoded lossily
 (`StderrLineLossy`), cut at 1 MiB per line (`StderrLineCut`), and always drained to EOF. Incoming
 Frames are stamped when the pump reads them; the trace's order is authoritative, its timestamps are
 read times.
@@ -339,7 +341,8 @@ read times.
 **Stopping is graceful when the reader asks for it.** A user-facing disconnect, a restart and quit
 close the agent's stdin, wait 1.5 s, send SIGTERM to the process group, wait 1.5 s, then SIGKILL,
 and record which step ended it as `Stopped { by }`. After the leader exits, readers left idle on
-pipes held open by an escaped descendant are abandoned after 1 s (`DrainAbandoned`). Windows keeps
+pipes held open by an escaped descendant are abandoned after 1 s (`DrainAbandoned`), and so is a
+write blocked on a stdin such a descendant holds without reading (`WriteFailed`). Windows keeps
 the Job Object kill and has no SIGTERM step.
 
 **Stdio owns the launched process tree.** Unix launches in a private process group;

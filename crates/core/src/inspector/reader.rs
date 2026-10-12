@@ -5,7 +5,7 @@ use std::sync::{Arc, MutexGuard};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::client::Client;
+use crate::client::{Classified, Client};
 use crate::connection::{Diagnostic, DiagnosticKind, DiagnosticStream, FrameSink, FrameStream};
 use crate::store::locked;
 use crate::store::{Changes, Log};
@@ -131,7 +131,8 @@ impl State {
 
     /// Poll only while this reader owns the stores. The lock is held for each
     /// synchronous poll, never over an await: reconnect cannot reset the stores
-    /// halfway through an old Frame being recorded or decoded.
+    /// halfway through an old Frame being recorded. Decoding its envelope
+    /// touches no store, so the caller does that first, outside the lock.
     pub(super) async fn while_connected<F: std::future::Future>(
         &self,
         shutdown: &CancellationToken,
@@ -230,8 +231,11 @@ async fn drain(
     // a terminal read failure or draining stderr that the Agent is waiting on.
     let receive = async {
         while let Some(Some(frame)) = state.while_connected(shutdown, incoming.recv()).await {
+            // Decoded outside the lock: a large or deeply nested frame takes
+            // real time to read, and the window takes the same lock.
+            let frame = Classified::new(frame);
             if state
-                .while_connected(shutdown, client.receive(frame))
+                .while_connected(shutdown, client.receive_classified(frame))
                 .await
                 .is_none()
             {

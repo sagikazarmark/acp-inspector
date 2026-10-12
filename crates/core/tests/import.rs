@@ -199,3 +199,45 @@ fn what_is_not_an_export_is_refused_with_the_reason() {
     assert_eq!(imported.skipped(), 1);
     assert_eq!(imported.warnings().len(), 2, "{:?}", imported.warnings());
 }
+
+#[test]
+fn a_prompt_sent_by_hand_opens_no_turn_when_read_back() {
+    // Live, a hand-sent `session/prompt` and its answer drive none of the
+    // stores, so the re-opened trace must not grow a turn the session never had.
+    let text = concat!(
+        "{\"type\":\"header\",\"format\":\"acp-inspector-trace\",\"version\":1,\"at\":0,\"frames\":2,\"dropped\":0}\n",
+        "{\"type\":\"frame\",\"at\":1,\"connection\":1,\"direction\":\"client -> agent\",\"encoding\":\"utf8\",\"origin\":\"hand\",",
+        "\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":7,\\\"method\\\":\\\"session/prompt\\\",\\\"params\\\":{\\\"sessionId\\\":\\\"s\\\",\\\"prompt\\\":[]}}\"}\n",
+        "{\"type\":\"frame\",\"at\":2,\"connection\":1,\"direction\":\"agent -> client\",\"encoding\":\"utf8\",",
+        "\"frame\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":7,\\\"result\\\":{\\\"stopReason\\\":\\\"end_turn\\\"}}\"}\n",
+    );
+    let imported = Imported::parse(text).expect("a well-formed export");
+    assert_eq!(imported.trace().len(), 2);
+    let (entries, turns, _) = imported.timeline().snapshot();
+    assert!(turns.is_empty(), "{turns:?}");
+    assert!(
+        !entries.iter().any(|entry| matches!(
+            entry.kind,
+            EntryKind::Unrecognized(Unrecognized::Unsolicited)
+        )),
+        "the answer is to the hand-sent call, not unsolicited: {entries:?}"
+    );
+}
+
+#[test]
+fn a_moment_the_platform_cannot_hold_is_refused_and_never_panics() {
+    // Windows' `SystemTime` ends near the year 30,000; Unix holds every `i64`
+    // of milliseconds. Either way the file is read or refused, not a panic.
+    for at in [i64::MAX, i64::MIN] {
+        let text = format!(
+            "{{\"type\":\"header\",\"format\":\"acp-inspector-trace\",\"version\":1,\"at\":{at},\"frames\":1,\"dropped\":0}}\n{{\"type\":\"frame\",\"at\":{at},\"connection\":1,\"direction\":\"agent -> client\",\"encoding\":\"utf8\",\"frame\":\"{{}}\"}}\n"
+        );
+        match Imported::parse(&text) {
+            Ok(imported) => assert_eq!(imported.trace().len(), 1),
+            Err(ImportError::Record { problem, .. }) => {
+                assert!(problem.contains("`at`"), "{problem}")
+            }
+            Err(other) => panic!("refused for the wrong reason: {other}"),
+        }
+    }
+}

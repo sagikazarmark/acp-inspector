@@ -20,7 +20,7 @@ use crate::turn::TurnState;
 
 use super::driving::{drives, drives_setup};
 use super::settings::Setup;
-use super::{Client, Loading, client_info, decode, encode};
+use super::{Client, Loading, client_info, decode, encode, encode_paths};
 
 /// Which blocking requests are answered `cancelled` (§7.2, §7.8).
 #[derive(Clone, Copy)]
@@ -73,7 +73,7 @@ impl Client {
         let request = v1::NewSessionRequest::new(cwd.clone())
             .mcp_servers(mcp)
             .additional_directories(roots::creating(roots, &cwd));
-        let params = encode(&request);
+        let params = encode_paths(&request)?;
         // No capability gates `session/new`, so it drives only what the frame
         // carries. Prepared by hand rather than through `drive` because the
         // settings slot needs the id before the frame goes out.
@@ -131,17 +131,17 @@ impl Client {
         let id = session.session_id.clone();
         let asked = roots::reopening(roots, session);
         let params = match how {
-            Restore::Load => encode(
+            Restore::Load => encode_paths(
                 &v1::LoadSessionRequest::new(id.clone(), session.cwd.clone())
                     .mcp_servers(mcp)
                     .additional_directories(asked.clone()),
             ),
-            Restore::Resume => encode(
+            Restore::Resume => encode_paths(
                 &v1::ResumeSessionRequest::new(id.clone(), session.cwd.clone())
                     .mcp_servers(mcp)
                     .additional_directories(asked),
             ),
-        };
+        }?;
 
         // The call's own advertisement, plus whatever its frame carries.
         let mut driving = vec![drives(how)];
