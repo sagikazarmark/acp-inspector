@@ -132,8 +132,35 @@ impl StdioSpawn {
             .join(" ")
     }
 
+    /// The program to start: the command, or on Windows the file a bare name
+    /// resolves to the way a shell resolves it ([`on_path`]), against the
+    /// `PATH` the child will have.
+    fn program(&self) -> OsString {
+        #[cfg(windows)]
+        {
+            let set = |key: &str| {
+                self.env
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                    .map(|(_, value)| value.clone())
+            };
+            let path = set("PATH").or_else(|| std::env::var_os("PATH"));
+            let pathext = set("PATHEXT").or_else(|| std::env::var_os("PATHEXT"));
+            if let Some(found) = on_path(
+                &self.command,
+                path.as_deref(),
+                pathext.as_deref(),
+                std::path::Path::is_file,
+            ) {
+                return found.into_os_string();
+            }
+        }
+        self.command.clone()
+    }
+
     fn command(&self) -> Command {
-        let mut command = Command::new(&self.command);
+        let mut command = Command::new(self.program());
         command
             .args(&self.args)
             .stdin(Stdio::piped())
@@ -629,9 +656,84 @@ fn broken_pipe(error: io::Error) -> Diagnostic {
     Diagnostic::now(DiagnosticKind::TransportFailed(Arc::new(error)))
 }
 
+/// The file a bare program name resolves to, as Windows' own shell finds it.
+///
+/// Rust's `Command` searches `PATH` for a bare name with `.exe` appended and
+/// nothing else, but most agents installed with npm, `npx` among them, are
+/// `.cmd` shims, and typing `npx` would fail with "not found". So a name with no
+/// directory and no extension is looked for here: directory by directory along
+/// `path`, each extension `pathext` lists in its order (`;`-separated, as on
+/// Windows). Anything else, or a name found nowhere, is left to `Command`.
+///
+/// Compiled everywhere so its tests run everywhere; used only on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn on_path(
+    program: &OsStr,
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
+    let name = program.to_string_lossy();
+    if name.is_empty()
+        || name.contains(['/', '\\', ':'])
+        || std::path::Path::new(program).extension().is_some()
+    {
+        return None;
+    }
+    let pathext = pathext.map_or(".COM;.EXE;.BAT;.CMD".into(), OsStr::to_string_lossy);
+    let path = path?.to_string_lossy();
+    let directories = path
+        .split(';')
+        .map(|directory| directory.trim().trim_matches('"'))
+        .filter(|directory| !directory.is_empty());
+    for directory in directories {
+        for extension in pathext.split(';').filter(|extension| !extension.is_empty()) {
+            let mut file = program.to_owned();
+            file.push(extension);
+            let candidate = std::path::Path::new(directory).join(file);
+            if exists(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_name_resolves_to_the_first_pathext_match_along_path() {
+        // Windows matches file names without regard to case; this stand-in
+        // does not, so the files carry PATHEXT's spelling.
+        let files = ["/nodejs/npx.CMD", "/later/npx.EXE", "/tools/agent.EXE"];
+        let exists =
+            |path: &std::path::Path| files.iter().any(|file| path == std::path::Path::new(file));
+        let path = OsStr::new("/empty;\"/nodejs\";;/later;/tools");
+        let pathext = OsStr::new(".COM;.EXE;.BAT;.CMD");
+        let find = |program: &str| on_path(OsStr::new(program), Some(path), Some(pathext), exists);
+
+        // The shim in the earlier directory, as cmd.exe would run it.
+        assert_eq!(find("npx"), Some(PathBuf::from("/nodejs/npx.CMD")));
+        assert_eq!(find("agent"), Some(PathBuf::from("/tools/agent.EXE")));
+        // Left to `Command`: found nowhere, an extension given, or a path.
+        assert_eq!(find("missing"), None);
+        assert_eq!(find("npx.cmd"), None);
+        assert_eq!(find("./npx"), None);
+        assert_eq!(find("C:\\nodejs\\npx"), None);
+        assert_eq!(find(""), None);
+        // No PATHEXT: the extensions Windows has by default.
+        assert_eq!(
+            on_path(OsStr::new("npx"), Some(path), None, exists),
+            Some(PathBuf::from("/nodejs/npx.CMD"))
+        );
+        // No PATH: nothing to search.
+        assert_eq!(
+            on_path(OsStr::new("npx"), None, Some(pathext), exists),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn a_pump_that_panics_reports_a_terminal_transport_failure() {
