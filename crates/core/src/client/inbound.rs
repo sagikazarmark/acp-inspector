@@ -11,7 +11,7 @@ use crate::call::CallError;
 use crate::connection::Received;
 use crate::frame::{Frame, Omission};
 use crate::permission::PermissionPolicy;
-use crate::rpc::{Incoming, answer_id, classify, mistyped, ours};
+use crate::rpc::{Incoming, answer_id, classify, mistyped, ours, request_id};
 use crate::store::locked;
 use crate::timeline::{Recorded, Unrecognized};
 use crate::turn::TurnState;
@@ -29,6 +29,7 @@ impl Client {
         let recorded = |frame: Frame| Recorded { frame, captured };
         if let Some(omission) = frame.omission() {
             self.omitted(&frame, omission);
+            let asked = request_id(frame.as_str());
             self.stores.timeline.unrecognized(
                 Unrecognized::Dropped {
                     length: omission.length,
@@ -36,6 +37,19 @@ impl Client {
                 },
                 recorded(frame),
             );
+            // A request the agent made is still owed an answer, or the agent
+            // waits for one forever: say why it will not get what it asked.
+            if let Some(id) = asked {
+                let error = v1::Error::new(
+                    v1::ErrorCode::InvalidRequest.into(),
+                    format!(
+                        "the request was {} bytes, over this client's {}-byte limit, \
+                         and was not read",
+                        omission.length, omission.limit
+                    ),
+                );
+                let _ = self.rpc.respond(&id, Err(error)).await;
+            }
             return;
         }
         match classify(&frame) {

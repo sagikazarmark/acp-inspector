@@ -39,6 +39,12 @@ if mode == "foreign":
     send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from the live session"}}}})
 if mode == "big":
     send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn","_meta":{"pad":"x"*(11*1024*1024)}}})
+elif mode == "big_ask":
+    write = {"sessionId":"s1","path":"/tmp/big","content":"x"*(11*1024*1024)}
+    send({"jsonrpc":"2.0","id":"w-1","method":"fs/write_text_file","params":write})
+    answer = read()
+    sys.stderr.write(json.dumps(answer) + "\n"); sys.stderr.flush()
+    send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn"}})
 elif mode == "crlf":
     send({"jsonrpc":"2.0","id":req["id"],"result":{"stopReason":"end_turn"}}, b"\r\n")
 elif mode == "mistyped":
@@ -297,6 +303,48 @@ async fn a_request_the_agent_withdraws_is_answered_cancelled_and_marked() {
     let echo: Value = serde_json::from_str(echo).unwrap();
     assert_eq!(echo["id"], "perm-1");
     assert_eq!(echo["error"]["code"], -32800);
+    inspector.disconnect();
+}
+
+/// A request too long to carry still has an id in what was kept of it, and an
+/// agent waits for its answer: it is told why it will not get what it asked,
+/// rather than left waiting forever.
+#[tokio::test]
+async fn a_request_too_long_to_carry_is_answered_with_an_error() {
+    let inspector = opened("big_ask").await;
+    let stop = tokio::time::timeout(PATIENCE, inspector.prompt("hi"))
+        .await
+        .expect("the agent got its answer and ended the turn");
+    assert_eq!(stop, Ok(v1::StopReason::EndTurn));
+    let mut lines = inspector.diagnostics().changes();
+    until(&mut lines, "the agent to echo its answer", || {
+        inspector
+            .diagnostics()
+            .entries()
+            .iter()
+            .any(|line| matches!(line.kind, DiagnosticKind::Stderr(_)))
+    })
+    .await;
+    let echo = inspector
+        .diagnostics()
+        .entries()
+        .into_iter()
+        .find_map(|line| match line.kind {
+            DiagnosticKind::Stderr(echo) => Some(echo),
+            _ => None,
+        })
+        .unwrap();
+    let echo: Value = serde_json::from_str(&echo).unwrap();
+    assert_eq!(echo["id"], "w-1");
+    assert_eq!(echo["error"]["code"], -32600);
+    let message = echo["error"]["message"].as_str().unwrap();
+    assert!(message.contains("10485760-byte limit"), "{message}");
+    // The answer is in the trace like any other frame the client sent.
+    assert!(
+        common::sent(&inspector)
+            .iter()
+            .any(|frame| frame.contains(r#""id":"w-1""#) && frame.contains("-32600"))
+    );
     inspector.disconnect();
 }
 

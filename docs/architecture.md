@@ -331,7 +331,9 @@ automatic reply. A cancelled reader cannot mutate the replacement Connection's s
 **Framing is on bytes.** A stdout line that is not UTF-8 is still a Frame: it is recorded lossily,
 flagged, keeps its raw bytes and exports as base64. A stdout line over 10 MiB leaves a placeholder
 Frame holding its first 4 KiB plus a `FrameDropped { limit, length }` diagnostic; if the retained start
-names a pending call, that call fails with `AnswerDropped`. Stderr is decoded lossily
+names a pending call, that call fails with `AnswerDropped`; if it names a request the agent made
+(an `id` and a `method` before the cut), that request is answered `-32600` with the length and the
+limit, so the agent is not left waiting. Stderr is decoded lossily
 (`StderrLineLossy`), cut at 1 MiB per line (`StderrLineCut`), and always drained to EOF. Incoming
 Frames are stamped when the pump reads them; the trace's order is authoritative, its timestamps are
 read times.
