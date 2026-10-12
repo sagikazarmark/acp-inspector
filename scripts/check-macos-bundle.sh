@@ -14,7 +14,9 @@
 #   `LSMinimumSystemVersion` the Info.plist declares. A shell whose SDK targets
 #   a newer macOS than the plist says builds an app that the older macOS lists
 #   as supported and then refuses to start.
-# - Its code signature verifies (the linker's ad-hoc one, before signing).
+# - Its code signature verifies (the linker's ad-hoc one, before signing). Only
+#   the arm64 linker signs, so an Intel binary may be unsigned here, and gets
+#   its signature with the bundle's; a signature it does carry must verify.
 #
 # Bash 3.2 compatible: this runs under macOS's own /bin/bash.
 set -euo pipefail
@@ -79,7 +81,14 @@ fi
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 cp "$binary" "$scratch/executable"
-if ! codesign --verify "$scratch/executable" 2>/dev/null; then
+archs="$(lipo -archs "$binary" 2>/dev/null || true)"
+signed=1
+codesign --display "$scratch/executable" >/dev/null 2>&1 || signed=0
+case " $archs " in
+    *" arm64 "*) must_verify=1 ;;
+    *) must_verify="$signed" ;;
+esac
+if [ "$must_verify" -eq 1 ] && ! codesign --verify "$scratch/executable" 2>/dev/null; then
     echo "check-macos-bundle: $binary has no valid code signature (codesign --verify):" >&2
     codesign --verify --verbose=2 "$scratch/executable" 2>&1 | sed 's/^/  /' >&2 || true
     failed=1
@@ -88,4 +97,8 @@ fi
 if [ "$failed" -ne 0 ]; then
     exit 1
 fi
-echo "check-macos-bundle: $binary links only system libraries, targets macOS $minos as Info.plist declares, and its signature verifies."
+if [ "$must_verify" -eq 1 ]; then
+    echo "check-macos-bundle: $binary links only system libraries, targets macOS $minos as Info.plist declares, and its signature verifies."
+else
+    echo "check-macos-bundle: $binary links only system libraries and targets macOS $minos as Info.plist declares; it is $archs and not signed until the bundle is."
+fi

@@ -92,9 +92,9 @@ crates/app/    acp-inspector — the screens and the one binary, strictly presen
                         production input plus layout and behaviour rules; sheet.css,
                         the generated output, committed and compiled in
                src/*.test.mjs   Node tests of the window's clipboard and navigation scripts
-               examples/  bundle-icon.rs, which renders the icon (`just icon`)
-               bundle/  icon.icns, the macOS bundle's icon
-               Dioxus.toml  what the macOS bundle says about itself
+               examples/  bundle-icon.rs, which renders the icons (`just icon`)
+               bundle/  the bundles' icons: icon.icns, the PNGs, icon.ico
+               Dioxus.toml  what the bundles say about themselves
 crates/cli/    acp-inspector-cli — the headless CLI over core: run an agent, answer
                permissions by policy, export the trace, exit with a code for CI
 CONTEXT.md     the glossary: this project's terms, and nothing else
@@ -108,7 +108,7 @@ scripts/       build-testy.sh, the integration tests' agent; check-node-free.sh;
                check-number-features.sh; check-macos-bundle.sh, the bundle guard;
                acceptance-agent.py and its test; performance-agent.py;
                spike-testy-literals.py; check-*.mjs, Node checks of window behaviour
-.github/       CI (workflows/ci.yaml)
+.github/       CI (workflows/ci.yaml) and the release (workflows/release.yaml)
 justfile       every task (`just --list`)
 rust-toolchain.toml  the pinned toolchain
 deny.toml      cargo-deny: advisories, licences, sources
@@ -149,43 +149,71 @@ scales. The original comparison and measurements remain in
 
 ## Releasing
 
-`just bundle-macos` has `dx bundle` assemble the application from `crates/app/Dioxus.toml`, then
-names it `ACP Inspector.app`, adds the third-party notices, checks it, and has Apple's own tools
-sign, notarize and image it when passed an identity and a `notarytool` profile; it is made from the
-build and is no part of it, which is the whole of
-[ADR 0010](adr/0010-the-bundle-is-the-one-thing-dx-makes.md). It needs the icon at
-`crates/app/bundle/icon.icns`, rendered from the window's own mark by `just icon`.
-
-**Build release bundles outside the devenv shell.** Nix's C toolchain links its own libiconv from
-`/nix/store` and its SDK targets macOS 14, so a bundle built there starts only on Macs that have
-that store path. From a plain terminal you need Xcode's Command Line Tools, rustup, `just`,
-`dx` at exactly the `dioxus` version in `Cargo.lock` (the recipe names it and the install command
-if it differs) and cargo-about (`cargo install cargo-about --locked`). The recipe refuses to run in a Nix shell,
-builds with `MACOSX_DEPLOYMENT_TARGET` set to `minimum_system_version` from `Dioxus.toml`, and
-`scripts/check-macos-bundle.sh` fails the bundle unless every library it links is the system's,
-its `minos` matches `LSMinimumSystemVersion`, and its signature verifies.
+A release is a tag. Bump the version in `crates/app/Cargo.toml`, `crates/core/Cargo.toml` and
+`crates/cli/Cargo.toml` (they move together), commit, then tag and push:
 
 ```sh
-just bundle-macos                                                    # unsigned, for this machine
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The [release workflow](../.github/workflows/release.yaml) checks that the tag is the crates'
+version, builds every artifact on a runner of the platform it is for, and publishes them to a
+GitHub Release with a `SHA256SUMS` file and notes generated from the merged pull requests. The
+release is drafted until every artifact is on it, so a failed build never leaves a half-filled
+release public. A version with a pre-release part (`0.2.0-rc.1`) is marked as a pre-release.
+
+| Platform | App | CLI |
+| --- | --- | --- |
+| macOS, Apple Silicon and Intel | `.dmg` | `.tar.xz` |
+| Linux, x86_64 and arm64 | `.deb`, and a `.tar.xz` of the executable | `.tar.xz` |
+| Windows, x86_64 | `.msi`, and a `.zip` of the executable | `.zip` |
+
+Every artifact carries the third-party notices, `THIRD_PARTY_LICENSES.html`. None is signed: see
+the [user guide](guide.md#supported-platforms) for what macOS and Windows ask before the first
+launch.
+
+A pull request that touches the packaging (the workflow, the `justfile`, `Dioxus.toml`, the icons)
+runs the same builds without publishing, so a broken recipe is found before a tag is.
+
+### Building artifacts by hand
+
+Each workflow step is a `just` recipe, run on the platform it builds for: `dx` does not
+cross-bundle. They need `dx` at exactly the `dioxus` version in `Cargo.lock` (the recipes name it
+and the install command if it differs) and cargo-about (`cargo install cargo-about --locked`), and
+write into `dist/`:
+
+```sh
+just bundle-macos     # the .app and its .dmg
+just bundle-linux     # the .deb and the executable's .tar.xz
+just bundle-windows   # the .msi and the executable's .zip
+just package-cli      # the CLI's archive; after a bundle-* recipe, which empties dist/ first
+```
+
+`just bundle-macos` has `dx bundle` assemble the application from `crates/app/Dioxus.toml`, then
+names it `ACP Inspector.app`, checks it, and signs it ad hoc. Passed an identity and a `notarytool`
+profile, Apple's own tools sign and notarize it instead; it is made from the build and is no part
+of it, which is the whole of [ADR 0010](adr/0010-the-bundle-is-the-one-thing-dx-makes.md). The
+icons are under `crates/app/bundle/`, rendered from the window's own mark by `just icon`.
+
+```sh
+just bundle-macos                                                    # signed ad hoc, for this machine
 just bundle-macos "Developer ID Application: Name (TEAMID)"          # signed
 just bundle-macos "Developer ID Application: Name (TEAMID)" notary   # + notarized
 ```
 
-Bump the version in `crates/app/Cargo.toml` and `crates/core/Cargo.toml`, and build one image per
-architecture.
+**Build macOS artifacts outside the devenv shell.** Nix's C toolchain links its own libiconv from
+`/nix/store` and its SDK targets macOS 14, so a binary built there starts only on Macs that have
+that store path. From a plain terminal you need Xcode's Command Line Tools, rustup and `just`.
+`bundle-macos` and `package-cli` refuse to run in a Nix shell, build with
+`MACOSX_DEPLOYMENT_TARGET` set to `minimum_system_version` from `Dioxus.toml`, and
+`scripts/check-macos-bundle.sh` fails the bundle unless every library it links is the system's,
+its `minos` matches `LSMinimumSystemVersion`, and its signature verifies.
 
-**Linux and Windows archives** come from [cargo-dist](https://opensource.axo.dev/cargo-dist/)
-(`dist`, in the devenv shell), configured in `dist-workspace.toml`: a `.tar.xz` of the binary for
-x86_64 and aarch64 Linux and a `.zip` for x86_64 Windows, with the README and licences.
-They are **not built or tested on CI**, and nothing uploads them — the configuration generates no
-release workflow. Build each on the platform it is for (`dx` and `dist` do not cross-compile the
-WebView stack), with the Linux packages from [Prerequisites](#prerequisites) or the MSVC toolchain
-on Windows, and put `just licenses` output beside it:
+**Build Linux artifacts on Ubuntu 22.04**, as the workflow does: a binary asks for the glibc it was
+linked against, so building on the oldest supported release is what lets it run on newer ones.
+dx's prebuilt Linux binary needs a newer glibc than 22.04 has, so install it from source there.
+The `.deb` declares its run-time dependencies (`[bundle.deb]` in `Dioxus.toml`).
 
-```sh
-just dist-plan     # what would be built; builds nothing
-just dist-build    # this machine's archive, into target/distrib/
-```
-
-The binary needs WebKitGTK 4.1 at run time on Linux, and WebView2 on Windows (part of current
-Windows 10 and 11).
+**Windows** needs the MSVC toolchain, and Git for Windows, whose bash `just` runs the recipes with.
+The first `.msi` build downloads the WiX toolset.

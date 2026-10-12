@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "The ACP Inspector: strictly presentational screens over acp-inspector-core, one binary with a feature per renderer"
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 publish.workspace = true
 
@@ -73,14 +75,9 @@ dioxus-ssr.workspace = true
 # graph under either, so this buys a feature and not a dependency.
 dioxus-html = { workspace = true, features = ["serialize"] }
 # For `examples/bundle-icon.rs` alone: the mark, written out at the sizes the
-# macOS bundle's icon holds. Packaging, and no part of the program — a
+# bundles' icons hold. Packaging, and no part of the program — a
 # dev-dependency so that it never is.
 png.workspace = true
-
-# The one package `dist` archives for Linux and Windows (`dist-workspace.toml`),
-# although nothing here is published to crates.io.
-[package.metadata.dist]
-dist = true
 
 # The native open and save dialogs for traces (F5). The crate and the features
 # dioxus-desktop already resolves for its own file input, on the same targets,

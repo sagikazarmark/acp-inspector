@@ -344,26 +344,42 @@ export writes and every copy takes the bytes that crossed, whatever the switch s
 
 ## Supported platforms
 
-| Platform | Status |
-| --- | --- |
-| **macOS 11 or later** | Supported. Released as a disk image per architecture (Apple Silicon and Intel). |
-| **Linux** | Build from source. CI builds and tests it on Ubuntu; there is no package. |
-| **Windows** | Build from source, untested. CI only checks that it compiles; there is no package. |
+Download the app from the [latest release](https://github.com/sagikazarmark/acp-inspector/releases/latest).
 
-**Opening the disk image.** A signed and notarized release opens normally: drag
-**ACP Inspector** onto Applications. If macOS says the app "cannot be opened" or "is damaged"
-(an unsigned build), open **System Settings → Privacy & Security** and choose **Open Anyway**
-for ACP Inspector, or clear the quarantine flag yourself:
+| Platform | Download | Status |
+| --- | --- | --- |
+| **macOS 11 or later**, Apple Silicon and Intel | `.dmg` | Supported. |
+| **Linux**, x86_64 and arm64 | `.deb` (Ubuntu 22.04, Debian 12 or newer), or a `.tar.xz` of the executable | CI builds and tests it on Ubuntu. |
+| **Windows 10 or 11**, x86_64 | `.msi`, or a `.zip` of the executable | Untested: CI only checks that it compiles. |
+
+The [headless CLI](cli.md) is in the same release, as an archive per platform.
+
+Every download carries `THIRD_PARTY_LICENSES.html`, the notices for every dependency compiled in,
+and the release lists each file's SHA-256 in `SHA256SUMS`. The downloads are **not signed**, so
+macOS and Windows ask before the first launch.
+
+**macOS.** Open the disk image and drag **ACP Inspector** onto Applications. The first time it
+opens, macOS says it cannot verify the app: choose **Done**, then open **System Settings → Privacy
+& Security** and choose **Open Anyway** for ACP Inspector. Or clear the quarantine flag yourself:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/ACP Inspector.app"
 ```
 
-The image also holds `THIRD_PARTY_LICENSES.html`, the notices for every dependency compiled in
-(it is in the app's `Contents/Resources` too).
+**Linux.** Install the package with its dependencies, WebKitGTK 4.1 among them:
 
-The binary needs WebKitGTK 4.1 at run time on Linux, and WebView2 on Windows (part of current
-Windows 10 and 11). To build from source, see [development](development.md#prerequisites).
+```sh
+sudo apt install ./acp-inspector_*.deb
+```
+
+The `.tar.xz` holds the bare executable for other distributions; it needs WebKitGTK 4.1, GTK 3 and
+libxdo installed.
+
+**Windows.** SmartScreen says "Windows protected your PC": choose **More info**, then **Run
+anyway**. The app uses the WebView2 runtime, part of current Windows 10 and 11; the `.msi`
+installs it where it is missing.
+
+To build from source instead, see [development](development.md#prerequisites).
 
 ## Known limitations
 

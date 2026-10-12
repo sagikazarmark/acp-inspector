@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "The ACP Inspector without a window: drive an agent over stdio, answer its permission requests by policy, export the trace, and exit with a code CI can read"
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+homepage.workspace = true
 repository.workspace = true
 publish = false
 

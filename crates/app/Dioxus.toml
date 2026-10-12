@@ -31,14 +31,27 @@ A desktop tool that spawns one Agent Client Protocol agent, drives it through \
 sessions and turns, and shows every JSON-RPC frame as it crossed the pipe — \
 with the agent's stderr beside it and the specification's MUSTs annotated \
 where the captured traffic decides them."""
-# The bundle's icon is a packaging asset under `bundle/`, committed, and written
+# The bundles' icons are packaging assets under `bundle/`, committed, and written
 # by `just icon` from the same drawing `src/mark.rs` puts in the window's own
-# icon at 64px — rendered at each of the ten sizes an `.icns` holds, on macOS's
-# icon grid, and folded by `iconutil`. It is deliberately not left out: without
-# an icon, `dx` stamps the bundle with the renderer's own logo, which is the
-# outcome `shell::icon()` exists to refuse. `just bundle-macos` checks for the
-# file before it runs.
-icon = ["bundle/icon.icns"]
+# icon at 64px: an `.icns` on macOS's icon grid, folded by `iconutil`, for the
+# macOS bundle; PNGs for the Linux package's icon theme; and an `.ico` for the
+# Windows executable and installer. Each platform takes the formats it reads
+# from this one list. They are deliberately not left out: without an icon, `dx`
+# stamps the bundle with the renderer's own logo, which is the outcome
+# `shell::icon()` exists to refuse.
+icon = [
+    "bundle/icon.icns",
+    "bundle/32x32.png",
+    "bundle/128x128.png",
+    "bundle/256x256.png",
+    "bundle/512x512.png",
+    "bundle/icon.ico",
+]
+# The third-party licence notices, rendered by the `bundle-*` recipes into
+# `dist/` before `dx` runs (a path from the repository root, where they run it):
+# into `Contents/Resources` on macOS, beside the executable in the Linux
+# package and the Windows installer.
+resources = ["dist/THIRD_PARTY_LICENSES.html"]
 
 [bundle.macos]
 # `LSMinimumSystemVersion`, and the deployment target the binary is built for:
@@ -56,3 +69,21 @@ hardened_runtime = true
 # No entitlements, and never App Sandbox: this tool's whole job is spawning an
 # executable the reader named, in a directory the reader chose. The WebView
 # runs in its own process, so no JIT or memory entitlement is owed either.
+
+[bundle.deb]
+# What the binary links at run time beyond libc, as Debian and Ubuntu name the
+# packages: the WebView and its GTK, and libxdo, which `dioxus-desktop` links
+# on Linux. The `.deb` is built on Ubuntu 22.04, so it installs there and on
+# anything newer.
+depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libxdo3"]
+section = "devel"
+# dx's own template names the app after the executable (`AcpInspector`), as it
+# does the macOS bundle; this one is dx's with the product's name. A path from
+# the repository root, where the `bundle-linux` recipe runs dx.
+desktop_template = "crates/app/bundle/acp-inspector.desktop"
+
+[bundle.windows.wix]
+# Permanent, like the identifier: Windows recognises an upgrade by this code,
+# and a changed one installs the new version beside the old. Set here so that
+# renaming the product cannot change it.
+upgrade_code = "ba7ce8cb-5d71-42ec-a605-cdfa8d729790"

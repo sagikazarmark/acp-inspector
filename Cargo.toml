@@ -13,7 +13,10 @@ edition = "2024"
 # --workspace --all-targets`: dioxus-field and schemaform need 1.92. The
 # toolchain checks run on is pinned separately, in `rust-toolchain.toml`.
 rust-version = "1.92"
+authors = ["Márk Sági-Kazár <mark.sagikazar@gmail.com>"]
 license = "MIT OR Apache-2.0"
+# The Linux package's `Homepage`, as `authors` is its `Maintainer`.
+homepage = "https://github.com/sagikazarmark/acp-inspector"
 repository = "https://github.com/sagikazarmark/acp-inspector"
 # Nothing here is published yet; the names are already the ones that would be.
 publish = false
