@@ -11,9 +11,19 @@ mod stock_number;
 /// The envelope's typed copy, read from raw fragments before feature-sensitive
 /// Value or f64 readers can lose number spelling or confuse an object with
 /// serde_json's private numeric map. Frame text is never rewritten.
+///
+/// Two passes, each linear in the text: serde_json validates the whole of it
+/// (its own depth limit included), then [`Walk`] builds the value from the
+/// validated bytes. Reading each container as a fragment of its own instead
+/// re-scanned every subtree once per level above it, so a large, deeply
+/// nested frame cost its size times its depth.
 pub(crate) fn frame_value(text: &str) -> serde_json::Result<Value> {
     let raw = serde_json::from_str::<&serde_json::value::RawValue>(text)?;
-    value(raw, 0)
+    Walk {
+        text: raw.get(),
+        at: 0,
+    }
+    .value(0)
 }
 
 pub(crate) fn from_value<T: DeserializeOwned>(value: Value) -> serde_json::Result<T> {
@@ -26,69 +36,137 @@ fn problem(message: &str) -> serde_json::Error {
     <serde_json::Error as serde::de::Error>::custom(message)
 }
 
-fn value(raw: &serde_json::value::RawValue, depth: usize) -> serde_json::Result<Value> {
-    let text = raw.get();
-    match text.as_bytes()[0] {
-        b'{' | b'[' if depth >= 127 => Err(problem("recursion limit exceeded")),
-        b'{' => {
-            let object: RawObject = serde_json::from_str(text)?;
-            let mut result = serde_json::Map::new();
-            for (key, raw) in object.0 {
-                result.insert(key, value(&raw, depth + 1)?);
+/// A cursor over text serde_json has already validated as one JSON value.
+///
+/// Not a validator: it relies on that, and only finds where each token ends.
+/// Strings are still decoded by serde_json (escapes are its business) and
+/// numbers by the stock policy, so only the structure is read here.
+struct Walk<'a> {
+    text: &'a str,
+    at: usize,
+}
+
+impl Walk<'_> {
+    /// The next byte that is not whitespace, without consuming it.
+    fn peek(&mut self) -> serde_json::Result<u8> {
+        while let Some(&byte) = self.text.as_bytes().get(self.at) {
+            if !matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+                return Ok(byte);
             }
-            Ok(Value::Object(result))
+            self.at += 1;
         }
-        b'[' => {
-            let items: Vec<&serde_json::value::RawValue> = serde_json::from_str(text)?;
-            items
-                .into_iter()
-                .map(|raw| value(raw, depth + 1))
-                .collect::<Result<_, _>>()
-                .map(Value::Array)
-        }
-        b'-' | b'0'..=b'9' => {
-            if text != "-0" {
-                if let Ok(integer) = text.parse::<u64>() {
-                    return Ok(Value::from(integer));
+        Err(problem("unexpected end of JSON"))
+    }
+
+    fn value(&mut self, depth: usize) -> serde_json::Result<Value> {
+        match self.peek()? {
+            b'{' | b'[' if depth >= 127 => Err(problem("recursion limit exceeded")),
+            b'{' => {
+                self.at += 1;
+                let mut result = serde_json::Map::new();
+                if self.peek()? == b'}' {
+                    self.at += 1;
+                    return Ok(Value::Object(result));
                 }
-                if let Ok(integer) = text.parse::<i64>() {
-                    return Ok(Value::from(integer));
+                loop {
+                    self.peek()?;
+                    let key = self.string()?;
+                    if self.peek()? != b':' {
+                        return Err(problem("expected `:`"));
+                    }
+                    self.at += 1;
+                    // A repeated key keeps its last value, as serde_json's does.
+                    result.insert(key, self.value(depth + 1)?);
+                    match self.peek()? {
+                        b',' => self.at += 1,
+                        b'}' => {
+                            self.at += 1;
+                            return Ok(Value::Object(result));
+                        }
+                        _ => return Err(problem("expected `,` or `}`")),
+                    }
                 }
             }
-            stock_number::float(text)
-                .and_then(Number::from_f64)
-                .map(Value::Number)
-                .ok_or_else(|| problem("number out of range"))
+            b'[' => {
+                self.at += 1;
+                let mut items = Vec::new();
+                if self.peek()? == b']' {
+                    self.at += 1;
+                    return Ok(Value::Array(items));
+                }
+                loop {
+                    items.push(self.value(depth + 1)?);
+                    match self.peek()? {
+                        b',' => self.at += 1,
+                        b']' => {
+                            self.at += 1;
+                            return Ok(Value::Array(items));
+                        }
+                        _ => return Err(problem("expected `,` or `]`")),
+                    }
+                }
+            }
+            b'"' => self.string().map(Value::String),
+            b'-' | b'0'..=b'9' => {
+                let start = self.at;
+                while let Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') =
+                    self.text.as_bytes().get(self.at)
+                {
+                    self.at += 1;
+                }
+                number(&self.text[start..self.at])
+            }
+            _ => {
+                for (literal, value) in [
+                    ("true", Value::Bool(true)),
+                    ("false", Value::Bool(false)),
+                    ("null", Value::Null),
+                ] {
+                    if self.text[self.at..].starts_with(literal) {
+                        self.at += literal.len();
+                        return Ok(value);
+                    }
+                }
+                Err(problem("expected a JSON value"))
+            }
         }
-        // Only strings, booleans and null reach the ordinary Value reader.
-        _ => serde_json::from_str(text),
+    }
+
+    /// The string starting at the cursor, decoded by serde_json.
+    fn string(&mut self) -> serde_json::Result<String> {
+        let bytes = self.text.as_bytes();
+        if bytes.get(self.at) != Some(&b'"') {
+            return Err(problem("expected a string"));
+        }
+        let start = self.at;
+        let mut at = start + 1;
+        loop {
+            match bytes.get(at) {
+                Some(b'\\') => at += 2,
+                Some(b'"') => break,
+                Some(_) => at += 1,
+                None => return Err(problem("unterminated string")),
+            }
+        }
+        self.at = at + 1;
+        serde_json::from_str(&self.text[start..self.at])
     }
 }
 
-/// Preserve input member order without Value's private-number-map recognition.
-struct RawObject(Vec<(String, Box<serde_json::value::RawValue>)>);
-
-impl<'de> serde::Deserialize<'de> for RawObject {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ObjectVisitor;
-        impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
-            type Value = RawObject;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a JSON object")
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Self::Value, A::Error> {
-                let mut members = Vec::new();
-                while let Some(member) = map.next_entry()? {
-                    members.push(member);
-                }
-                Ok(RawObject(members))
-            }
+/// A number token, as stock serde_json reads it whatever features are on.
+fn number(text: &str) -> serde_json::Result<Value> {
+    if text != "-0" {
+        if let Ok(integer) = text.parse::<u64>() {
+            return Ok(Value::from(integer));
         }
-        deserializer.deserialize_map(ObjectVisitor)
+        if let Ok(integer) = text.parse::<i64>() {
+            return Ok(Value::from(integer));
+        }
     }
+    stock_number::float(text)
+        .and_then(Number::from_f64)
+        .map(Value::Number)
+        .ok_or_else(|| problem("number out of range"))
 }
 
 #[cfg(test)]
@@ -180,6 +258,27 @@ mod tests {
         ] {
             assert!(super::frame_value(spelling).is_err(), "{spelling}");
         }
+    }
+
+    #[test]
+    fn whitespace_escapes_and_deep_nesting_read_as_serde_json_reads_them() {
+        let text = " {\r\n \"a\" :\t[ 1 , \"x\\\"y\\\\\" , { \"b\" : null } , [ ] , { } ] ,\
+                    \"c\\u0041\" : true , \"\\\\\" : false , \"a\" : \"last\" } ";
+        let walked = super::frame_value(text).unwrap();
+        let stock: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(walked, stock);
+        assert_eq!(walked["a"], "last", "a repeated key keeps its last value");
+        assert_eq!(walked["cA"], true);
+
+        // A payload under every level: each subtree is read once, not once
+        // per level above it.
+        let mut nested = String::from("\"payload\"");
+        // Two levels each: 120 of the 127 the reader takes.
+        for _ in 0..60 {
+            nested = format!("{{\"pad\":\"{}\",\"next\":[{nested}]}}", "x".repeat(64));
+        }
+        let walked = super::frame_value(&nested).unwrap();
+        assert_eq!(walked, serde_json::from_str::<Value>(&nested).unwrap());
     }
 
     #[test]

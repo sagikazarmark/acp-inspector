@@ -18,11 +18,41 @@ use crate::turn::TurnState;
 
 use super::Client;
 
+/// A frame off the transport with its envelope already read.
+///
+/// Decoding is the one expensive step of receiving, and it touches no store,
+/// so the reader does it before it takes the connection's lock rather than
+/// while holding it.
+pub(crate) struct Classified {
+    received: Received,
+    /// What the frame is; none for a placeholder, which has nothing to decode.
+    incoming: Option<Incoming>,
+}
+
+impl Classified {
+    pub(crate) fn new(received: Received) -> Self {
+        let incoming = received
+            .frame
+            .omission()
+            .is_none()
+            .then(|| classify(&received.frame));
+        Self { received, incoming }
+    }
+}
+
 impl Client {
     /// Handles one frame from the agent: decodes `session/update` as v1,
     /// services or refuses requests, hands answers to their callers, and shows
     /// anything else as unrecognized (§8). No frame is dropped.
     pub(crate) async fn receive(&self, received: Received) {
+        self.receive_classified(Classified::new(received)).await;
+    }
+
+    /// [`receive`](Self::receive), for a frame whose envelope the caller has
+    /// already decoded: the reader does that before it takes the connection's
+    /// lock, so a large frame's decode does not hold up the window.
+    pub(crate) async fn receive_classified(&self, classified: Classified) {
+        let Classified { received, incoming } = classified;
         let Received { frame, captured } = received;
         // Entries keep the trace position of each frame, which links the
         // timeline to the trace.
@@ -52,7 +82,7 @@ impl Client {
             }
             return;
         }
-        match classify(&frame) {
+        match incoming.unwrap_or_else(|| classify(&frame)) {
             Incoming::Notification { method, params } => {
                 if method == v1::CLIENT_METHOD_NAMES.session_update {
                     let session = params
