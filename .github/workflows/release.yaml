@@ -116,10 +116,19 @@ jobs:
           rustup toolchain install
           rustc -vV
 
-      - name: Install just and cargo-about
+      - name: Install just and cargo-binstall
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-about@${{ env.CARGO_ABOUT_VERSION }}
+          tool: just,cargo-binstall
+
+      # A prebuilt binary where cargo-about publishes one. Where it does not
+      # (Intel macOS), it is compiled, and its binary is behind the `cli`
+      # feature: without it the install succeeds and installs nothing.
+      - name: Install cargo-about
+        run: |
+          cargo binstall --no-confirm --disable-strategies compile "cargo-about@$CARGO_ABOUT_VERSION" \
+            || cargo install cargo-about --version "$CARGO_ABOUT_VERSION" --locked --features cli
+          cargo about --version
 
       - name: Install dx
         if: runner.os != 'Linux'
