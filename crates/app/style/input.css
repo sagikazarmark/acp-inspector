@@ -857,6 +857,15 @@ p.alert { display: block; }
   background: var(--panel2);
   overflow: clip;
 }
+/* `clip` reached WKWebView with Safari 16, and the bundle supports macOS 11:
+   on an older WebView the declaration is dropped and these boxes would not
+   clip at all. `hidden` clips the same, though a script can scroll it, which
+   is what `clip` was chosen to rule out (`#main`). daisyUI's modal is here
+   for the same reason. A separate block, so the sheet's minifier cannot fold
+   the fallback into the declaration it falls back from. */
+@supports not (overflow: clip) {
+  #main, .evidence, .modal { overflow: hidden; }
+}
 .evidence-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-width: 0; }
 .evidence-title { flex: 1; min-width: 0; font-size: var(--text-body); font-weight: var(--font-weight-label); overflow-wrap: anywhere; }
 .evidence-state { flex: none; font-family: var(--font-mono); font-size: var(--text-meta); font-weight: var(--font-weight-answer); }

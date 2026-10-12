@@ -3856,6 +3856,11 @@ p.alert {
   background: var(--panel2);
   overflow: clip;
 }
+@supports not (overflow: clip) {
+  #main, .evidence, .modal {
+    overflow: hidden;
+  }
+}
 .evidence-head {
   display: flex;
   align-items: center;
