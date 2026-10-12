@@ -5087,11 +5087,20 @@ p.alert {
   white-space: nowrap;
 }
 .session-meta {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
   margin-left: auto;
   flex: none;
   color: var(--dim2);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
+}
+.session-relisted {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .session-line {
   display: flex;

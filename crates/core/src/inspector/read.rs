@@ -9,6 +9,7 @@ use crate::elicitation::ElicitationRequest;
 use crate::listing::SessionListing;
 use crate::permission::PermissionRequest;
 use crate::restore::Restore;
+use crate::session_report::SessionReports;
 use crate::session_settings::SessionSettings;
 use crate::store::Changes;
 use crate::timeline::Timeline;
@@ -67,6 +68,21 @@ impl Inspector {
 
     pub fn session_settings_changes(&self) -> Changes<SessionSettings> {
         self.0.stores.settings.changes()
+    }
+
+    /// What the agent has said about each session's title and last activity
+    /// in `session_info_update` (§7.5), keyed by session.
+    ///
+    /// Per connection: emptied when another agent connects, and a session's
+    /// own report is dropped as a call reopening it goes out. A session the
+    /// agent never sent an update about has none; its listing row is the
+    /// other place it is described.
+    pub fn session_reports(&self) -> SessionReports {
+        self.0.stores.reports.get()
+    }
+
+    pub fn session_reports_changes(&self) -> Changes<SessionReports> {
+        self.0.stores.reports.changes()
     }
 
     /// Whether the agent advertised `session/list`. `false` until

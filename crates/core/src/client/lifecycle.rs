@@ -176,6 +176,8 @@ impl Client {
         // Likewise the settings, with the session id that tells this session's
         // replay from the session being left.
         self.opening(call.id(), Setup::Restore(how), Some(id.clone()));
+        // What was said about it before is not what its replay will say.
+        self.stores.reports.update(|reports| reports.forget(&id));
 
         let outcome = self.rpc.send(call).await;
         if let Err(error) = &outcome {

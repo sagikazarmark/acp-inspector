@@ -667,6 +667,18 @@ flattening them into one notion of support. They are **two of four**, not the wh
 ring meets the other two and [§7.6](#76-the-third-ring-session-settings) names all four together, so
 that this paragraph is not read as an inventory.
 
+**A session is named by the last thing the agent said about it.** A `session_info_update` is
+folded into a per-session report (`crates/core/src/session_report.rs`) as it crosses, in or out of
+a turn: a field it sets replaces what was stated, `null` clears it, and an absent field leaves it.
+A title already held is not a reason to refuse a new one. The report outranks the listing row's
+title and `updatedAt` whichever arrived later — the listing is folded where its call returns rather
+than where its frame crossed, so their wire order is not one this layer can read, and an update is
+the agent telling the client what the session is called *now*. The listing's claim is not hidden:
+a dialog row an update renamed says what the listing called it. Reports are kept per session
+because a `session/load` replays ahead of its answer; the reopened session's report is dropped as
+the call goes out, so it is described by its replay and nothing from before. The timeline keeps
+every update as it was sent.
+
 **`session/fork` stays on the raw-first path** ([§8](#8-unknown-traffic-the-raw-first-rule)). It is
 absent from the canonical stable `schema/v1/meta.json` and present only in
 `schema/v1/meta.unstable.json`, so it is not decoded as a typed method and its traffic renders as an

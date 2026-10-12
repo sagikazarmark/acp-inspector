@@ -79,6 +79,7 @@ mod rpc;
 mod script;
 mod service;
 mod services;
+mod session_report;
 mod session_settings;
 mod settings;
 mod stdio;
@@ -121,6 +122,7 @@ pub use service::{
     AnsweredBy, ServiceAnswer, ServiceReply, ServiceRequest, ServiceState, read_json, skeleton,
 };
 pub use services::{ClientClaim, ClientServices};
+pub use session_report::{SessionReport, SessionReports, Stated, StatedBy};
 pub use session_settings::{ConfigRefusal, ModeChange, SessionSettings};
 pub use settings::Settings;
 pub use stdio::StdioSpawn;

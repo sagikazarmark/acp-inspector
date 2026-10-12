@@ -1,7 +1,9 @@
 //! The Sessions dialog: the live session, the listing, and the ways in and out.
 //! See `docs/architecture.md` §7.5.
 
-use acp_inspector_core::{Cursor, Restore, Roots, SessionListing, v1};
+use acp_inspector_core::{
+    Cursor, Restore, Roots, SessionListing, SessionReports, Stated, StatedBy, v1,
+};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
@@ -175,6 +177,14 @@ fn session_row(
         ..
     } = *sessions;
     let current = live == Some(id);
+    let title = sessions.reports.title(id, info);
+    let updated = sessions.reports.updated_at(id, info);
+    // The listing's title, where an update outranked it with another one.
+    let relisted = info.map(|info| info.title.clone()).filter(|listed| {
+        title
+            .as_ref()
+            .is_some_and(|title| title.by == StatedBy::Update && title.value != *listed)
+    });
 
     rsx! {
         li {
@@ -186,7 +196,8 @@ fn session_row(
                     aria_hidden: "true",
                 }
                 span { class: "session-title",
-                    match info.and_then(|info| info.title.as_ref()) {
+                    title: title.as_ref().map(|title| stated_by(title.by)),
+                    match title.as_ref().and_then(|title| title.value.as_ref()) {
                         Some(title) => rsx! { "{title}" },
                         None => rsx! { span { class: "cleared", "untitled session" } },
                     }
@@ -196,10 +207,21 @@ fn session_row(
                     if current { "Current session. " } else { "Available session. " }
                 }
                 span { class: "session-meta",
-                    if let Some(updated) = info.and_then(|info| info.updated_at.as_ref()) {
-                        "updated {updated}"
+                    if let Some(Stated { value: Some(when), by }) = updated.as_ref() {
+                        span { title: stated_by(*by), "updated {when}" }
                     } else if info.is_none() && !sessions.pending {
                         "not in a listing"
+                    }
+                    // Where an update renamed a session the listing still
+                    // names otherwise, both claims are shown.
+                    if let Some(listed) = relisted {
+                        span { class: "session-relisted", "data-slot": "relisted",
+                            title: "{v1::AGENT_METHOD_NAMES.session_list}",
+                            match listed {
+                                Some(listed) => rsx! { "listed as “{listed}”" },
+                                None => rsx! { "listed untitled" },
+                            }
+                        }
                     }
                 }
             }
@@ -242,6 +264,14 @@ fn session_row(
                 }
             }
         }
+    }
+}
+
+/// Where a session's title or activity was stated, for the tooltip on it.
+pub(crate) fn stated_by(by: StatedBy) -> String {
+    match by {
+        StatedBy::Update => "From session_info_update".to_owned(),
+        StatedBy::Listing => format!("From {}", v1::AGENT_METHOD_NAMES.session_list),
     }
 }
 
@@ -339,6 +369,9 @@ pub(crate) struct Listing<'a> {
     pub(super) advertised: bool,
     /// What it answered the last time it was asked, if it has been.
     pub(super) answered: Option<&'a SessionListing>,
+    /// What it said about each session in `session_info_update`, which
+    /// outranks the listing's description.
+    pub(super) reports: &'a SessionReports,
     /// The live session.
     pub(super) live: Option<&'a v1::SessionId>,
     /// Whether the answer, or its next page, is currently in flight.
@@ -1152,5 +1185,64 @@ mod tests {
         for row in rows_shown(&listed) {
             assert!(row.contains("<button") && row.contains("disabled"), "{row}");
         }
+    }
+
+    /// The dialog over [`two_sessions`] with `sess-1` live, and these updates
+    /// stated about it.
+    fn reported(updates: &[v1::SessionInfoUpdate]) -> String {
+        #[component]
+        fn Host(reports: SessionReports) -> Element {
+            let claims = crate::agent::Claims {
+                session: Some(v1::SessionId::new("sess-1")),
+                listing: Some(two_sessions()),
+                reports,
+                ..crate::agent::Claims::about(Some(everything()))
+            };
+            rsx! { crate::session::Sessions { claims } }
+        }
+
+        let mut reports = SessionReports::default();
+        for update in updates {
+            reports.info(&v1::SessionId::new("sess-1"), update);
+        }
+        let mut dom = VirtualDom::new_with_props(Host, HostProps { reports });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    #[test]
+    fn a_title_an_update_stated_replaces_the_listings_and_both_are_shown() {
+        let listed = reported(&[]);
+        let rows = rows_shown(&listed);
+        assert!(
+            rows[0].contains("The first one") && !rows[0].contains(r#"data-slot="relisted""#),
+            "with no update the listing names it, once: {}",
+            rows[0]
+        );
+
+        let renamed = reported(&[v1::SessionInfoUpdate::new()
+            .title("Fix the flaky build")
+            .updated_at("2026-10-12T09:00:00Z")]);
+        let rows = rows_shown(&renamed);
+        assert!(
+            rows[0].contains(r#"title="From session_info_update">Fix the flaky build<"#),
+            "the update names it, and says so: {}",
+            rows[0]
+        );
+        assert!(
+            rows[0].contains("listed as “The first one”"),
+            "the listing's claim is still there to read: {}",
+            rows[0]
+        );
+        assert!(
+            rows[0].contains("updated 2026-10-12T09:00:00Z"),
+            "{}",
+            rows[0]
+        );
+        assert!(
+            rows[1].contains("untitled session"),
+            "another session's row is the listing's alone: {}",
+            rows[1]
+        );
     }
 }

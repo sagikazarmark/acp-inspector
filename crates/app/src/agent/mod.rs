@@ -18,7 +18,8 @@ mod rows;
 mod sessions;
 
 use acp_inspector_core::{
-    AuthState, CallError, Cursor, DrivenRecord, Restore, Roots, SessionListing, v1,
+    AuthState, CallError, Cursor, DrivenRecord, Restore, Roots, SessionListing, SessionReports,
+    Stated, v1,
 };
 use dioxus::prelude::*;
 
@@ -26,7 +27,7 @@ use accounts::{advertised, claimed};
 use advertisement::{Only, advertises};
 pub(crate) use login::login_guidance;
 use login::{login, standing};
-pub(crate) use sessions::{Listing, SESSION_NEW_COSTS, sessions};
+pub(crate) use sessions::{Listing, SESSION_NEW_COSTS, sessions, stated_by};
 
 /// A lifecycle call that failed, named by its method: which advertised method
 /// failed is the finding, not that something did.
@@ -69,6 +70,9 @@ pub struct Claims {
     pub session: Option<v1::SessionId>,
     pub auth_pending: Vec<AuthenticationCall>,
     pub listing: Option<SessionListing>,
+    /// What the agent said about each session in `session_info_update`, which
+    /// outranks the listing's description of it.
+    pub reports: SessionReports,
     pub listing_pending: bool,
     pub restores: Option<Restore>,
     pub closes: bool,
@@ -104,6 +108,7 @@ impl Claims {
         Listing {
             advertised: self.lists_sessions,
             answered: self.listing.as_ref(),
+            reports: &self.reports,
             live: self.session.as_ref(),
             pending: self.listing_pending,
             restores: self.restores,
@@ -115,6 +120,19 @@ impl Claims {
             on_close: self.on_close,
             on_delete: self.on_delete,
         }
+    }
+
+    /// The title the live session goes by, and who stated it: `None` where
+    /// there is no live session or nobody has named it.
+    pub(crate) fn live_title(&self) -> Option<Stated> {
+        let live = self.session.as_ref()?;
+        let listed = self.listing.as_ref().and_then(|listing| {
+            listing
+                .sessions
+                .iter()
+                .find(|info| &info.session_id == live)
+        });
+        self.reports.title(live, listed)
     }
 
     /// Inputs for a test or mock about what is drawn: every handler is a no-op
@@ -131,6 +149,7 @@ impl Claims {
             session: None,
             auth_pending: Vec::new(),
             listing: None,
+            reports: SessionReports::default(),
             listing_pending: false,
             restores: Some(Restore::Load),
             closes: true,

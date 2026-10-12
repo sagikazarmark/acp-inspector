@@ -26,6 +26,7 @@ use crate::listing::{Cursor, SessionListing};
 use crate::restore::Restore;
 use crate::roots::{self, Roots};
 use crate::rpc::PendingCall;
+use crate::session_report::SessionReports;
 use crate::session_settings::SessionSettings;
 use crate::store::Field;
 use crate::store::locked;
@@ -154,6 +155,7 @@ impl Inspector {
         self.0.stores.auth.set(AuthState::Unasked);
         self.0.stores.turn.set(TurnState::Idle);
         self.0.stores.settings.set(SessionSettings::default());
+        self.0.stores.reports.set(SessionReports::default());
         // Cleared only here: the driven record stays readable after its agent
         // has gone, until the next agent starts.
         self.0.stores.driven.set(DrivenRecord::default());

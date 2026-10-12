@@ -3,7 +3,7 @@
 
 use acp_inspector_core::{
     AuthState, ConnectionStatus, Diagnostic, DrivenRecord, Inspector, Retention, SessionListing,
-    SessionSettings, TimelineEntry, TracedFrame, Turn, TurnState, v1,
+    SessionReports, SessionSettings, TimelineEntry, TracedFrame, Turn, TurnState, v1,
 };
 use dioxus::prelude::*;
 
@@ -50,6 +50,8 @@ pub(crate) struct Stores {
     pub session: Signal<Option<v1::SessionId>>,
     pub prompt_epoch: Signal<u64>,
     pub configured: Signal<SessionSettings>,
+    /// What the agent has said about each session's title and activity.
+    pub reports: Signal<SessionReports>,
     pub described: Signal<Option<v1::InitializeResponse>>,
     pub listing: Signal<Option<SessionListing>>,
     pub auth: Signal<AuthState>,
@@ -84,6 +86,7 @@ pub(crate) fn use_stores(
     let mut session = use_signal(|| None::<v1::SessionId>);
     let mut prompt_epoch = use_signal(|| 0_u64);
     let mut configured = use_signal(SessionSettings::default);
+    let mut reports = use_signal(SessionReports::default);
     let mut described = use_signal(|| None::<v1::InitializeResponse>);
     let mut listing = use_signal(|| None::<SessionListing>);
     let mut auth = use_signal(AuthState::default);
@@ -205,6 +208,17 @@ pub(crate) fn use_stores(
     use_future(move || {
         let inspector = watched.clone();
         async move {
+            let mut changes = inspector.session_reports_changes();
+            while let Some(next) = changes.next().await {
+                reports.set(next);
+            }
+        }
+    });
+
+    let watched = inspector.clone();
+    use_future(move || {
+        let inspector = watched.clone();
+        async move {
             let mut changes = inspector.agent_changes();
             while let Some(next) = changes.next().await {
                 described.set(next);
@@ -259,6 +273,7 @@ pub(crate) fn use_stores(
         session,
         prompt_epoch,
         configured,
+        reports,
         described,
         listing,
         auth,

@@ -176,6 +176,7 @@ pub(crate) fn claims(
         session: (stores.session)(),
         auth_pending: auth_work().pending,
         listing: (stores.listing)(),
+        reports: (stores.reports)(),
         listing_pending: listing_work().1 > 0,
         restores: restores(),
         closes: (gates.closes)(),

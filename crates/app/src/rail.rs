@@ -3,7 +3,7 @@
 //! Only things scoped to the Connection or its Session belong here.
 //! See `docs/architecture.md` §9 and ADR 0009.
 
-use acp_inspector_core::{AgentCommand, ConnectionStatus, SessionSettings, v1};
+use acp_inspector_core::{AgentCommand, ConnectionStatus, SessionSettings, Stated, v1};
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
@@ -305,6 +305,7 @@ pub fn Rail(
     let connected = status == ConnectionStatus::Connected;
     let described = claims.agent.is_some();
     let on_new_session = claims.on_new_session;
+    let title = claims.live_title();
     // Session-scoped surfaces need an agent or the record of one; before the
     // first launch they would only say "none".
     let active = connected || described || session.is_some();
@@ -359,7 +360,7 @@ pub fn Rail(
                     aria_labelledby: tab.id(),
                     match tab {
                         Tab::Session => rsx! {
-                            {live(session.as_ref(), connected, described, on_new_session)}
+                            {live(session.as_ref(), title, connected, described, on_new_session)}
                             if session.is_some() {
                                 SessionSettingsPanel {
                                     settings,
@@ -511,9 +512,11 @@ fn connection(
     }
 }
 
-/// The live Session, named by its id, and the two ways to another.
+/// The live Session, named by its title where the agent gave it one and by
+/// its id always, and the two ways to another.
 fn live(
     session: Option<&v1::SessionId>,
+    title: Option<Stated>,
     connected: bool,
     described: bool,
     on_new_session: EventHandler<Option<acp_inspector_core::Roots>>,
@@ -528,7 +531,15 @@ fn live(
                 class: if session.is_some() { "tile session-tile" } else { "tile session-tile none" },
                 match session {
                     Some(session) => rsx! {
-                        span { class: "session-tile-name", "Open" }
+                        match title {
+                            Some(Stated { value: Some(title), by }) => rsx! {
+                                span { class: "session-tile-name", "data-slot": "session-title",
+                                    title: crate::agent::stated_by(by),
+                                    "{title}"
+                                }
+                            },
+                            _ => rsx! { span { class: "session-tile-name", "Open" } },
+                        }
                         // Whole and copyable: it is what every other surface
                         // asks for.
                         div { class: "tile-line",
@@ -799,6 +810,53 @@ mod tests {
         assert!(
             html.contains(">Connect…</button>") && !html.contains(r#"data-slot="restart""#),
             "the way in is named for what it does first, and there is nothing to restart: {html}"
+        );
+    }
+
+    #[test]
+    fn the_live_session_is_named_by_the_title_the_agent_gave_it() {
+        assert!(
+            shown(Screen::default()).contains(r#"<span class="session-tile-name">Open</span>"#),
+            "untitled, it is named by its state"
+        );
+
+        #[component]
+        fn Titled() -> Element {
+            let mut reports = acp_inspector_core::SessionReports::default();
+            reports.info(
+                &v1::SessionId::new("sess-1"),
+                &v1::SessionInfoUpdate::new().title("Fix the flaky build"),
+            );
+            rsx! {
+                Rail {
+                    status: ConnectionStatus::Connected,
+                    launched: Some(launched()),
+                    session: Some(v1::SessionId::new("sess-1")),
+                    claims: Claims {
+                        session: Some(v1::SessionId::new("sess-1")),
+                        reports,
+                        ..Claims::about(Some(described()))
+                    },
+                    settings: SessionSettings::default(),
+                    settings_epoch: 0,
+                    changing_mode: false,
+                    setting_option: None,
+                    commands: 0,
+                    tab: Tab::Session,
+                    on_tab: move |_| {},
+                    on_stop: move |()| {},
+                    on_set_mode: move |_| {},
+                    on_set_config_option: move |_| {},
+                }
+            }
+        }
+        let mut dom = VirtualDom::new(Titled);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"title="From session_info_update">Fix the flaky build</span>"#)
+                && html.contains(">sess-1<"),
+            "titled, it is named by the title and still by its id: {html}"
         );
     }
 
