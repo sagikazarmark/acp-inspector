@@ -923,6 +923,11 @@ fn unnamed(kind: &EntryKind) -> Element {
                     code { "{method}" }
                     ". This client advertised no capability for it, so it answered method-not-found."
                 },
+                EntryKind::Unrecognized(Unrecognized::Ignored { method }) => rsx! {
+                    "The agent sent "
+                    code { "{method}" }
+                    ", a notification this client does not know. Nothing answers a notification, so it was ignored."
+                },
                 EntryKind::Unrecognized(Unrecognized::Undecodable { method, problem }) => rsx! {
                     if let Some(method) = method {
                         code { "{method}" }
@@ -2176,7 +2181,18 @@ mod tests {
             refused.contains("Over 100 requests waiting, so this <code>session/request_permission</code> was refused."),
             "{refused}"
         );
-        for html in [foreign, dropped, mistyped, unaddressed, refused] {
+        let ignored = said(Unrecognized::Ignored {
+            method: "_auth/status_update".to_owned(),
+        });
+        assert!(
+            ignored.contains("The agent sent <code>_auth/status_update</code>, a notification this client does not know."),
+            "{ignored}"
+        );
+        assert!(
+            !ignored.contains("answered"),
+            "and claims no answer was sent: {ignored}"
+        );
+        for html in [foreign, dropped, mistyped, unaddressed, refused, ignored] {
             assert!(
                 !html.contains("no rendering for"),
                 "each has its own line: {html}"

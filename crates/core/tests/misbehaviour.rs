@@ -54,7 +54,7 @@ async fn entries(inspector: &Inspector, count: usize) -> Vec<TimelineEntry> {
 }
 
 #[tokio::test]
-async fn an_unknown_method_is_a_first_class_entry_carrying_its_raw_json() {
+async fn an_unknown_notification_is_a_first_class_entry_carrying_its_raw_json() {
     // `_`-prefixed extension methods and `_meta` payloads are what real agents
     // send (§8): they display verbatim, because the typed layer decorates the
     // frames the trace already captured and never stands in for them.
@@ -64,11 +64,60 @@ async fn an_unknown_method_is_a_first_class_entry_carrying_its_raw_json() {
     inspector.connect(&saying(&[EXTENSION]).factory());
 
     let entries = entries(&inspector, 1).await;
-    let EntryKind::Unrecognized(Unrecognized::NotServiced { method }) = &entries[0].kind else {
-        panic!("an unknown method is an unrecognized entry: {entries:?}");
+    let EntryKind::Unrecognized(Unrecognized::Ignored { method }) = &entries[0].kind else {
+        panic!("an unknown notification is an ignored entry: {entries:?}");
     };
     assert_eq!(method, "_zed/telemetry");
     assert_eq!(raw(&entries[0]), [EXTENSION], "verbatim, down to the byte");
+}
+
+#[tokio::test]
+async fn an_unknown_notification_is_never_answered() {
+    // JSON-RPC answers no notification, and ACP asks that an unrecognized one
+    // be ignored. The request after it is a fence: frames are handled in
+    // order, so once its refusal is out, any answer to the notification would
+    // be out too.
+    const NOTIFICATION: &str = r#"{"jsonrpc":"2.0","method":"_auth/status_update","params":{"authStatus":{"kind":"none"}}}"#;
+    const FENCE: &str = r#"{"jsonrpc":"2.0","id":7,"method":"_x/ping","params":{}}"#;
+
+    let inspector = Inspector::new();
+    inspector.connect(&saying(&[NOTIFICATION, FENCE]).factory());
+
+    let entries = entries(&inspector, 2).await;
+    assert!(
+        matches!(
+            &entries[0].kind,
+            EntryKind::Unrecognized(Unrecognized::Ignored { method }) if method == "_auth/status_update"
+        ),
+        "{entries:?}"
+    );
+    assert!(
+        matches!(
+            &entries[1].kind,
+            EntryKind::Unrecognized(Unrecognized::NotServiced { method }) if method == "_x/ping"
+        ),
+        "{entries:?}"
+    );
+
+    let mut frames = inspector.trace().changes();
+    until(&mut frames, "the fence to be refused", || {
+        inspector
+            .trace()
+            .entries()
+            .iter()
+            .any(|entry| entry.direction == Direction::ToAgent)
+    })
+    .await;
+
+    let sent: Vec<serde_json::Value> = inspector
+        .trace()
+        .entries()
+        .iter()
+        .filter(|entry| entry.direction == Direction::ToAgent)
+        .map(|entry| serde_json::from_str(entry.frame.as_str()).expect("valid JSON-RPC"))
+        .collect();
+    assert_eq!(sent.len(), 1, "one answer, to the request alone: {sent:?}");
+    assert_eq!(sent[0]["id"], 7, "{sent:?}");
 }
 
 #[tokio::test]

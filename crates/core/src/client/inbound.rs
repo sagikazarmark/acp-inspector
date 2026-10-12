@@ -110,7 +110,7 @@ impl Client {
                 } else {
                     self.stores
                         .timeline
-                        .unrecognized(Unrecognized::NotServiced { method }, recorded(frame));
+                        .unrecognized(Unrecognized::Ignored { method }, recorded(frame));
                 }
             }
 
