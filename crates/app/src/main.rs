@@ -32,6 +32,7 @@ mod elicitation_words;
 mod export;
 mod indent;
 mod json;
+mod keys;
 mod page;
 // The window icon's mark is reached only through the shell.
 #[cfg(feature = "desktop")]

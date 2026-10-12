@@ -122,12 +122,12 @@ pub fn SessionSettings(
                         span { class: "eyebrow", "Settings" }
                         span { class: "setting-note", "{v1::AGENT_METHOD_NAMES.session_set_config_option}" }
                     }
-                    for (row, option) in options.iter().enumerate() {
+                    for ((row, option), key) in options.iter().enumerate().zip(crate::keys::distinct(options.iter().map(|option| option.id.to_string()))) {
                         {
                             let description_id = option.description.as_ref().map(|_| format!("config-description-{row}"));
                             let loading = setting_option.as_ref() == Some(&option.id);
                             rsx! { div {
-                            key: "{option.id}",
+                            key: "{key}",
                             class: "setting",
                             "data-slot": "setting",
                             aria_busy: loading,
@@ -243,6 +243,7 @@ fn stated_current(kind: &v1::SessionConfigKind) -> Option<(String, bool)> {
 /// an agent that leaves between render and click is refused by core
 /// ([`ModeChange::Refused`]).
 fn mode_segment(
+    key: &str,
     mode: &v1::SessionMode,
     current: bool,
     connected: bool,
@@ -256,7 +257,7 @@ fn mode_segment(
 
     rsx! {
         button {
-            key: "{id}",
+            key: "{key}",
             class: "mode-row",
             r#type: "button",
             title: "{id}",
@@ -293,8 +294,8 @@ fn mode_values(
             "data-slot": "values",
             role: "group",
             aria_label: "Set Mode",
-            for mode in modes.available_modes.iter() {
-                {mode_segment(mode, mode.id == modes.current_mode_id, connected, on_set_mode)}
+            for (key, mode) in crate::keys::distinct(modes.available_modes.iter().map(|mode| mode.id.to_string())).iter().zip(&modes.available_modes) {
+                {mode_segment(key, mode, mode.id == modes.current_mode_id, connected, on_set_mode)}
             }
         }
     }
@@ -477,8 +478,9 @@ fn choices(
                 role: "group",
                 aria_label: accessible_name,
                 aria_describedby: description_id.clone(),
-                for value in values.iter() {
+                for (key, value) in crate::keys::distinct(values.iter().map(|value| value.value.to_string())).iter().zip(values) {
                     {choice_segment(
+                        key,
                         option,
                         value,
                         value.value == select.current_value,
@@ -558,9 +560,9 @@ fn ConfigSelect(
                 onchange: move |event| selected.set(event.value()),
                 match &select.options {
                     v1::SessionConfigSelectOptions::Ungrouped(values) => rsx! {
-                        for value in values.iter() {
+                        for (key, value) in crate::keys::distinct(values.iter().map(|value| value.value.to_string())).iter().zip(values) {
                             option {
-                                key: "{value.value}",
+                                key: "{key}",
                                 value: "{value.value}",
                                 selected: value.value.to_string() == shown,
                                 disabled: !available,
@@ -569,13 +571,13 @@ fn ConfigSelect(
                         }
                     },
                     v1::SessionConfigSelectOptions::Grouped(groups) => rsx! {
-                        for group in groups.iter() {
+                        for (key, group) in crate::keys::distinct(groups.iter().map(|group| group.group.to_string())).iter().zip(groups) {
                             optgroup {
-                                key: "{group.group}",
+                                key: "{key}",
                                 label: labelled(&group.group.to_string(), &group.name),
-                                for value in group.options.iter() {
+                                for (key, value) in crate::keys::distinct(group.options.iter().map(|value| value.value.to_string())).iter().zip(&group.options) {
                                     option {
-                                        key: "{value.value}",
+                                        key: "{key}",
                                         value: "{value.value}",
                                         selected: value.value.to_string() == shown,
                                         disabled: !available,
@@ -670,6 +672,7 @@ fn config_target_name(name: &str, id: &v1::SessionConfigId) -> String {
 /// One value the agent published, as the chip that would set it. As with
 /// [`mode_segment`], the current value is a control too.
 fn choice_segment(
+    key: &str,
     option: &v1::SessionConfigId,
     value: &v1::SessionConfigSelectOption,
     current: bool,
@@ -685,7 +688,7 @@ fn choice_segment(
 
     rsx! {
         button {
-            key: "{id}",
+            key: "{key}",
             class: "chip",
             r#type: "button",
             "data-current": "{current}",
@@ -968,6 +971,84 @@ mod tests {
             )),
         });
         settings
+    }
+
+    thread_local! {
+        static REPEATED: std::cell::RefCell<Option<Signal<acp_inspector_core::SessionSettings>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn ids_the_agent_repeated_are_still_a_control_each() {
+        // Mode, option and value ids are the agent's; each list is keyed by
+        // them, and a repeat must not break the next diff.
+        #[component]
+        fn Host() -> Element {
+            let settings = use_signal(|| {
+                let twice = |id: &str| {
+                    v1::SessionConfigOption::select(
+                        id.to_owned(),
+                        "Verbosity",
+                        "normal",
+                        vec![
+                            v1::SessionConfigSelectOption::new("normal", "Normal"),
+                            v1::SessionConfigSelectOption::new("normal", "Also normal"),
+                            v1::SessionConfigSelectOption::new("brief", "Brief"),
+                            v1::SessionConfigSelectOption::new("verbose", "Verbose"),
+                            v1::SessionConfigSelectOption::new("loud", "Loud"),
+                        ],
+                    )
+                };
+                published(
+                    Some(v1::SessionModeState::new(
+                        "chat",
+                        vec![
+                            v1::SessionMode::new("chat", "Chat"),
+                            v1::SessionMode::new("chat", "Chat again"),
+                        ],
+                    )),
+                    Some(vec![twice("verbosity"), twice("verbosity")]),
+                )
+            });
+            use_hook(move || REPEATED.with(|slot| *slot.borrow_mut() = Some(settings)));
+            rsx! {
+                SessionSettings {
+                    settings: settings(),
+                    settings_epoch: 0,
+                    connected: true,
+                    changing_mode: false,
+                    setting_option: None,
+                    on_set_mode: move |_: v1::SessionModeId| {},
+                    on_set_config_option: move |_: Choice| {},
+                }
+            }
+        }
+
+        let mut dom = VirtualDom::new(Host);
+        dom.rebuild_in_place();
+        let mut settings = REPEATED.with(|slot| slot.borrow().expect("the host ran"));
+        settings.write().modes = Some(v1::SessionModeState::new(
+            "plan",
+            vec![
+                v1::SessionMode::new("chat", "Chat"),
+                v1::SessionMode::new("chat", "Chat again"),
+                v1::SessionMode::new("plan", "Plan"),
+            ],
+        ));
+        dom.render_immediate_to_vec();
+
+        let html = dioxus_ssr::render(&dom);
+        assert_eq!(
+            html.matches(r#"class="mode-row""#).count(),
+            3,
+            "every published mode is a row: {html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="setting" data-slot="setting""#)
+                .count(),
+            2,
+            "both options under one id are shown: {html}"
+        );
     }
 
     #[test]

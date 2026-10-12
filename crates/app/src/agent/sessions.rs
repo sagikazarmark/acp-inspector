@@ -43,10 +43,15 @@ pub(crate) fn sessions(
             })
         })
         .flatten();
+    // Each session once: pages are appended as they come, so one that moved
+    // between pages while they were fetched is listed twice. The rows are
+    // keyed by id, and every row's actions address the session by it anyway.
+    let mut seen = std::collections::HashSet::new();
     let others: Vec<&v1::SessionInfo> = answered
         .unwrap_or_default()
         .iter()
         .filter(|session| Some(&session.session_id) != listing.live)
+        .filter(|session| seen.insert(&session.session_id))
         .collect();
 
     rsx! {
@@ -670,6 +675,24 @@ mod tests {
             restores,
             Some(two_sessions()),
         ))
+    }
+
+    #[test]
+    fn a_session_listed_on_two_pages_is_one_row() {
+        // Pages are appended as fetched; a session that moved between them
+        // arrives twice, and its rows are keyed by its id.
+        let mut listing = two_sessions();
+        listing
+            .sessions
+            .push(v1::SessionInfo::new("sess-1", "/tmp").title("The first one"));
+        let listed = affordances(&rendered(
+            everything(),
+            true,
+            Some(Restore::Load),
+            Some(listing),
+        ));
+
+        assert_eq!(rows_shown(&listed).len(), 2, "{listed}");
     }
 
     #[test]
